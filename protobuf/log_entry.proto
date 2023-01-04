@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+option go_package = "github.com/jmsadair/raft/protobuf";
+
+message LogEntry {
+    uint64 index = 1;
+    uint64 term = 2;
+    bytes data = 3;
+}

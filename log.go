@@ -7,9 +7,11 @@ import (
 )
 
 type Log struct {
-	path    string
-	file    *os.File
-	entries []*LogEntry
+	path        string
+	file        *os.File
+	entries     []*LogEntry
+	commitIndex uint64
+	lastApplied uint64
 }
 
 func NewLog(path string) *Log {

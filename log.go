@@ -72,7 +72,7 @@ func (l *Log) Close() error {
 }
 
 func (l *Log) IsOpen() bool {
-	return l.file == nil
+	return !(l.file == nil)
 }
 
 func (l *Log) GetEntry(index uint64) (*LogEntry, bool) {

@@ -9,7 +9,8 @@ import (
 )
 
 type LogEntry struct {
-	entry *pb.LogEntry
+	offset int64
+	entry  *pb.LogEntry
 }
 
 func NewLogEntry(term uint64, index uint64, data []byte) *LogEntry {

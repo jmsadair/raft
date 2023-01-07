@@ -10,7 +10,7 @@ import (
 
 var (
 	writer io.Writer = os.Stderr
-	prefix string    = "raft"
+	prefix string    = "raft "
 	flag   int       = log.LstdFlags
 	level  Level     = Debug
 	logger *Logger   = NewWithLevel(level, writer, prefix, flag)

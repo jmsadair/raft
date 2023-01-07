@@ -13,7 +13,7 @@ type LogEntry struct {
 	entry  *pb.LogEntry
 }
 
-func NewLogEntry(term uint64, index uint64, data []byte) *LogEntry {
+func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
 	return &LogEntry{entry: &pb.LogEntry{Term: term, Index: index, Data: data}}
 }
 

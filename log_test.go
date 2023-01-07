@@ -45,12 +45,12 @@ func TestAppendEntries(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1 = newLogEntry(entry1Index, entry1Term, entry1Data)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2 = newLogEntry(entry2Index, entry2Term, entry2Data)
 
 	log.appendEntries(entry1, entry2)
 
@@ -74,12 +74,12 @@ func TestTruncate(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1 = newLogEntry(entry1Index, entry1Term, entry1Data)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2 = newLogEntry(entry2Index, entry2Term, entry2Data)
 
 	log.appendEntries(entry1, entry2)
 
@@ -110,29 +110,29 @@ func TestAppendEntriesTruncate(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1 = newLogEntry(entry1Index, entry1Term, entry1Data)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2 = newLogEntry(entry2Index, entry2Term, entry2Data)
 
 	var entry3Index uint64 = 3
 	var entry3Term uint64 = 3
 	entry3Data := []byte("entry3")
-	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
+	entry3 = newLogEntry(entry3Index, entry3Term, entry3Data)
 
 	log.appendEntries(entry1, entry2, entry3)
 
 	var entry4Index uint64 = 2
 	var entry4Term uint64 = 3
 	entry4Data := []byte("entry4")
-	entry4 := NewLogEntry(entry4Index, entry4Term, entry4Data)
+	entry4 := newLogEntry(entry4Index, entry4Term, entry4Data)
 
 	var entry5Index uint64 = 3
 	var entry5Term uint64 = 3
 	entry5Data := []byte("entry5")
-	entry5 := NewLogEntry(entry5Index, entry5Term, entry5Data)
+	entry5 := newLogEntry(entry5Index, entry5Term, entry5Data)
 
 	log.appendEntries(entry4, entry5)
 

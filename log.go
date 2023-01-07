@@ -44,13 +44,13 @@ func (l *Log) open() {
 
 	for {
 		var err error
-		entry := NewLogEntry(0, 0, nil)
+		entry := newLogEntry(0, 0, nil)
 
 		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
 			l.logger.Fatalf(openErrorFormat, err.Error())
 		}
 
-		if _, err = entry.Decode(file); err != nil {
+		if _, err = entry.decode(file); err != nil {
 			if err == io.EOF {
 				break
 			}
@@ -95,7 +95,7 @@ func (l *Log) persistEntries(entries ...*LogEntry) {
 		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
 			l.logger.Fatalf(appendEntriesErrorFormat, err)
 		}
-		if _, err = entry.Encode(l.file); err != nil {
+		if _, err = entry.encode(l.file); err != nil {
 			l.logger.Fatalf(appendEntriesErrorFormat, err)
 		}
 	}
@@ -112,17 +112,17 @@ func (l *Log) appendEntries(entries ...*LogEntry) {
 		var err error
 		var existing *LogEntry
 
-		if l.log.lastIndex() < entry.Index() {
+		if l.log.lastIndex() < entry.index() {
 			toAppend = entries[i:]
 			break
 		}
 
-		existing, err = l.log.getEntry(entry.Index())
+		existing, err = l.log.getEntry(entry.index())
 
-		if err == nil && existing.IsConflict(entry) {
+		if err == nil && existing.isConflict(entry) {
 			l.logger.Debugf("found conflicting entries at index %d: %d != %d (existing term != provided term)",
-				entry.Index(), existing.Term(), entry.Term())
-			l.truncate(entry.Index())
+				entry.index(), existing.term(), entry.term())
+			l.truncate(entry.index())
 			toAppend = entries[i:]
 			break
 		}

@@ -13,23 +13,27 @@ type LogEntry struct {
 	entry  *pb.LogEntry
 }
 
-func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
+func newLogEntry(index uint64, term uint64, data []byte) *LogEntry {
 	return &LogEntry{entry: &pb.LogEntry{Term: term, Index: index, Data: data}}
 }
 
-func (e *LogEntry) Term() uint64 {
+func (e *LogEntry) term() uint64 {
 	return e.entry.GetTerm()
 }
 
-func (e *LogEntry) Index() uint64 {
+func (e *LogEntry) index() uint64 {
 	return e.entry.GetIndex()
 }
 
-func (e *LogEntry) Data() []byte {
+func (e *LogEntry) data() []byte {
 	return e.entry.GetData()
 }
 
-func (e *LogEntry) Encode(w io.Writer) (int, error) {
+func (e *LogEntry) isConflict(other *LogEntry) bool {
+	return e.entry.GetIndex() == other.entry.GetIndex() && e.entry.GetTerm() != other.entry.GetTerm()
+}
+
+func (e *LogEntry) encode(w io.Writer) (int, error) {
 	var n int
 	var encoded []byte
 	var err error
@@ -53,7 +57,7 @@ func (e *LogEntry) Encode(w io.Writer) (int, error) {
 	return n, nil
 }
 
-func (e *LogEntry) Decode(r io.Reader) (int, error) {
+func (e *LogEntry) decode(r io.Reader) (int, error) {
 	var n int
 	var err error
 

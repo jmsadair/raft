@@ -20,21 +20,21 @@ func (l *VolatileLog) startIndex() uint64 {
 	if len(l.entries) == 0 {
 		return 0
 	}
-	return l.entries[0].Index()
+	return l.entries[0].index()
 }
 
 func (l *VolatileLog) lastIndex() uint64 {
 	if len(l.entries) == 0 {
 		return 0
 	}
-	return l.entries[len(l.entries)-1].Index()
+	return l.entries[len(l.entries)-1].index()
 }
 
 func (l *VolatileLog) lastTerm() uint64 {
 	if len(l.entries) == 0 {
 		return 0
 	}
-	return l.entries[len(l.entries)-1].Term()
+	return l.entries[len(l.entries)-1].term()
 }
 
 func (l *VolatileLog) appendEntries(entries ...*LogEntry) {
@@ -45,14 +45,14 @@ func (l *VolatileLog) getEntry(index uint64) (*LogEntry, error) {
 	if !l.contains(index) {
 		return nil, fmt.Errorf(invalidIndexErrorFormat, index)
 	}
-	return l.entries[index-l.entries[0].Index()], nil
+	return l.entries[index-l.entries[0].index()], nil
 }
 
 func (l *VolatileLog) truncate(from uint64) error {
 	if !l.contains(from) {
 		return fmt.Errorf("invalid index: log does not contain %d", from)
 	}
-	l.entries = l.entries[:from-l.entries[0].Index()]
+	l.entries = l.entries[:from-l.entries[0].index()]
 	return nil
 }
 
@@ -64,5 +64,5 @@ func (l *VolatileLog) contains(index uint64) bool {
 	if len(l.entries) == 0 {
 		return false
 	}
-	return l.entries[0].Index() <= index && index <= l.entries[len(l.entries)-1].Index()
+	return l.entries[0].index() <= index && index <= l.entries[len(l.entries)-1].index()
 }

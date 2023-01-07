@@ -11,31 +11,27 @@ import (
 
 // TODO: Reconsider AppendEntries parameters? Need to check prevLogIndex and prevLogTerm provided by leader.
 // TODO: Need to make concurrent safe. Add mutexes.
-// TODO: Add function to truncate log when there is conflicting entries.
 
 const (
 	openErrorFormat          = "failed to open log: %s"
 	closeErrorFormat         = "failed to close log: %s"
-	GetEntryErrorFormat      = "failed to get entry: %s"
-	AppendEntriesErrorFormat = "failed to append entries: %s"
-	TruncateErrorFormat      = "failed to truncate: %s"
+	getEntryErrorFormat      = "failed to get entry: %s"
+	appendEntriesErrorFormat = "failed to append entries: %s"
+	truncateErrorFormat      = "failed to truncate: %s"
 )
 
 type Log struct {
-	path        string
-	file        *os.File
-	entries     []*LogEntry
-	startIndex  uint64
-	commitIndex uint64
-	lastApplied uint64
-	logger      log.Logger
+	path   string
+	file   *os.File
+	log    *VolatileLog
+	logger log.Logger
 }
 
-func NewLog(path string) *Log {
-	return &Log{path: filepath.Join(path, "log"), entries: make([]*LogEntry, 0), logger: log.GetLogger()}
+func newLog(path string) *Log {
+	return &Log{path: filepath.Join(path, "log"), log: newVolatileLog(), logger: log.GetLogger()}
 }
 
-func (l *Log) Open() {
+func (l *Log) open() {
 	if l.file != nil {
 		l.logger.Fatalf(openErrorFormat, "log already open")
 	}
@@ -61,126 +57,124 @@ func (l *Log) Open() {
 			l.logger.Fatalf(openErrorFormat, err.Error())
 		}
 
-		l.entries = append(l.entries, entry)
-	}
-
-	if len(l.entries) != 0 {
-		l.startIndex = l.entries[0].Index()
+		l.log.appendEntries(entry)
 	}
 
 	l.logger.Debugf("opened log %s", l.path)
 }
 
-func (l *Log) Close() error {
+func (l *Log) close() error {
 	if l.file == nil {
 		l.logger.Fatalf(openErrorFormat, "log is not open")
 	}
 	l.file.Close()
 	l.file = nil
-	l.entries = make([]*LogEntry, 0)
+	l.log.clear()
 	l.logger.Debugf("closed log %s", l.path)
 	return nil
 }
 
-func (l *Log) IsOpen() bool {
+func (l *Log) isOpen() bool {
 	return !(l.file == nil)
 }
 
-func (l *Log) GetEntry(index uint64) *LogEntry {
+func (l *Log) getEntry(index uint64) *LogEntry {
 	if l.file == nil {
-		l.logger.Fatalf(GetEntryErrorFormat, "log is not open")
+		l.logger.Fatalf(getEntryErrorFormat, "log is not open")
 	}
-
-	if index < l.entries[0].Index() || index > l.entries[len(l.entries)-1].Index() {
-		l.logger.Fatalf(GetEntryErrorFormat, fmt.Sprintf("invalid index %d", index))
+	entry, err := l.log.getEntry(index)
+	if err != nil {
+		l.logger.Fatalf(getEntryErrorFormat, fmt.Sprintf("invalid index %d", index))
 	}
-
-	return l.entries[index-l.entries[0].Index()]
+	return entry
 }
 
-func (l *Log) Contains(index uint64) bool {
-	return index >= l.entries[0].Index() && index <= l.entries[len(l.entries)-1].Index()
-}
-
-func (l *Log) AppendEntries(entries ...*LogEntry) {
-	if l.file == nil {
-		l.logger.Fatalf(AppendEntriesErrorFormat, "log is not open")
-	}
-
+func (l *Log) persistEntries(entries ...*LogEntry) {
 	for _, entry := range entries {
 		var err error
+		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
+			l.logger.Fatalf(appendEntriesErrorFormat, err)
+		}
+		if _, err = entry.Encode(l.file); err != nil {
+			l.logger.Fatalf(appendEntriesErrorFormat, err)
+		}
+	}
+}
 
-		if len(l.entries) != 0 && entry.Index() <= l.entries[len(l.entries)-1].Index() {
-			existing := l.entries[entry.Index()-l.entries[0].Index()]
-			if existing.Term() == entry.Term() {
-				continue
-			}
+func (l *Log) appendEntries(entries ...*LogEntry) {
+	if l.file == nil {
+		l.logger.Fatalf(appendEntriesErrorFormat, "log is not open")
+	}
+
+	var toAppend []*LogEntry
+
+	for i, entry := range entries {
+		var err error
+		var existing *LogEntry
+
+		if l.log.lastIndex() < entry.Index() {
+			toAppend = entries[i:]
+			break
+		}
+
+		existing, err = l.log.getEntry(entry.Index())
+
+		if err == nil && existing.IsConflict(entry) {
 			l.logger.Debugf("found conflicting entries at index %d: %d != %d (existing term != provided term)",
 				entry.Index(), existing.Term(), entry.Term())
-			l.Truncate(entry.Index())
+			l.truncate(entry.Index())
+			toAppend = entries[i:]
+			break
 		}
 
-		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
-			l.logger.Fatalf(AppendEntriesErrorFormat, err)
+		if err == nil {
+			continue
 		}
 
-		if _, err = entry.Encode(l.file); err != nil {
-			l.logger.Fatalf(AppendEntriesErrorFormat, err)
-		}
-
-		if len(l.entries) == 0 {
-			l.startIndex = entry.Index()
-		}
-
-		l.entries = append(l.entries, entry)
+		l.logger.Fatalf(appendEntriesErrorFormat, err.Error())
 	}
+
+	l.persistEntries(toAppend...)
+	l.log.appendEntries(toAppend...)
 }
 
-func (l *Log) Truncate(index uint64) {
+func (l *Log) truncate(index uint64) {
 	if l.file == nil {
-		l.logger.Fatalf(TruncateErrorFormat, "log is not open")
+		l.logger.Fatalf(truncateErrorFormat, "log is not open")
 	}
-	entry := l.entries[index-l.startIndex]
-	last := l.entries[len(l.entries)-1]
-	l.entries = l.entries[:entry.Index()-l.entries[0].Index()]
+
+	lastIndex := l.log.lastIndex()
+	entry, err := l.log.getEntry(index)
+
+	if err != nil {
+		l.logger.Fatalf(truncateErrorFormat, err)
+	}
+	if err := l.log.truncate(index); err != nil {
+		l.logger.Fatalf(truncateErrorFormat, err.Error())
+	}
 	if err := l.file.Truncate(entry.offset); err != nil {
-		l.logger.Fatalf(TruncateErrorFormat, err.Error())
+		l.logger.Fatalf(truncateErrorFormat, err.Error())
 	}
-	l.logger.Debugf("truncated log from index %d to index %d", index, last.Index())
+
+	l.logger.Debugf("truncated log from index %d to index %d", index, lastIndex)
 }
 
-func (l *Log) Path() string {
+func (l *Log) logPath() string {
 	return l.path
 }
 
-func (l *Log) File() *os.File {
+func (l *Log) logFile() *os.File {
 	return l.file
 }
 
-func (l *Log) Size() int {
-	return len(l.entries)
+func (l *Log) size() int {
+	return l.log.size()
 }
 
-func (l *Log) CommitIndex() uint64 {
-	return l.commitIndex
+func (l *Log) lastTerm() uint64 {
+	return l.log.lastTerm()
 }
 
-func (l *Log) LastApplied() uint64 {
-	return l.lastApplied
-}
-
-func (l *Log) LastTerm() uint64 {
-	if len(l.entries) == 0 {
-		return 0
-	} else {
-		return l.entries[len(l.entries)-1].Term()
-	}
-}
-
-func (l *Log) LastIndex() uint64 {
-	if len(l.entries) == 0 {
-		return 0
-	} else {
-		return l.entries[len(l.entries)-1].Index()
-	}
+func (l *Log) lastIndex() uint64 {
+	return l.log.lastIndex()
 }

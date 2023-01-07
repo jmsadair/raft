@@ -7,39 +7,34 @@ import (
 )
 
 func TestNewLog(t *testing.T) {
-	log := NewLog("raft/test")
+	log := newLog("raft/test")
 
-	expectedPath := "raft/test/log"
-	actualPath := log.Path()
-	assert.Equal(t, expectedPath, actualPath)
-
-	expectedSize := 0
-	actualSize := log.Size()
-	assert.Equal(t, expectedSize, actualSize)
+	assert.Equal(t, "raft/test/log", log.logPath())
+	assert.Nil(t, log.logFile())
+	assert.Zero(t, log.size())
+	assert.Zero(t, log.lastIndex())
+	assert.Zero(t, log.lastTerm())
 }
 
 func TestOpenNew(t *testing.T) {
 	path := t.TempDir()
-	log := NewLog(path)
-	t.Cleanup(func() { log.Close() })
-	log.Open()
+	log := newLog(path)
+	t.Cleanup(func() { log.close() })
+	log.open()
 
-	assert.NotNil(t, log.File(), "open log should not have nil file")
-	assert.Equal(t, log.File().Name(), log.Path(), "log file name should match log path")
-
-	expectedSize := 0
-	actualSize := log.Size()
-	assert.Equal(t, expectedSize, actualSize)
+	assert.NotNil(t, log.logFile())
+	assert.Equal(t, log.logFile().Name(), log.logPath())
+	assert.Zero(t, log.size())
 }
 
 func TestIsOpen(t *testing.T) {
 	path := t.TempDir()
-	log := NewLog(path)
-	t.Cleanup(func() { log.Close() })
+	log := newLog(path)
+	t.Cleanup(func() { log.close() })
 
-	assert.False(t, log.IsOpen(), "expected log to be closed")
-	log.Open()
-	assert.True(t, log.IsOpen(), "expected log to be open")
+	assert.False(t, log.isOpen())
+	log.open()
+	assert.True(t, log.isOpen())
 }
 
 func TestAppendEntries(t *testing.T) {
@@ -47,29 +42,28 @@ func TestAppendEntries(t *testing.T) {
 
 	var entry1, entry2 *LogEntry
 
-	// Create entries and append to log.
-	entry1Index := uint64(1)
-	entry1Term := uint64(1)
+	var entry1Index uint64 = 1
+	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
 	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
 
-	entry2Index := uint64(2)
-	entry2Term := uint64(2)
+	var entry2Index uint64 = 2
+	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
 	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	log.AppendEntries(entry1, entry2)
+	log.appendEntries(entry1, entry2)
 
-	expectedLogSize := uint64(2)
-	actualLogSize := uint64(log.Size())
-	validateLogSize(t, actualLogSize, expectedLogSize)
+	validateLogSize(t, log.size(), 2)
 
-	// Check if entries have been added to in memory log.
-	entry1 = log.GetEntry(uint64(entry1Index))
+	entry1 = log.getEntry(entry1Index)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
-	entry2 = log.GetEntry(uint64(entry2Index))
+	entry2 = log.getEntry(entry2Index)
 	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
+
+	assert.Equal(t, log.lastTerm(), entry2Term)
+	assert.Equal(t, log.lastIndex(), entry2Index)
 }
 
 func TestTruncate(t *testing.T) {
@@ -77,95 +71,91 @@ func TestTruncate(t *testing.T) {
 
 	var entry1, entry2 *LogEntry
 
-	// Create entries and append to log.
-	entry1Index := uint64(1)
-	entry1Term := uint64(1)
+	var entry1Index uint64 = 1
+	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
 	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
 
-	entry2Index := uint64(2)
-	entry2Term := uint64(2)
+	var entry2Index uint64 = 2
+	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
 	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	log.AppendEntries(entry1, entry2)
+	log.appendEntries(entry1, entry2)
 
-	// Truncate second entry.
-	log.Truncate(entry2Index)
+	log.truncate(entry2Index)
 
-	// Check in memory log.
 	checkLog := func() {
-		expectedLogSize := uint64(1)
-		actualLogSize := uint64(log.Size())
-		validateLogSize(t, actualLogSize, expectedLogSize)
-
-		entry1 = log.GetEntry(entry1Index)
+		validateLogSize(t, log.size(), 1)
+		entry1 = log.getEntry(entry1Index)
 		validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 	}
 
 	checkLog()
 
-	// Check log file.
-	log.Close()
-	log.Open()
+	log.close()
+	log.open()
+
 	checkLog()
+
+	assert.Equal(t, log.lastTerm(), entry1Term)
+	assert.Equal(t, log.lastIndex(), entry1Index)
 }
 
 func TestAppendEntriesTruncate(t *testing.T) {
 	log := NewTestLog(t)
 
-	// Create initial entries and append to log.
-	entry1Index := uint64(1)
-	entry1Term := uint64(1)
+	var entry1, entry2, entry3 *LogEntry
+
+	var entry1Index uint64 = 1
+	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
 
-	entry2Index := uint64(2)
-	entry2Term := uint64(2)
+	var entry2Index uint64 = 2
+	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
-	entry2 := NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	entry3Index := uint64(3)
-	entry3Term := uint64(3)
+	var entry3Index uint64 = 3
+	var entry3Term uint64 = 3
 	entry3Data := []byte("entry3")
-	entry3 := NewLogEntry(entry3Index, entry3Term, entry3Data)
+	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
 
-	log.AppendEntries(entry1, entry2, entry3)
+	log.appendEntries(entry1, entry2, entry3)
 
-	// Create entries where one will cause conflict.
-	entry4Index := uint64(2)
-	entry4Term := uint64(3)
+	var entry4Index uint64 = 2
+	var entry4Term uint64 = 3
 	entry4Data := []byte("entry4")
 	entry4 := NewLogEntry(entry4Index, entry4Term, entry4Data)
 
-	entry5Index := uint64(3)
-	entry5Term := uint64(3)
+	var entry5Index uint64 = 3
+	var entry5Term uint64 = 3
 	entry5Data := []byte("entry5")
 	entry5 := NewLogEntry(entry5Index, entry5Term, entry5Data)
 
-	// Append the entries - should cause log to truncate.
-	log.AppendEntries(entry4, entry5)
+	log.appendEntries(entry4, entry5)
 
 	checkLog := func() {
-		expectedSize := 3
-		actualSize := log.Size()
-		validateLogSize(t, uint64(actualSize), uint64(expectedSize))
+		validateLogSize(t, log.size(), 3)
 
-		entry1 = log.GetEntry(entry1Index)
+		entry1 = log.getEntry(entry1Index)
 		validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
-		entry2 = log.GetEntry(entry2Index)
+		entry2 = log.getEntry(entry2Index)
 		validateLogEntry(t, entry2, entry4Index, entry4Term, entry4Data)
 
-		entry3 = log.GetEntry(entry3Index)
+		entry3 = log.getEntry(entry3Index)
 		validateLogEntry(t, entry3, entry5Index, entry5Term, entry5Data)
 	}
 
-	// Check in memory log
 	checkLog()
 
-	// Check log file
-	log.Close()
-	log.Open()
+	log.close()
+	log.open()
+
 	checkLog()
+
+	assert.Equal(t, log.lastTerm(), entry5Term)
+	assert.Equal(t, log.lastIndex(), entry5Index)
 }

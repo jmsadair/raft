@@ -6,6 +6,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func NewTestLog(t *testing.T) *Log {
+	path := t.TempDir()
+	log := NewLog(path)
+	t.Cleanup(func() { log.Close() })
+	log.Open()
+	return log
+}
+
 func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
 	assert.Equal(t, expectedIndex, entry.Index(), "entry has incorrect index")
 	assert.Equal(t, expectedTerm, entry.Term(), "entry has incorrect term")

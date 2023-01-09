@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 
-	pb "github.com/jmsadair/raft/protobuf"
+	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/protobuf/proto"
 )
 

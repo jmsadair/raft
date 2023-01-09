@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	logger "github.com/jmsadair/raft/logger"
+	logger "github.com/jmsadair/raft/internal/logger"
 )
 
 const (
@@ -86,7 +86,11 @@ func (l *PersistentLog) GetEntry(index uint64) *LogEntry {
 	return entry
 }
 
-func (l *PersistentLog) AppendEntries(entries ...*LogEntry) {
+func (l *PersistentLog) Contains(index uint64) bool {
+	return !l.vlog.Contains(index)
+}
+
+func (l *PersistentLog) AppendEntries(entries ...*LogEntry) uint64 {
 	if l.file == nil {
 		l.logger.Fatalf(appendEntriesErrorFormat, "log is not open")
 	}
@@ -121,6 +125,11 @@ func (l *PersistentLog) AppendEntries(entries ...*LogEntry) {
 
 	l.PersistEntries(toAppend...)
 	l.vlog.AppendEntries(toAppend...)
+
+	if len(toAppend) != 0 {
+		return toAppend[len(toAppend)-1].Index()
+	}
+	return 0
 }
 
 func (l *PersistentLog) Truncate(index uint64) {

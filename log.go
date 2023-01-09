@@ -19,8 +19,14 @@ type Log interface {
 	// in the log.
 	GetEntry(index uint64) *LogEntry
 
-	// AppendEntries appends the provided log entries to the log.
-	AppendEntries(entries ...*LogEntry)
+	// Contains returns true if the log contains the provided index
+	// and false otherwise.
+	Contains(index uint64) bool
+
+	// AppendEntries appends the provided log entries to the log;
+	// returns the index of the last entry appended to the log or 0
+	// if no entries were appended.
+	AppendEntries(entries ...*LogEntry) uint64
 
 	// Truncate truncates the log starting from the provided index.
 	// Require that a log entry with the provided index exists in the log.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	logger "github.com/jmsadair/raft/internal/logger"
 )
@@ -22,6 +23,7 @@ type PersistentLog struct {
 	path   string
 	file   *os.File
 	vlog   *VolatileLog
+	mu     sync.Mutex
 	logger logger.Logger
 }
 
@@ -72,25 +74,40 @@ func (l *PersistentLog) Close() {
 }
 
 func (l *PersistentLog) IsOpen() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	return !(l.file == nil)
 }
 
 func (l *PersistentLog) GetEntry(index uint64) *LogEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if l.file == nil {
 		l.logger.Fatalf(getEntryErrorFormat, "log is not open")
 	}
+
 	entry, err := l.vlog.GetEntry(index)
+
 	if err != nil {
 		l.logger.Fatalf(getEntryErrorFormat, fmt.Sprintf("invalid index %d", index))
 	}
+
 	return entry
 }
 
 func (l *PersistentLog) Contains(index uint64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	return !l.vlog.Contains(index)
 }
 
 func (l *PersistentLog) AppendEntries(entries ...*LogEntry) uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if l.file == nil {
 		l.logger.Fatalf(appendEntriesErrorFormat, "log is not open")
 	}
@@ -111,7 +128,7 @@ func (l *PersistentLog) AppendEntries(entries ...*LogEntry) uint64 {
 		if err == nil && existing.IsConflict(entry) {
 			l.logger.Debugf("found conflicting entries at index %d: %d != %d (existing term != provided term)",
 				entry.Index(), existing.Term(), entry.Term())
-			l.Truncate(entry.Index())
+			l.truncate(entry.Index())
 			toAppend = entries[i:]
 			break
 		}
@@ -123,16 +140,73 @@ func (l *PersistentLog) AppendEntries(entries ...*LogEntry) uint64 {
 		l.logger.Fatalf(appendEntriesErrorFormat, err.Error())
 	}
 
-	l.PersistEntries(toAppend...)
+	l.persistEntries(toAppend...)
 	l.vlog.AppendEntries(toAppend...)
 
 	if len(toAppend) != 0 {
 		return toAppend[len(toAppend)-1].Index()
 	}
+
 	return 0
 }
 
 func (l *PersistentLog) Truncate(index uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.truncate(index)
+}
+
+func (l *PersistentLog) LastTerm() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.vlog.LastTerm()
+}
+
+func (l *PersistentLog) FirstIndex() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.vlog.FirstIndex()
+}
+
+func (l *PersistentLog) LastIndex() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.vlog.LastIndex()
+}
+
+func (l *PersistentLog) Path() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.path
+}
+
+func (l *PersistentLog) File() *os.File {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.file
+}
+
+func (l *PersistentLog) Size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.vlog.Size()
+}
+
+func (l *PersistentLog) persistEntries(entries ...*LogEntry) {
+	// Expects log mutex to be locked - not concurrent safe.
+	for _, entry := range entries {
+		var err error
+		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
+			l.logger.Fatalf(appendEntriesErrorFormat, err)
+		}
+		if _, err = entry.Encode(l.file); err != nil {
+			l.logger.Fatalf(appendEntriesErrorFormat, err)
+		}
+	}
+}
+
+func (l *PersistentLog) truncate(index uint64) {
+	// Expects log mutex to be locked - not concurrent safe.
 	if l.file == nil {
 		l.logger.Fatalf(truncateErrorFormat, "log is not open")
 	}
@@ -151,40 +225,4 @@ func (l *PersistentLog) Truncate(index uint64) {
 	}
 
 	l.logger.Debugf("truncated log from index %d to index %d", index, lastIndex)
-}
-
-func (l *PersistentLog) LastTerm() uint64 {
-	return l.vlog.LastTerm()
-}
-
-func (l *PersistentLog) FirstIndex() uint64 {
-	return l.vlog.FirstIndex()
-}
-
-func (l *PersistentLog) LastIndex() uint64 {
-	return l.vlog.LastIndex()
-}
-
-func (l *PersistentLog) Path() string {
-	return l.path
-}
-
-func (l *PersistentLog) File() *os.File {
-	return l.file
-}
-
-func (l *PersistentLog) Size() int {
-	return l.vlog.Size()
-}
-
-func (l *PersistentLog) PersistEntries(entries ...*LogEntry) {
-	for _, entry := range entries {
-		var err error
-		if entry.offset, err = l.file.Seek(0, os.SEEK_CUR); err != nil {
-			l.logger.Fatalf(appendEntriesErrorFormat, err)
-		}
-		if _, err = entry.Encode(l.file); err != nil {
-			l.logger.Fatalf(appendEntriesErrorFormat, err)
-		}
-	}
 }

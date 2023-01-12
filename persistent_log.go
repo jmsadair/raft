@@ -28,7 +28,7 @@ type PersistentLog struct {
 }
 
 func NewPersistentLog(path string) *PersistentLog {
-	return &PersistentLog{path: filepath.Join(path, "log"), vlog: NewVolatileLog(), logger: logger.GetLogger()}
+	return &PersistentLog{path: filepath.Join(path, "log"), vlog: NewVolatileLog(), logger: logger.DefaultLogger()}
 }
 
 func (l *PersistentLog) Open() {

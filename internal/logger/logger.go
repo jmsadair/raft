@@ -5,57 +5,17 @@ import (
 	"io"
 	"log"
 	"os"
-	"sync"
 )
 
 var (
-	writer io.Writer = os.Stderr
-	prefix string    = "raft "
-	flag   int       = log.LstdFlags
-	level  Level     = Debug
-	logger *Logger   = NewWithLevel(level, writer, prefix, flag)
-	mu     sync.Mutex
+	defaultWriter io.Writer = os.Stderr
+	defaultPrefix string    = "raft "
+	defaultFlag   int       = log.LstdFlags
+	defaultLevel  Level     = Debug
 )
 
-func SetDefaultWriter(newWriter io.Writer) {
-	mu.Lock()
-	defer mu.Unlock()
-	writer = newWriter
-}
-
-func SetDefaultPrefix(newPrefix string) {
-	mu.Lock()
-	defer mu.Unlock()
-	prefix = newPrefix
-}
-
-func SetDefaultFlag(newFlag int) {
-	mu.Lock()
-	defer mu.Unlock()
-	flag = newFlag
-}
-
-func SetDefaultLevel(newLevel Level) {
-	mu.Lock()
-	defer mu.Unlock()
-	level = newLevel
-}
-
-func GetLogger() Logger {
-	mu.Lock()
-	defer mu.Unlock()
-	return *logger
-}
-
-func SetLogger(l Logger) {
-	mu.Lock()
-	defer mu.Unlock()
-	logger = &l
-}
-
-type Logger struct {
-	level Level
-	base  *log.Logger
+func DefaultLogger() Logger {
+	return Logger{level: defaultLevel, base: log.New(defaultWriter, defaultPrefix, defaultFlag)}
 }
 
 type Level int32
@@ -67,6 +27,11 @@ const (
 	Error
 	Fatal
 )
+
+type Logger struct {
+	level Level
+	base  *log.Logger
+}
 
 func (l Level) String() string {
 	switch l {

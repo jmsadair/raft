@@ -40,3 +40,19 @@ func (p *Peer) RequestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteRespo
 	}
 	return p.client.RequestVote(context.Background(), request, nil)
 }
+
+func (p *Peer) Id() string {
+	return p.id
+}
+
+func (p *Peer) SetId(id string) {
+	p.id = id
+}
+
+func (p *Peer) Address() string {
+	return p.address
+}
+
+func (p *Peer) SetAddress(address string) {
+	p.address = address
+}

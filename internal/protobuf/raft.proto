@@ -35,6 +35,6 @@ message RequestVoteResponse {
 }
 
 service Raft {
-  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
-  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse) {}
+    rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
+    rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse) {}
 }

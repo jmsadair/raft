@@ -1,0 +1,26 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Format
+
+on:
+  push:
+    branches: [ "dev" ]
+  pull_request:
+    branches: [ "dev" ]
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install clang-format
+        run: sudo apt install clang-format
+      - name: Format .proto files
+        run: clang-format -i internal/protobuf/*.proto
+      - name: Commit clang-format changes
+        run: |
+          git config --global user.name 'James Adair'
+          git config --global user.email 'jmsadair@gmail.com'
+          git commit -am "Committing clang-format changes'"
+          git push

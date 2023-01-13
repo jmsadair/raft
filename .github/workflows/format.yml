@@ -18,7 +18,11 @@ jobs:
         run: sudo apt install clang-format
       - name: Format .proto files
         run: clang-format -i internal/protobuf/*.proto
+      - name: Check for modified files
+        id: git-check
+        run: echo ::set-output name=modified::$(if [ -n "$(git status --porcelain)" ]; then echo "true"; else echo "false"; fi)
       - name: Commit clang-format changes
+        if: steps.git-check.outputs.modified == 'true'
         run: |
           git config --global user.name 'James Adair'
           git config --global user.email 'jmsadair@gmail.com'

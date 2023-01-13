@@ -22,5 +22,5 @@ jobs:
         run: |
           git config --global user.name 'James Adair'
           git config --global user.email 'jmsadair@gmail.com'
-          git commit -am "Committing clang-format changes'"
+          git commit -am "Committing clang-format changes"
           git push

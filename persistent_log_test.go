@@ -56,10 +56,10 @@ func TestAppendEntries(t *testing.T) {
 
 	validateLogSize(t, log.Size(), 2)
 
-	entry1 = log.GetEntry(entry1Index)
+	entry1, _ = log.GetEntry(entry1Index)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
-	entry2 = log.GetEntry(entry2Index)
+	entry2, _ = log.GetEntry(entry2Index)
 	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
 
 	assert.Equal(t, log.LastTerm(), entry2Term)
@@ -87,7 +87,7 @@ func TestTruncate(t *testing.T) {
 
 	checkLog := func() {
 		validateLogSize(t, log.Size(), 1)
-		entry1 = log.GetEntry(entry1Index)
+		entry1, _ = log.GetEntry(entry1Index)
 		validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 	}
 
@@ -139,13 +139,13 @@ func TestAppendEntriesTruncate(t *testing.T) {
 	checkLog := func() {
 		validateLogSize(t, log.Size(), 3)
 
-		entry1 = log.GetEntry(entry1Index)
+		entry1, _ = log.GetEntry(entry1Index)
 		validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
-		entry2 = log.GetEntry(entry2Index)
+		entry2, _ = log.GetEntry(entry2Index)
 		validateLogEntry(t, entry2, entry4Index, entry4Term, entry4Data)
 
-		entry3 = log.GetEntry(entry3Index)
+		entry3, _ = log.GetEntry(entry3Index)
 		validateLogEntry(t, entry3, entry5Index, entry5Term, entry5Data)
 	}
 

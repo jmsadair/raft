@@ -17,7 +17,7 @@ func TestVolatileAppendEntries(t *testing.T) {
 
 	log.AppendEntries(entry1)
 
-	entry1, err = log.GetEntry(entry1Index)
+	entry1 = log.GetEntry(entry1Index)
 
 	assert.NoError(t, err)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
@@ -47,9 +47,8 @@ func TestVolatileTruncate(t *testing.T) {
 
 	log.AppendEntries(entry1, entry2, entry3)
 
-	err := log.Truncate(entry2Index)
+	log.Truncate(entry2Index)
 
-	assert.NoError(t, err)
 	assert.Equal(t, log.Size(), 1)
 	assert.Equal(t, log.FirstIndex(), entry1Index)
 	assert.Equal(t, log.LastIndex(), entry1Index)

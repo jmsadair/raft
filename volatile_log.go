@@ -1,9 +1,5 @@
 package raft
 
-import "fmt"
-
-const invalidIndexErrorFormat = "invalid index: log does not contain index %d"
-
 type VolatileLog struct {
 	entries []*LogEntry
 }
@@ -41,19 +37,15 @@ func (l *VolatileLog) AppendEntries(entries ...*LogEntry) {
 	l.entries = append(l.entries, entries...)
 }
 
-func (l *VolatileLog) GetEntry(index uint64) (*LogEntry, error) {
+func (l *VolatileLog) GetEntry(index uint64) *LogEntry {
 	if !l.Contains(index) {
-		return nil, fmt.Errorf(invalidIndexErrorFormat, index)
+		return nil
 	}
-	return l.entries[index-l.entries[0].Index()], nil
+	return l.entries[index-l.entries[0].Index()]
 }
 
-func (l *VolatileLog) Truncate(from uint64) error {
-	if !l.Contains(from) {
-		return fmt.Errorf("invalid index: log does not contain %d", from)
-	}
+func (l *VolatileLog) Truncate(from uint64) {
 	l.entries = l.entries[:from-l.entries[0].Index()]
-	return nil
 }
 
 func (l *VolatileLog) Clear() {

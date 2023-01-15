@@ -29,6 +29,10 @@ func (e *LogEntry) Data() []byte {
 	return e.entry.GetData()
 }
 
+func (e *LogEntry) Entry() *pb.LogEntry {
+	return e.entry
+}
+
 func (e *LogEntry) IsConflict(other *LogEntry) bool {
 	return e.entry.GetIndex() == other.entry.GetIndex() && e.entry.GetTerm() != other.entry.GetTerm()
 }

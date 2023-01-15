@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func NewTestLog(t *testing.T) *PersistentLog {
+func NewTestLog(t *testing.T) *Log {
 	path := t.TempDir()
-	log := NewPersistentLog(path)
+	log := NewLog(path)
 	t.Cleanup(func() { log.Close() })
 	log.Open()
 	return log

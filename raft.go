@@ -31,40 +31,44 @@ func (s State) String() string {
 }
 
 type Raft struct {
-	// Timing and logger configuration.
-	config *Config
-
-	// The ID of this raft server.
-	id string
-
-	// The current leader of the raft cluster.
-	leader string
-
-	// The state of this raft server: leader, follower, candidate.
-	state State
-
-	// Maps ID of peer to peer.
-	peers map[string]*Peer
-
-	// Persistent state on all servers.
+	config      Config
+	id          string
+	peers       map[string]*Peer
+	state       State
 	log         Log
-	commitIndex uint64
-	lastApplied uint64
-
-	// Volatile state on all servers
 	currentTerm uint64
 	votedFor    string
-
-	// Volatile state on server that is leader.
-	nextIndex  map[string]uint64
-	matchIndex map[string]uint64
-
-	// Time at which server was last contacted.
 	lastContact time.Time
+	logger      logger.Logger
+	mu          sync.RWMutex
+}
 
-	mu sync.Mutex
+func (r *Raft) State() State {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.state
+}
 
-	logger logger.Logger
+func (r *Raft) LastContact() time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lastContact
+}
+
+func (r *Raft) CurrentTerm() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.currentTerm
+}
+
+func (r *Raft) VotedFor() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.votedFor
+}
+
+func (r *Raft) Quorum() int {
+	return len(r.peers)/2 + 1
 }
 
 func (r *Raft) Submit(command any) error {
@@ -76,22 +80,22 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	var prevLogEntry *LogEntry
 	var err error
 
-	response := &pb.AppendEntriesResponse{Term: r.getCurrentTerm(), Success: false}
-	currentTerm := r.getCurrentTerm()
+	response := &pb.AppendEntriesResponse{
+		Term:    r.CurrentTerm(),
+		Success: false,
+	}
 
-	if request.GetTerm() < currentTerm {
+	if request.GetTerm() < r.CurrentTerm() {
 		r.logger.Debugf("rejecting request to append entries: out of date term: term = %d, request term = %d",
-			currentTerm, request.GetTerm())
+			r.CurrentTerm(), request.GetTerm())
 		return response
 	}
 
-	if request.GetTerm() > currentTerm {
+	if request.GetTerm() > r.CurrentTerm() {
 		r.setCurrentTerm(request.GetTerm())
-		response.Term = r.getCurrentTerm()
+		response.Term = r.CurrentTerm()
 		defer r.becomeFollower()
 	}
-
-	r.leader = request.GetLeaderId()
 
 	if prevLogEntry, err = r.log.GetEntry(request.GetPrevLogIndex()); err != nil {
 		r.logger.Debugf("rejecting request to append entries: previous log entry at index %d does not exist: %s",
@@ -102,119 +106,199 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	if prevLogEntry.Term() != request.GetPrevLogTerm() {
 		r.logger.Debugf("rejecting request to append entries: previous log term does not match: local = %d, remote = %d",
 			prevLogEntry.Term(), request.GetPrevLogTerm())
+		return response
 	}
 
-	toAppend := make([]*LogEntry, len(request.GetEntries()))
+	var toAppend []*LogEntry
+	entries := make([]*LogEntry, len(request.GetEntries()))
+
 	for i, entry := range request.GetEntries() {
-		toAppend[i] = &LogEntry{entry: entry}
+		entries[i] = &LogEntry{entry: entry}
+	}
+
+	for i, entry := range entries {
+		if r.log.LastIndex() < entry.Index() {
+			toAppend = entries[i:]
+			break
+		}
+		existing, _ := r.log.GetEntry(entry.Index())
+		if !existing.IsConflict(entry) {
+			continue
+		}
+		if err = r.log.Truncate(entry.Index()); err != nil {
+			r.logger.Fatalf("error truncating log: %s", err.Error())
+		}
+		toAppend = entries[i:]
+		break
 	}
 
 	if lastAppendIndex, err = r.log.AppendEntries(toAppend...); err != nil {
 		r.logger.Fatalf("error appending entries to log: %s", err.Error())
 	}
 
-	if request.GetLeaderCommit() > r.commitIndex {
-		r.commitIndex = util.Min(request.GetLeaderCommit(), lastAppendIndex)
+	if request.GetLeaderCommit() > r.log.GetCommitIndex() {
+		r.log.SetCommitIndex(util.Min(request.GetLeaderCommit(), lastAppendIndex))
 	}
 
 	response.Success = true
-
 	r.setLastContact(time.Now())
 
 	return response
 }
 
+func (r *Raft) sendAppendEntries() {
+	for _, peer := range r.peers {
+		go func(peer *Peer) {
+			nextIndex := peer.getNextIndex()
+			prevLogIndex := r.log.LastIndex()
+			prevLogTerm := r.log.LastTerm()
+
+			entries := make([]*pb.LogEntry, 0)
+			for index := nextIndex; index <= prevLogIndex; index++ {
+				entry, err := r.log.GetEntry(index)
+				if err != nil {
+					r.logger.Fatalf("error getting entry from log: %s", err.Error())
+				}
+				entries = append(entries, entry.Entry())
+			}
+
+			request := &pb.AppendEntriesRequest{
+				Term:         r.CurrentTerm(),
+				LeaderId:     r.id,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      entries,
+				LeaderCommit: r.log.GetCommitIndex(),
+			}
+
+			response, err := peer.AppendEntries(request)
+			if err != nil {
+				r.logger.Errorf("error appending entries to peer: %s", err.Error())
+				return
+			}
+
+			if response.GetTerm() > r.CurrentTerm() {
+				r.setCurrentTerm(request.GetTerm())
+				response.Term = r.CurrentTerm()
+				r.becomeFollower()
+				return
+			}
+
+			if !response.GetSuccess() {
+				peer.setNextIndex(prevLogIndex - 1)
+				return
+			}
+
+			peer.setNextIndex(prevLogIndex + uint64(len(entries)))
+			peer.setMatchIndex(prevLogIndex + uint64(len(entries)) - 1)
+		}(peer)
+	}
+}
+
 func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteResponse {
-	response := &pb.RequestVoteResponse{Term: r.getCurrentTerm(), VoteGranted: false}
+	response := &pb.RequestVoteResponse{
+		Term:        r.CurrentTerm(),
+		VoteGranted: false,
+	}
 
-	currentTerm := r.getCurrentTerm()
-	votedFor := r.getVotedFor()
-	lastTerm := r.log.LastTerm()
-	lastIndex := r.log.LastIndex()
-
-	if request.GetTerm() < currentTerm {
-		r.logger.Debugf("rejected vote request: out of date term: term = %d, candidate term = %d", currentTerm, request.GetTerm())
+	if request.GetTerm() < r.CurrentTerm() {
+		r.logger.Debugf("rejected vote request: out of date term: term = %d, candidate term = %d",
+			r.CurrentTerm(), request.GetTerm())
 		return response
 	}
 
-	if request.GetTerm() > currentTerm {
+	if request.GetTerm() > r.CurrentTerm() {
 		r.setCurrentTerm(request.GetTerm())
-		response.Term = r.getCurrentTerm()
-		currentTerm = r.getCurrentTerm()
+		response.Term = r.CurrentTerm()
 		defer r.becomeFollower()
 	}
 
-	if currentTerm == request.GetTerm() && votedFor != "" && votedFor != request.GetCandidateId() {
-		r.logger.Debugf("rejecting vote request: duplicate vote: %s already voted for %s, candidate ID = %s",
-			r.id, votedFor, request.GetCandidateId())
-		return response
-	}
-
-	if request.GetTerm() < lastTerm || (request.GetLastLogTerm() == lastTerm && lastIndex > request.GetLastLogIndex()) {
+	if request.GetTerm() < r.log.LastTerm() || (request.GetLastLogTerm() == r.log.LastTerm() && r.log.LastIndex() > request.GetLastLogIndex()) {
 		r.logger.Debugf("rejecting vote request: out of date log: lastIndex = %d, lastTerm = %d, candidate lastIndex = %d, candidate lastTerm = %d",
-			lastIndex, lastTerm, request.GetLastLogIndex(), request.GetLastLogTerm())
+			r.log.LastIndex(), r.log.LastTerm(), request.GetLastLogIndex(), request.GetLastLogTerm())
 		return response
 	}
 
 	r.setVotedFor(request.GetCandidateId())
 	response.VoteGranted = true
+	r.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), r.CurrentTerm())
 
-	r.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), currentTerm)
 	return response
 }
 
 func (r *Raft) leaderLoop() {
-	panic("leaderLoop: not implemented")
+	heartbeat := time.NewTicker(r.config.HeartbeatInterval)
+	for r.State() == Leader {
+		select {
+		case <-heartbeat.C:
+			r.sendAppendEntries()
+			heartbeat.Reset(r.config.HeartbeatInterval)
+		default:
+			for i := r.log.GetCommitIndex(); i < r.log.LastIndex(); i++ {
+				if entry, _ := r.log.GetEntry(i); entry == nil || entry.Term() != r.CurrentTerm() {
+					break
+				}
+				matches := 1
+				for _, peer := range r.peers {
+					if peer.getMatchIndex() >= i {
+						matches += 1
+					}
+				}
+				if matches >= r.Quorum() {
+					r.log.SetCommitIndex(i)
+				}
+			}
+		}
+	}
 }
 
 func (r *Raft) followerLoop() {
 	electionTimeout := util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
 
-	for {
+	for r.State() == Follower {
 		select {
 		case <-electionTimeout:
 			electionTimeout = util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
-			if time.Since(r.getLastContact()) > r.config.ElectionTimeout {
+			if time.Since(r.LastContact()) > r.config.ElectionTimeout {
 				r.becomeCandidate()
 				return
 			}
 		default:
-			if r.getState() != Follower {
-				return
-			}
 		}
 	}
 }
 
 func (r *Raft) candidateLoop() {
 	votesReceived := 1
-	r.setCurrentTerm(r.getCurrentTerm() + 1)
-
-	request := pb.RequestVoteRequest{
-		CandidateId:  r.id,
-		Term:         r.getCurrentTerm(),
-		LastLogIndex: r.log.LastIndex(),
-		LastLogTerm:  r.log.LastTerm()}
+	r.setCurrentTerm(r.CurrentTerm() + 1)
 
 	responses := make(chan *pb.RequestVoteResponse)
 	electionTimeout := util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
 
-	collectPeerVote := func(peer *Peer, responses chan<- *pb.RequestVoteResponse) {
-		response, err := peer.RequestVote(&request)
-		if err != nil {
-			r.logger.Errorf("error requesting vote from peer %s: %s", peer.id, err.Error())
-		}
-		responses <- response
-	}
-
 	for _, peer := range r.peers {
-		go collectPeerVote(peer, responses)
+		go func(peer *Peer) {
+			request := &pb.RequestVoteRequest{
+				CandidateId:  r.id,
+				Term:         r.CurrentTerm(),
+				LastLogIndex: r.log.LastIndex(),
+				LastLogTerm:  r.log.LastTerm(),
+			}
+
+			response, err := peer.RequestVote(request)
+
+			if err != nil {
+				r.logger.Errorf("error requesting vote from peer %s: %s", peer.Id(), err.Error())
+				return
+			}
+
+			responses <- response
+		}(peer)
 	}
 
-	for {
+	for r.State() == Candidate {
 		select {
 		case response := <-responses:
-			if response.GetTerm() > r.getCurrentTerm() {
+			if response.GetTerm() > r.CurrentTerm() {
 				r.setCurrentTerm(response.GetTerm())
 				r.becomeFollower()
 				return
@@ -222,23 +306,20 @@ func (r *Raft) candidateLoop() {
 			if response.VoteGranted {
 				votesReceived++
 			}
-			if votesReceived >= r.quorum() {
+			if votesReceived >= r.Quorum() {
 				r.becomeLeader()
 				return
 			}
 		case <-electionTimeout:
 			return
 		default:
-			if r.getState() != Candidate {
-				return
-			}
 		}
 	}
 }
 
 func (r *Raft) mainLoop() {
 	for {
-		switch r.getState() {
+		switch r.State() {
 		case Candidate:
 			r.candidateLoop()
 		case Leader:
@@ -256,8 +337,10 @@ func (r *Raft) becomeCandidate() {
 
 func (r *Raft) becomeLeader() {
 	r.setState(Leader)
-	r.nextIndex = make(map[string]uint64)
-	r.matchIndex = make(map[string]uint64)
+	for _, peer := range r.peers {
+		peer.setNextIndex(r.log.LastIndex() + 1)
+		peer.setMatchIndex(0)
+	}
 	r.logger.Infof("%s has entered the leader state", r.id)
 }
 
@@ -267,8 +350,10 @@ func (r *Raft) becomeFollower() {
 	r.logger.Infof("%s has entered the follower state", r.id)
 }
 
-func (r *Raft) quorum() int {
-	return len(r.peers)/2 + 1
+func (r *Raft) setLastContact(time time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastContact = time
 }
 
 func (r *Raft) setState(state State) {
@@ -277,44 +362,14 @@ func (r *Raft) setState(state State) {
 	r.state = state
 }
 
-func (r *Raft) getState() State {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.state
-}
-
 func (r *Raft) setCurrentTerm(term uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.currentTerm = term
 }
 
-func (r *Raft) getCurrentTerm() uint64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.currentTerm
-}
-
 func (r *Raft) setVotedFor(votedFor string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.votedFor = votedFor
-}
-
-func (r *Raft) getVotedFor() string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.votedFor
-}
-
-func (r *Raft) setLastContact(time time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastContact = time
-}
-
-func (r *Raft) getLastContact() time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastContact
 }

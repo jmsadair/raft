@@ -34,6 +34,7 @@ type Raft struct {
 	config      Config
 	id          string
 	peers       map[string]*Peer
+	server      *raftServer
 	state       State
 	log         Log
 	currentTerm uint64
@@ -41,6 +42,10 @@ type Raft struct {
 	lastContact time.Time
 	logger      logger.Logger
 	mu          sync.RWMutex
+}
+
+func (r *Raft) Id() string {
+	return r.id
 }
 
 func (r *Raft) State() State {
@@ -136,7 +141,7 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 		r.logger.Fatalf("error appending entries to log: %s", err.Error())
 	}
 
-	if request.GetLeaderCommit() > r.log.GetCommitIndex() {
+	if request.GetLeaderCommit() > r.log.CommitIndex() {
 		r.log.SetCommitIndex(util.Min(request.GetLeaderCommit(), lastAppendIndex))
 	}
 
@@ -158,17 +163,18 @@ func (r *Raft) sendAppendEntries() {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
 					r.logger.Fatalf("error getting entry from log: %s", err.Error())
+					return
 				}
 				entries = append(entries, entry.Entry())
 			}
 
 			request := &pb.AppendEntriesRequest{
 				Term:         r.CurrentTerm(),
-				LeaderId:     r.id,
+				LeaderId:     r.Id(),
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
 				Entries:      entries,
-				LeaderCommit: r.log.GetCommitIndex(),
+				LeaderCommit: r.log.CommitIndex(),
 			}
 
 			response, err := peer.AppendEntries(request)
@@ -227,14 +233,16 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 }
 
 func (r *Raft) leaderLoop() {
-	heartbeat := time.NewTicker(r.config.HeartbeatInterval)
+	heartbeatInterval := r.config.HeartbeatInterval
+	heartbeat := time.NewTicker(heartbeatInterval)
+
 	for r.State() == Leader {
 		select {
 		case <-heartbeat.C:
 			r.sendAppendEntries()
-			heartbeat.Reset(r.config.HeartbeatInterval)
+			heartbeat.Reset(heartbeatInterval)
 		default:
-			for i := r.log.GetCommitIndex(); i < r.log.LastIndex(); i++ {
+			for i := r.log.CommitIndex(); i < r.log.LastIndex(); i++ {
 				if entry, _ := r.log.GetEntry(i); entry == nil || entry.Term() != r.CurrentTerm() {
 					break
 				}
@@ -253,13 +261,14 @@ func (r *Raft) leaderLoop() {
 }
 
 func (r *Raft) followerLoop() {
-	electionTimeout := util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
+	electionTimeout := r.config.ElectionTimeout
+	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
 	for r.State() == Follower {
 		select {
-		case <-electionTimeout:
-			electionTimeout = util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
-			if time.Since(r.LastContact()) > r.config.ElectionTimeout {
+		case <-electionTimer:
+			electionTimer = util.RandomTimeout(electionTimeout, electionTimeout*2)
+			if time.Since(r.LastContact()) > electionTimeout {
 				r.becomeCandidate()
 				return
 			}
@@ -273,12 +282,14 @@ func (r *Raft) candidateLoop() {
 	r.setCurrentTerm(r.CurrentTerm() + 1)
 
 	responses := make(chan *pb.RequestVoteResponse)
-	electionTimeout := util.RandomTimeout(r.config.ElectionTimeout, r.config.ElectionTimeout*2)
+
+	electionTimeout := r.config.ElectionTimeout
+	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
 	for _, peer := range r.peers {
 		go func(peer *Peer) {
 			request := &pb.RequestVoteRequest{
-				CandidateId:  r.id,
+				CandidateId:  r.Id(),
 				Term:         r.CurrentTerm(),
 				LastLogIndex: r.log.LastIndex(),
 				LastLogTerm:  r.log.LastTerm(),
@@ -310,7 +321,7 @@ func (r *Raft) candidateLoop() {
 				r.becomeLeader()
 				return
 			}
-		case <-electionTimeout:
+		case <-electionTimer:
 			return
 		default:
 		}

@@ -24,7 +24,7 @@ type Log struct {
 	firstIndex  uint64
 	lastIndex   uint64
 	lastTerm    uint64
-	mu          sync.Mutex
+	mu          sync.RWMutex
 }
 
 func NewLog(path string) *Log {
@@ -86,8 +86,8 @@ func (l *Log) Close() error {
 
 // IsOpen returns true if the log is open and false otherwise.
 func (l *Log) IsOpen() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
 	return !(l.file == nil)
 }
@@ -96,8 +96,8 @@ func (l *Log) IsOpen() bool {
 // the log. Require that a log entry with the provided index exists
 // in the log and that the log is open.
 func (l *Log) GetEntry(index uint64) (*LogEntry, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 
 	if l.file == nil {
 		return nil, errors.WrapError(nil, errLogClosed, l.path)
@@ -114,8 +114,8 @@ func (l *Log) GetEntry(index uint64) (*LogEntry, error) {
 // Contains returns true if the log contains the provided index
 // and false otherwise.
 func (l *Log) Contains(index uint64) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.firstIndex <= index && index <= l.lastIndex
 }
 
@@ -192,46 +192,46 @@ func (l *Log) Truncate(index uint64) error {
 // LastTerm returns the last term written to the log. If the log is
 // empty, returns 0.
 func (l *Log) LastTerm() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.lastTerm
 }
 
 // FirstIndex returns the earliest index written to the log. If the log
 // is empty, returns 0.
 func (l *Log) FirstIndex() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.firstIndex
 }
 
 // LastIndex returns the last index written to the log. If the log is empty,
 // returns 0.
 func (l *Log) LastIndex() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.lastIndex
 }
 
 // Path returns the path to the file associated with the log.
 func (l *Log) Path() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.path
 }
 
 // File returns the file that is used to persist the log. If the log is
 // not open, returns nil.
 func (l *Log) File() *os.File {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.file
 }
 
 // Size returns the number of log entries in the log.
 func (l *Log) Size() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return len(l.entries)
 }
 
@@ -243,9 +243,9 @@ func (l *Log) SetCommitIndex(index uint64) {
 	l.commitIndex = index
 }
 
-// GetCommitIndex returns the commit index associated with the log.
-func (l *Log) GetCommitIndex() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// CommitIndex returns the commit index associated with the log.
+func (l *Log) CommitIndex() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.commitIndex
 }

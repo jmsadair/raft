@@ -2,21 +2,9 @@ package logger
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 )
-
-var (
-	defaultWriter io.Writer = os.Stderr
-	defaultPrefix string    = "raft "
-	defaultFlag   int       = log.LstdFlags
-	defaultLevel  Level     = Debug
-)
-
-func DefaultLogger() Logger {
-	return Logger{level: defaultLevel, base: log.New(defaultWriter, defaultPrefix, defaultFlag)}
-}
 
 type Level int32
 
@@ -29,8 +17,8 @@ const (
 )
 
 type Logger struct {
-	level Level
-	base  *log.Logger
+	options options
+	base    *log.Logger
 }
 
 func (l Level) String() string {
@@ -50,16 +38,31 @@ func (l Level) String() string {
 	}
 }
 
-func New(w io.Writer, prefix string, flag int) *Logger {
-	return &Logger{level: Debug, base: log.New(w, prefix, flag)}
-}
+func NewLogger(opts ...Option) (*Logger, error) {
+	var options options
+	for _, opt := range opts {
+		if err := opt(&options); err != nil {
+			return nil, err
+		}
+	}
 
-func NewWithLevel(level Level, w io.Writer, prefix string, flag int) *Logger {
-	return &Logger{level: level, base: log.New(w, prefix, flag)}
+	if options.writer == nil {
+		options.writer = defaultWriter
+	}
+
+	if options.flag == 0 {
+		options.flag = defaultFlag
+	}
+
+	if options.prefix == "" {
+		options.prefix = defaultPrefix
+	}
+
+	return &Logger{options: options, base: log.New(options.writer, options.prefix, options.flag)}, nil
 }
 
 func (l *Logger) Debug(args ...any) {
-	if l.level > Debug {
+	if l.options.level > Debug {
 		return
 	}
 	l.print("DEBUG: ", args)
@@ -70,7 +73,7 @@ func (l *Logger) Debugf(format string, args ...any) {
 }
 
 func (l *Logger) Info(args ...any) {
-	if l.level > Info {
+	if l.options.level > Info {
 		return
 	}
 	l.print("INFO: ", args)
@@ -81,7 +84,7 @@ func (l *Logger) Infof(format string, args ...any) {
 }
 
 func (l *Logger) Warn(args ...any) {
-	if l.level > Warn {
+	if l.options.level > Warn {
 		return
 	}
 	l.print("WARN: ", args)
@@ -92,7 +95,7 @@ func (l *Logger) Warnf(format string, args ...any) {
 }
 
 func (l *Logger) Error(args ...any) {
-	if l.level > Error {
+	if l.options.level > Error {
 		return
 	}
 	l.print("ERROR: ", args)
@@ -103,7 +106,7 @@ func (l *Logger) Errorf(format string, args ...any) {
 }
 
 func (l *Logger) Fatal(args ...any) {
-	if l.level > Fatal {
+	if l.options.level > Fatal {
 		return
 	}
 	l.print("FATAL: ", args)

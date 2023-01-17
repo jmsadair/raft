@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-type raftServer struct {
+type Server struct {
 	pb.UnimplementedRaftServer
 	listenInterface string
 	listener        net.Listener
@@ -17,11 +17,11 @@ type raftServer struct {
 	raft            *Raft
 }
 
-func NewServer(raft *Raft, listenInterface string) *raftServer {
-	return &raftServer{listenInterface: listenInterface, raft: raft}
+func NewServer(raft *Raft, listenInterface string) *Server {
+	return &Server{listenInterface: listenInterface, raft: raft}
 }
 
-func (s *raftServer) Start() error {
+func (s *Server) Start() error {
 	listener, err := net.Listen("tcp", s.listenInterface)
 	if err != nil {
 		return errors.WrapError(err, "failed to start server: %s", err.Error())
@@ -33,7 +33,7 @@ func (s *raftServer) Start() error {
 	return nil
 }
 
-func (s *raftServer) Stop() error {
+func (s *Server) Stop() error {
 	s.server.GracefulStop()
 	if err := s.listener.Close(); err != nil {
 		return errors.WrapError(err, "failed to stop server: %s", err.Error())
@@ -41,10 +41,10 @@ func (s *raftServer) Stop() error {
 	return nil
 }
 
-func (s *raftServer) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	return s.raft.appendEntries(request), nil
 }
 
-func (s *raftServer) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	return s.raft.requestVote(request), nil
 }

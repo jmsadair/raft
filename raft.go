@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jmsadair/raft/internal/errors"
 	logger "github.com/jmsadair/raft/internal/logger"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"github.com/jmsadair/raft/internal/util"
@@ -15,6 +16,7 @@ const (
 	Leader State = iota
 	Follower
 	Candidate
+	Stopped
 )
 
 func (s State) String() string {
@@ -25,23 +27,61 @@ func (s State) String() string {
 		return "follower"
 	case Candidate:
 		return "candidate"
+	case Stopped:
+		return "stopped"
 	default:
 		panic("invalid state")
 	}
 }
 
 type Raft struct {
-	config      Config
 	id          string
+	options     options
 	peers       map[string]*Peer
-	server      *raftServer
-	state       State
+	server      *Server
 	log         Log
+	storage     Storage
+	state       State
+	commitIndex uint64
+	lastApplied uint64
 	currentTerm uint64
 	votedFor    string
 	lastContact time.Time
-	logger      logger.Logger
 	mu          sync.RWMutex
+}
+
+func NewRaft(id string, peers []Peer, server Server, log Log, storage Storage, opts ...Option) (*Raft, error) {
+	var options options
+	for _, opt := range opts {
+		if err := opt(&options); err != nil {
+			return nil, errors.WrapError(err, "failed to create new raft: %s", err.Error())
+		}
+	}
+
+	if options.logger == nil {
+		logger, err := logger.NewLogger()
+		if err != nil {
+			return nil, errors.WrapError(err, "failed to create new raft: %s", err.Error())
+		}
+		options.logger = logger
+	}
+
+	idToPeer := make(map[string]*Peer)
+	for _, peer := range peers {
+		idToPeer[peer.id] = &peer
+	}
+
+	raft := &Raft{
+		id:      id,
+		options: options,
+		peers:   idToPeer,
+		server:  &server,
+		log:     log,
+		storage: storage,
+		state:   Stopped,
+	}
+
+	return raft, nil
 }
 
 func (r *Raft) Id() string {
@@ -52,6 +92,12 @@ func (r *Raft) State() State {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.state
+}
+
+func (r *Raft) CommitIndex() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.commitIndex
 }
 
 func (r *Raft) LastContact() time.Time {
@@ -81,7 +127,6 @@ func (r *Raft) Submit(command any) error {
 }
 
 func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntriesResponse {
-	var lastAppendIndex uint64
 	var prevLogEntry *LogEntry
 	var err error
 
@@ -91,7 +136,7 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	}
 
 	if request.GetTerm() < r.CurrentTerm() {
-		r.logger.Debugf("rejecting request to append entries: out of date term: term = %d, request term = %d",
+		r.options.logger.Debugf("rejecting request to append entries: out of date term: term = %d, request term = %d",
 			r.CurrentTerm(), request.GetTerm())
 		return response
 	}
@@ -103,13 +148,13 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	}
 
 	if prevLogEntry, err = r.log.GetEntry(request.GetPrevLogIndex()); err != nil {
-		r.logger.Debugf("rejecting request to append entries: previous log entry at index %d does not exist: %s",
+		r.options.logger.Debugf("rejecting request to append entries: previous log entry at index %d does not exist: %s",
 			request.GetPrevLogIndex(), err.Error())
 		return response
 	}
 
 	if prevLogEntry.Term() != request.GetPrevLogTerm() {
-		r.logger.Debugf("rejecting request to append entries: previous log term does not match: local = %d, remote = %d",
+		r.options.logger.Debugf("rejecting request to append entries: previous log term does not match: local = %d, remote = %d",
 			prevLogEntry.Term(), request.GetPrevLogTerm())
 		return response
 	}
@@ -131,18 +176,18 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 			continue
 		}
 		if err = r.log.Truncate(entry.Index()); err != nil {
-			r.logger.Fatalf("error truncating log: %s", err.Error())
+			r.options.logger.Fatalf("error truncating log: %s", err.Error())
 		}
 		toAppend = entries[i:]
 		break
 	}
 
-	if lastAppendIndex, err = r.log.AppendEntries(toAppend...); err != nil {
-		r.logger.Fatalf("error appending entries to log: %s", err.Error())
+	if err = r.log.AppendEntries(toAppend); err != nil {
+		r.options.logger.Fatalf("error appending entries to log: %s", err.Error())
 	}
 
-	if request.GetLeaderCommit() > r.log.CommitIndex() {
-		r.log.SetCommitIndex(util.Min(request.GetLeaderCommit(), lastAppendIndex))
+	if request.GetLeaderCommit() > r.CommitIndex() {
+		r.setCommitIndex(util.Min(request.GetLeaderCommit(), r.log.LastIndex()))
 	}
 
 	response.Success = true
@@ -162,7 +207,7 @@ func (r *Raft) sendAppendEntries() {
 			for index := nextIndex; index <= prevLogIndex; index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
-					r.logger.Fatalf("error getting entry from log: %s", err.Error())
+					r.options.logger.Fatalf("error getting entry from log: %s", err.Error())
 					return
 				}
 				entries = append(entries, entry.Entry())
@@ -174,12 +219,12 @@ func (r *Raft) sendAppendEntries() {
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
 				Entries:      entries,
-				LeaderCommit: r.log.CommitIndex(),
+				LeaderCommit: r.CommitIndex(),
 			}
 
-			response, err := peer.AppendEntries(request)
+			response, err := peer.appendEntries(request)
 			if err != nil {
-				r.logger.Errorf("error appending entries to peer: %s", err.Error())
+				r.options.logger.Errorf("error appending entries to peer: %s", err.Error())
 				return
 			}
 
@@ -208,7 +253,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	}
 
 	if request.GetTerm() < r.CurrentTerm() {
-		r.logger.Debugf("rejected vote request: out of date term: term = %d, candidate term = %d",
+		r.options.logger.Debugf("rejected vote request: out of date term: term = %d, candidate term = %d",
 			r.CurrentTerm(), request.GetTerm())
 		return response
 	}
@@ -220,20 +265,20 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	}
 
 	if request.GetTerm() < r.log.LastTerm() || (request.GetLastLogTerm() == r.log.LastTerm() && r.log.LastIndex() > request.GetLastLogIndex()) {
-		r.logger.Debugf("rejecting vote request: out of date log: lastIndex = %d, lastTerm = %d, candidate lastIndex = %d, candidate lastTerm = %d",
+		r.options.logger.Debugf("rejecting vote request: out of date log: lastIndex = %d, lastTerm = %d, candidate lastIndex = %d, candidate lastTerm = %d",
 			r.log.LastIndex(), r.log.LastTerm(), request.GetLastLogIndex(), request.GetLastLogTerm())
 		return response
 	}
 
 	r.setVotedFor(request.GetCandidateId())
 	response.VoteGranted = true
-	r.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), r.CurrentTerm())
+	r.options.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), r.CurrentTerm())
 
 	return response
 }
 
 func (r *Raft) leaderLoop() {
-	heartbeatInterval := r.config.HeartbeatInterval
+	heartbeatInterval := r.options.heartbeatInterval
 	heartbeat := time.NewTicker(heartbeatInterval)
 
 	for r.State() == Leader {
@@ -242,7 +287,7 @@ func (r *Raft) leaderLoop() {
 			r.sendAppendEntries()
 			heartbeat.Reset(heartbeatInterval)
 		default:
-			for i := r.log.CommitIndex(); i < r.log.LastIndex(); i++ {
+			for i := r.CommitIndex(); i < r.log.LastIndex(); i++ {
 				if entry, _ := r.log.GetEntry(i); entry == nil || entry.Term() != r.CurrentTerm() {
 					break
 				}
@@ -253,7 +298,7 @@ func (r *Raft) leaderLoop() {
 					}
 				}
 				if matches >= r.Quorum() {
-					r.log.SetCommitIndex(i)
+					r.setCommitIndex(i)
 				}
 			}
 		}
@@ -261,7 +306,7 @@ func (r *Raft) leaderLoop() {
 }
 
 func (r *Raft) followerLoop() {
-	electionTimeout := r.config.ElectionTimeout
+	electionTimeout := r.options.electionTimeout
 	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
 	for r.State() == Follower {
@@ -283,7 +328,7 @@ func (r *Raft) candidateLoop() {
 
 	responses := make(chan *pb.RequestVoteResponse)
 
-	electionTimeout := r.config.ElectionTimeout
+	electionTimeout := r.options.electionTimeout
 	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
 	for _, peer := range r.peers {
@@ -295,10 +340,10 @@ func (r *Raft) candidateLoop() {
 				LastLogTerm:  r.log.LastTerm(),
 			}
 
-			response, err := peer.RequestVote(request)
+			response, err := peer.requestVote(request)
 
 			if err != nil {
-				r.logger.Errorf("error requesting vote from peer %s: %s", peer.Id(), err.Error())
+				r.options.logger.Errorf("error requesting vote from peer %s: %s", peer.id, err.Error())
 				return
 			}
 
@@ -343,7 +388,7 @@ func (r *Raft) mainLoop() {
 
 func (r *Raft) becomeCandidate() {
 	r.setState(Candidate)
-	r.logger.Infof("%s has entered the candidate state", r.id)
+	r.options.logger.Infof("%s has entered the candidate state", r.id)
 }
 
 func (r *Raft) becomeLeader() {
@@ -352,13 +397,19 @@ func (r *Raft) becomeLeader() {
 		peer.setNextIndex(r.log.LastIndex() + 1)
 		peer.setMatchIndex(0)
 	}
-	r.logger.Infof("%s has entered the leader state", r.id)
+	r.options.logger.Infof("%s has entered the leader state", r.id)
 }
 
 func (r *Raft) becomeFollower() {
 	r.setVotedFor("")
 	r.setState(Follower)
-	r.logger.Infof("%s has entered the follower state", r.id)
+	r.options.logger.Infof("%s has entered the follower state", r.id)
+}
+
+func (r *Raft) setCommitIndex(index uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commitIndex = index
 }
 
 func (r *Raft) setLastContact(time time.Time) {

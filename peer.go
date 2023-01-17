@@ -22,7 +22,7 @@ func NewPeer(id, address string) *Peer {
 	return &Peer{id: id, address: address}
 }
 
-func (p *Peer) Connect() error {
+func (p *Peer) connect() error {
 	conn, err := grpc.Dial(p.address, nil)
 	if err != nil {
 		return err
@@ -31,34 +31,18 @@ func (p *Peer) Connect() error {
 	return nil
 }
 
-func (p *Peer) AppendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	if p.client == nil {
 		return nil, fmt.Errorf("no connection established with peer %s", p.id)
 	}
 	return p.client.AppendEntries(context.Background(), request, nil)
 }
 
-func (p *Peer) RequestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	if p.client == nil {
 		return nil, fmt.Errorf("no connection established with peer %s", p.id)
 	}
 	return p.client.RequestVote(context.Background(), request, nil)
-}
-
-func (p *Peer) Id() string {
-	return p.id
-}
-
-func (p *Peer) SetId(id string) {
-	p.id = id
-}
-
-func (p *Peer) Address() string {
-	return p.address
-}
-
-func (p *Peer) SetAddress(address string) {
-	p.address = address
 }
 
 func (p *Peer) setNextIndex(index uint64) {

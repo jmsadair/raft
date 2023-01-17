@@ -6,39 +6,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewLog(t *testing.T) {
-	log := NewLog("raft/test")
+func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
+	assert.Equal(t, expectedIndex, entry.Index(), "entry has incorrect index")
+	assert.Equal(t, expectedTerm, entry.Term(), "entry has incorrect term")
+	assert.Equal(t, expectedData, entry.Data(), "entry has incorrect data")
+}
 
-	assert.Equal(t, "raft/test/log", log.Path())
-	assert.Nil(t, log.File())
-	assert.Zero(t, log.Size())
+func TestNewLog(t *testing.T) {
+	log := NewLog()
+	assert.Zero(t, log.FirstIndex())
 	assert.Zero(t, log.LastIndex())
 	assert.Zero(t, log.LastTerm())
 }
 
-func TestOpenNew(t *testing.T) {
-	path := t.TempDir()
-	log := NewLog(path)
-	t.Cleanup(func() { log.Close() })
-	log.Open()
-
-	assert.NotNil(t, log.File())
-	assert.Equal(t, log.File().Name(), log.Path())
-	assert.Zero(t, log.Size())
-}
-
-func TestIsOpen(t *testing.T) {
-	path := t.TempDir()
-	log := NewLog(path)
-	t.Cleanup(func() { log.Close() })
-
-	assert.False(t, log.IsOpen())
-	log.Open()
-	assert.True(t, log.IsOpen())
-}
-
 func TestAppendEntries(t *testing.T) {
-	log := NewTestLog(t)
+	log := NewLog()
 
 	var entry1, entry2 *LogEntry
 
@@ -52,9 +34,7 @@ func TestAppendEntries(t *testing.T) {
 	entry2Data := []byte("entry2")
 	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	log.AppendEntries(entry1, entry2)
-
-	validateLogSize(t, log.Size(), 2)
+	log.AppendEntries([]*LogEntry{entry1, entry2})
 
 	entry1, _ = log.GetEntry(entry1Index)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
@@ -62,12 +42,13 @@ func TestAppendEntries(t *testing.T) {
 	entry2, _ = log.GetEntry(entry2Index)
 	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
 
+	assert.Equal(t, log.FirstIndex(), entry1Index)
 	assert.Equal(t, log.LastTerm(), entry2Term)
 	assert.Equal(t, log.LastIndex(), entry2Index)
 }
 
 func TestTruncate(t *testing.T) {
-	log := NewTestLog(t)
+	log := NewLog()
 
 	var entry1, entry2 *LogEntry
 
@@ -81,22 +62,12 @@ func TestTruncate(t *testing.T) {
 	entry2Data := []byte("entry2")
 	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	log.AppendEntries(entry1, entry2)
+	log.AppendEntries([]*LogEntry{entry1, entry2})
 
 	log.Truncate(entry2Index)
 
-	checkLog := func() {
-		validateLogSize(t, log.Size(), 1)
-		entry1, _ = log.GetEntry(entry1Index)
-		validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
-	}
-
-	checkLog()
-
-	log.Close()
-	log.Open()
-
-	checkLog()
+	entry1, _ = log.GetEntry(entry1Index)
+	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
 	assert.Equal(t, log.LastTerm(), entry1Term)
 	assert.Equal(t, log.LastIndex(), entry1Index)

@@ -10,30 +10,6 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-type State uint32
-
-const (
-	Leader State = iota
-	Follower
-	Candidate
-	Stopped
-)
-
-func (s State) String() string {
-	switch s {
-	case Leader:
-		return "leader"
-	case Follower:
-		return "follower"
-	case Candidate:
-		return "candidate"
-	case Stopped:
-		return "stopped"
-	default:
-		panic("invalid state")
-	}
-}
-
 type Raft struct {
 	id          string
 	options     options
@@ -41,12 +17,8 @@ type Raft struct {
 	server      *Server
 	log         Log
 	storage     Storage
-	state       State
-	commitIndex uint64
-	lastApplied uint64
-	currentTerm uint64
-	votedFor    string
 	lastContact time.Time
+	state       *raftState
 	mu          sync.RWMutex
 }
 
@@ -66,56 +38,21 @@ func NewRaft(id string, peers []Peer, server Server, log Log, storage Storage, o
 		options.logger = logger
 	}
 
-	idToPeer := make(map[string]*Peer)
-	for _, peer := range peers {
-		idToPeer[peer.id] = &peer
-	}
-
 	raft := &Raft{
 		id:      id,
 		options: options,
-		peers:   idToPeer,
 		server:  &server,
 		log:     log,
 		storage: storage,
-		state:   Stopped,
+		state:   NewRaftState(),
 	}
+	raft.state.setState(Stopped)
 
 	return raft, nil
 }
 
 func (r *Raft) Id() string {
 	return r.id
-}
-
-func (r *Raft) State() State {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.state
-}
-
-func (r *Raft) CommitIndex() uint64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.commitIndex
-}
-
-func (r *Raft) LastContact() time.Time {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.lastContact
-}
-
-func (r *Raft) CurrentTerm() uint64 {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.currentTerm
-}
-
-func (r *Raft) VotedFor() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.votedFor
 }
 
 func (r *Raft) Quorum() int {
@@ -131,19 +68,19 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	var err error
 
 	response := &pb.AppendEntriesResponse{
-		Term:    r.CurrentTerm(),
+		Term:    r.state.getCurrentTerm(),
 		Success: false,
 	}
 
-	if request.GetTerm() < r.CurrentTerm() {
+	if request.GetTerm() < r.state.getCurrentTerm() {
 		r.options.logger.Debugf("rejecting request to append entries: out of date term: term = %d, request term = %d",
-			r.CurrentTerm(), request.GetTerm())
+			r.state.getCurrentTerm(), request.GetTerm())
 		return response
 	}
 
-	if request.GetTerm() > r.CurrentTerm() {
-		r.setCurrentTerm(request.GetTerm())
-		response.Term = r.CurrentTerm()
+	if request.GetTerm() > r.state.getCurrentTerm() {
+		r.state.setCurrentTerm(request.GetTerm())
+		response.Term = r.state.getCurrentTerm()
 		defer r.becomeFollower()
 	}
 
@@ -186,12 +123,15 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 		r.options.logger.Fatalf("error appending entries to log: %s", err.Error())
 	}
 
-	if request.GetLeaderCommit() > r.CommitIndex() {
-		r.setCommitIndex(util.Min(request.GetLeaderCommit(), r.log.LastIndex()))
+	if request.GetLeaderCommit() > r.state.getCommitIndex() {
+		r.state.setCommitIndex(util.Min(request.GetLeaderCommit(), r.log.LastIndex()))
 	}
 
 	response.Success = true
-	r.setLastContact(time.Now())
+
+	r.mu.Lock()
+	r.lastContact = time.Now()
+	r.mu.Unlock()
 
 	return response
 }
@@ -214,12 +154,12 @@ func (r *Raft) sendAppendEntries() {
 			}
 
 			request := &pb.AppendEntriesRequest{
-				Term:         r.CurrentTerm(),
+				Term:         r.state.getCurrentTerm(),
 				LeaderId:     r.Id(),
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
 				Entries:      entries,
-				LeaderCommit: r.CommitIndex(),
+				LeaderCommit: r.state.getCommitIndex(),
 			}
 
 			response, err := peer.appendEntries(request)
@@ -228,9 +168,9 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 
-			if response.GetTerm() > r.CurrentTerm() {
-				r.setCurrentTerm(request.GetTerm())
-				response.Term = r.CurrentTerm()
+			if response.GetTerm() > r.state.getCurrentTerm() {
+				r.state.setCurrentTerm(request.GetTerm())
+				response.Term = r.state.getCurrentTerm()
 				r.becomeFollower()
 				return
 			}
@@ -248,19 +188,19 @@ func (r *Raft) sendAppendEntries() {
 
 func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteResponse {
 	response := &pb.RequestVoteResponse{
-		Term:        r.CurrentTerm(),
+		Term:        r.state.getCurrentTerm(),
 		VoteGranted: false,
 	}
 
-	if request.GetTerm() < r.CurrentTerm() {
+	if request.GetTerm() < r.state.getCurrentTerm() {
 		r.options.logger.Debugf("rejected vote request: out of date term: term = %d, candidate term = %d",
-			r.CurrentTerm(), request.GetTerm())
+			r.state.getCurrentTerm(), request.GetTerm())
 		return response
 	}
 
-	if request.GetTerm() > r.CurrentTerm() {
-		r.setCurrentTerm(request.GetTerm())
-		response.Term = r.CurrentTerm()
+	if request.GetTerm() > r.state.getCurrentTerm() {
+		r.state.setCurrentTerm(request.GetTerm())
+		response.Term = r.state.getCurrentTerm()
 		defer r.becomeFollower()
 	}
 
@@ -270,9 +210,9 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 		return response
 	}
 
-	r.setVotedFor(request.GetCandidateId())
+	r.state.setVotedFor(request.GetCandidateId())
 	response.VoteGranted = true
-	r.options.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), r.CurrentTerm())
+	r.options.logger.Debugf("request for vote granted: %s voted for %s, term = %d", r.id, request.GetCandidateId(), r.state.getCurrentTerm())
 
 	return response
 }
@@ -281,14 +221,14 @@ func (r *Raft) leaderLoop() {
 	heartbeatInterval := r.options.heartbeatInterval
 	heartbeat := time.NewTicker(heartbeatInterval)
 
-	for r.State() == Leader {
+	for r.state.getState() == Leader {
 		select {
 		case <-heartbeat.C:
 			r.sendAppendEntries()
 			heartbeat.Reset(heartbeatInterval)
 		default:
-			for i := r.CommitIndex(); i < r.log.LastIndex(); i++ {
-				if entry, _ := r.log.GetEntry(i); entry == nil || entry.Term() != r.CurrentTerm() {
+			for i := r.state.getCommitIndex(); i < r.log.LastIndex(); i++ {
+				if entry, _ := r.log.GetEntry(i); entry == nil || entry.Term() != r.state.getCurrentTerm() {
 					break
 				}
 				matches := 1
@@ -298,7 +238,7 @@ func (r *Raft) leaderLoop() {
 					}
 				}
 				if matches >= r.Quorum() {
-					r.setCommitIndex(i)
+					r.state.setCommitIndex(i)
 				}
 			}
 		}
@@ -309,14 +249,17 @@ func (r *Raft) followerLoop() {
 	electionTimeout := r.options.electionTimeout
 	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
-	for r.State() == Follower {
+	for r.state.getState() == Follower {
 		select {
 		case <-electionTimer:
 			electionTimer = util.RandomTimeout(electionTimeout, electionTimeout*2)
-			if time.Since(r.LastContact()) > electionTimeout {
+			r.mu.Lock()
+			if time.Since(r.lastContact) > electionTimeout {
 				r.becomeCandidate()
+				r.mu.Unlock()
 				return
 			}
+			r.mu.Unlock()
 		default:
 		}
 	}
@@ -324,7 +267,7 @@ func (r *Raft) followerLoop() {
 
 func (r *Raft) candidateLoop() {
 	votesReceived := 1
-	r.setCurrentTerm(r.CurrentTerm() + 1)
+	r.state.setCurrentTerm(r.state.getCurrentTerm() + 1)
 
 	responses := make(chan *pb.RequestVoteResponse)
 
@@ -335,7 +278,7 @@ func (r *Raft) candidateLoop() {
 		go func(peer *Peer) {
 			request := &pb.RequestVoteRequest{
 				CandidateId:  r.Id(),
-				Term:         r.CurrentTerm(),
+				Term:         r.state.getCurrentTerm(),
 				LastLogIndex: r.log.LastIndex(),
 				LastLogTerm:  r.log.LastTerm(),
 			}
@@ -351,11 +294,11 @@ func (r *Raft) candidateLoop() {
 		}(peer)
 	}
 
-	for r.State() == Candidate {
+	for r.state.getState() == Candidate {
 		select {
 		case response := <-responses:
-			if response.GetTerm() > r.CurrentTerm() {
-				r.setCurrentTerm(response.GetTerm())
+			if response.GetTerm() > r.state.getCurrentTerm() {
+				r.state.setCurrentTerm(response.GetTerm())
 				r.becomeFollower()
 				return
 			}
@@ -375,7 +318,7 @@ func (r *Raft) candidateLoop() {
 
 func (r *Raft) mainLoop() {
 	for {
-		switch r.State() {
+		switch r.state.getState() {
 		case Candidate:
 			r.candidateLoop()
 		case Leader:
@@ -387,12 +330,12 @@ func (r *Raft) mainLoop() {
 }
 
 func (r *Raft) becomeCandidate() {
-	r.setState(Candidate)
+	r.state.setState(Candidate)
 	r.options.logger.Infof("%s has entered the candidate state", r.id)
 }
 
 func (r *Raft) becomeLeader() {
-	r.setState(Leader)
+	r.state.setState(Leader)
 	for _, peer := range r.peers {
 		peer.setNextIndex(r.log.LastIndex() + 1)
 		peer.setMatchIndex(0)
@@ -401,37 +344,7 @@ func (r *Raft) becomeLeader() {
 }
 
 func (r *Raft) becomeFollower() {
-	r.setVotedFor("")
-	r.setState(Follower)
+	r.state.setVotedFor("")
+	r.state.setState(Follower)
 	r.options.logger.Infof("%s has entered the follower state", r.id)
-}
-
-func (r *Raft) setCommitIndex(index uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.commitIndex = index
-}
-
-func (r *Raft) setLastContact(time time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastContact = time
-}
-
-func (r *Raft) setState(state State) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.state = state
-}
-
-func (r *Raft) setCurrentTerm(term uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.currentTerm = term
-}
-
-func (r *Raft) setVotedFor(votedFor string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.votedFor = votedFor
 }

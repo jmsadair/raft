@@ -13,12 +13,11 @@ const (
 // VolatileLog implements the Log interface.
 // It is completely in-memory and should only be used for testing purposes.
 type VolatileLog struct {
-	entries     []*LogEntry
-	commitIndex uint64
-	firstIndex  uint64
-	lastIndex   uint64
-	lastTerm    uint64
-	mu          sync.RWMutex
+	entries    []*LogEntry
+	firstIndex uint64
+	lastIndex  uint64
+	lastTerm   uint64
+	mu         sync.RWMutex
 }
 
 func NewLog() *VolatileLog {

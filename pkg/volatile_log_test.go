@@ -13,14 +13,14 @@ func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expec
 }
 
 func TestNewLog(t *testing.T) {
-	log := NewLog()
+	log := NewVolatileLog()
 	assert.Zero(t, log.FirstIndex())
 	assert.Zero(t, log.LastIndex())
 	assert.Zero(t, log.LastTerm())
 }
 
 func TestAppendEntries(t *testing.T) {
-	log := NewLog()
+	log := NewVolatileLog()
 
 	var entry1, entry2 *LogEntry
 
@@ -48,7 +48,7 @@ func TestAppendEntries(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	log := NewLog()
+	log := NewVolatileLog()
 
 	var entry1, entry2 *LogEntry
 

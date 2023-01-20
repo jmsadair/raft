@@ -20,7 +20,7 @@ type VolatileLog struct {
 	mu         sync.RWMutex
 }
 
-func NewLog() *VolatileLog {
+func NewVolatileLog() *VolatileLog {
 	return &VolatileLog{entries: make([]*LogEntry, 0)}
 }
 
@@ -28,7 +28,7 @@ func (l *VolatileLog) GetEntry(index uint64) (*LogEntry, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	if l.firstIndex > index || l.lastIndex < index {
+	if l.firstIndex == 0 || l.firstIndex > index || l.lastIndex < index {
 		return nil, errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
 

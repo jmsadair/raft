@@ -275,12 +275,13 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 			if !response.GetSuccess() {
-				peer.setNextIndex(peer.getNextIndex() - 1)
+				if peer.getNextIndex() != 1 {
+					peer.setNextIndex(peer.getNextIndex() - 1)
+				}
 				r.mu.Unlock()
 				r.submissionCh <- struct{}{}
 				return
 			}
-
 			peer.setNextIndex(peer.getNextIndex() + uint64(len(entries)))
 			peer.setMatchIndex(peer.getNextIndex() - 1)
 

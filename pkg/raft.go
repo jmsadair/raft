@@ -227,8 +227,6 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 
 	r.lastContact = time.Now()
 
-	r.options.logger.Debugf("%s success appending entries: last log index = %d last log term = %d", r.id, r.log.LastIndex(), r.log.LastTerm())
-
 	return response
 }
 
@@ -236,14 +234,16 @@ func (r *Raft) sendAppendEntries() {
 	for _, peer := range r.peers {
 		go func(peer *Peer) {
 			r.mu.Lock()
-			prevLogIndex := peer.getNextIndex() - 1
+			nextIndex := peer.getNextIndex()
+			prevLogIndex := nextIndex - 1
 			prevLogTerm := uint64(0)
+
 			if prevEntry, err := r.log.GetEntry(prevLogIndex); err == nil {
 				prevLogTerm = prevEntry.Term()
 			}
 
 			entries := make([]*pb.LogEntry, 0)
-			for index := peer.getNextIndex(); index <= r.log.LastIndex(); index++ {
+			for index := nextIndex; index <= r.log.LastIndex(); index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
 					r.options.logger.Fatalf("error getting entry from log: %s", err.Error())
@@ -275,15 +275,15 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 			if !response.GetSuccess() {
-				if peer.getNextIndex() != 1 {
-					peer.setNextIndex(peer.getNextIndex() - 1)
+				if nextIndex != 1 {
+					peer.setNextIndex(nextIndex - 1)
 				}
 				r.mu.Unlock()
 				r.submissionCh <- struct{}{}
 				return
 			}
-			peer.setNextIndex(peer.getNextIndex() + uint64(len(entries)))
-			peer.setMatchIndex(peer.getNextIndex() - 1)
+			peer.setNextIndex(nextIndex + uint64(len(entries)))
+			peer.setMatchIndex(nextIndex - 1)
 
 			oldCommitIndex := r.commitIndex
 			for index := r.commitIndex; index <= r.log.LastIndex(); index++ {

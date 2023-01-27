@@ -1,29 +1,43 @@
 package raft
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jmsadair/raft/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
 
+// Error strings used by TestCluster.
 var (
-	multipleLeaderErr = errors.New("cluster has more than one leader")
-	noLeaderErr       = errors.New("cluster does not have a leader")
+	errMultipleLeader = "cluster has more than one leader"
+	errNoLeader       = "cluster does not have a leader"
+	errDisconnect     = "failed to disconnect from peer: %s"
+	errConnect        = "failed to connect to peer: %s"
+	errCreateCluster  = "failed to create cluster: %s"
+	errStopCluster    = "failed to stop cluster: %s"
+	errStartCluster   = "failed to start cluster: %s"
+	errReplicate      = "failed to replicate command: %s"
 )
 
 type TestCluster struct {
-	peers   []*Peer
-	servers []*Server
+	peers              []*Peer
+	servers            []*Server
+	replicateCh        []chan Response
+	shutdownCh         chan interface{}
+	replicateResponses [][]Response
+	mu                 []sync.Mutex
 }
 
 func newCluster(numServers int) (*TestCluster, error) {
 	peers := make([]*Peer, numServers)
 	servers := make([]*Server, numServers)
+	replicateCh := make([]chan Response, numServers)
+	responses := make([][]Response, numServers)
 
 	ipPrefix := "127.0.0."
 	port := 8080
@@ -39,25 +53,37 @@ func newCluster(numServers int) (*TestCluster, error) {
 			if i != j {
 				serverPeers = append(serverPeers, peers[j].Clone())
 			}
+
+			replicateCh[i] = make(chan Response)
+			responses[i] = make([]Response, 0)
 			log := NewVolatileLog()
 			storage := NewVolatileStorage()
-			server, err := NewServer(peers[i].id, serverPeers, log, storage, peers[i].address)
+
+			server, err := NewServer(peers[i].id, serverPeers, log, storage, peers[i].address, replicateCh[i])
 			if err != nil {
-				return nil, err
+				return nil, errors.WrapError(err, errCreateCluster, err.Error())
 			}
 			servers[i] = server
 		}
 	}
 
-	return &TestCluster{peers: peers, servers: servers}, nil
+	return &TestCluster{
+		peers:              peers,
+		servers:            servers,
+		replicateCh:        replicateCh,
+		replicateResponses: responses,
+		shutdownCh:         make(chan interface{}),
+		mu:                 make([]sync.Mutex, numServers),
+	}, nil
 }
 
 func (tc *TestCluster) startCluster() error {
 	ready := make(chan interface{})
-	for _, server := range tc.servers {
+	for index, server := range tc.servers {
 		if err := server.Start(ready); err != nil {
-			return err
+			return errors.WrapError(err, errStartCluster, err.Error())
 		}
+		go tc.processResponses(index)
 	}
 	close(ready)
 	return nil
@@ -65,74 +91,236 @@ func (tc *TestCluster) startCluster() error {
 
 func (tc *TestCluster) stopCluster() error {
 	for _, server := range tc.servers {
-		if server.IsStarted() {
-			err := server.Stop()
+		if err := server.Stop(); err != nil {
+			return errors.WrapError(err, errStopCluster, err.Error())
+		}
+	}
+	close(tc.shutdownCh)
+	return nil
+}
+
+func (tc *TestCluster) processResponses(id int) {
+	for {
+		select {
+		case <-tc.shutdownCh:
+			return
+		case response := <-tc.replicateCh[id]:
+			tc.mu[id].Lock()
+			tc.replicateResponses[id] = append(tc.replicateResponses[id], response)
+			tc.mu[id].Unlock()
+		}
+	}
+}
+
+func (tc *TestCluster) responses(id int) []Response {
+	tc.mu[id].Lock()
+	defer tc.mu[id].Unlock()
+	responses := make([]Response, len(tc.replicateResponses[id]))
+	copy(responses, tc.replicateResponses[id])
+	return responses
+}
+
+func (tc *TestCluster) connectServerToPeer(id, peerId int) error {
+	raft := tc.servers[id].raft
+	for _, peer := range raft.peers {
+		if peer.Id() == fmt.Sprint(peerId) {
+			err := peer.connect()
 			if err != nil {
-				return err
+				return errors.WrapError(err, errConnect, err.Error())
 			}
+			return nil
+		}
+	}
+	return errors.WrapError(nil, errConnect, fmt.Sprintf("peer %d does not exist", peerId))
+}
+
+func (tc *TestCluster) disconnectServerFromPeer(id, peerId int) error {
+	raft := tc.servers[id].raft
+	for _, peer := range raft.peers {
+		if peer.Id() == fmt.Sprint(peerId) {
+			err := peer.disconnect()
+			if err != nil {
+				return errors.WrapError(err, errDisconnect, err.Error())
+			}
+			return nil
+		}
+	}
+	return errors.WrapError(nil, errDisconnect, fmt.Sprintf("peer %d does not exist", peerId))
+}
+
+func (tc *TestCluster) connectServerToPeers(id int) error {
+	raft := tc.servers[id].raft
+	for _, peer := range raft.peers {
+		err := peer.connect()
+		if err != nil {
+			return errors.WrapError(err, errConnect, err.Error())
 		}
 	}
 	return nil
 }
 
-func (tc *TestCluster) stopServer(id int) {
-	tc.servers[id].Stop()
-}
-
-func (tc *TestCluster) leader() (int, error) {
-	leader := -1
-	for _, server := range tc.servers {
-		id, _, state := server.raft.status()
-		if state == Leader && leader != -1 {
-			return -1, multipleLeaderErr
-		}
-		if state == Leader {
-			var err error
-			leader, err = strconv.Atoi(id)
-			if err != nil {
-				return 0, err
-			}
+func (tc *TestCluster) disconnectServerFromPeers(id int) error {
+	raft := tc.servers[id].raft
+	for _, peer := range raft.peers {
+		err := peer.disconnect()
+		if err != nil {
+			return errors.WrapError(err, errDisconnect, err.Error())
 		}
 	}
+	return nil
+}
 
+func (tc *TestCluster) replicate(command []byte) error {
+	leader, err := tc.clusterLeader()
+	if err != nil {
+		return errors.WrapError(err, errReplicate, err.Error())
+	}
+	err = tc.servers[leader].Replicate(command)
+	if err != nil {
+		return errors.WrapError(err, errReplicate, err.Error())
+	}
+	return nil
+}
+
+func (tc *TestCluster) clusterLeader() (int, error) {
+	leader := -1
+	for _, server := range tc.servers {
+		id, _, state := server.raft.Status()
+		if state == Leader && leader != -1 {
+			return -1, errors.WrapError(nil, errMultipleLeader)
+		}
+		if state == Leader {
+			leader, _ = strconv.Atoi(id)
+		}
+	}
 	if leader == -1 {
-		return 0, noLeaderErr
+		return 0, errors.WrapError(nil, errNoLeader)
 	}
 	return leader, nil
 }
 
+// TestBasicElection tests that a new cluster is able to successfully elect a leader.
 func TestBasicElection(t *testing.T) {
 	numServers := 3
 	cluster, err := newCluster(numServers)
-
 	assert.NoError(t, err)
+
 	assert.NoError(t, cluster.startCluster())
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
-	_, err = cluster.leader()
-
+	_, err = cluster.clusterLeader()
 	assert.NoError(t, err)
+
 	assert.NoError(t, cluster.stopCluster())
 }
 
+// TestLeaderFailElection tests that the cluster is able to elect a new leader after the
+// original leader fails.
 func TestLeaderFailElection(t *testing.T) {
 	numServers := 3
 	cluster, err := newCluster(numServers)
-
 	assert.NoError(t, err)
+
 	assert.NoError(t, cluster.startCluster())
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
-	leader, err := cluster.leader()
+	leader, err := cluster.clusterLeader()
 	assert.NoError(t, err)
-	cluster.stopServer(leader)
 
-	time.Sleep(2 * time.Second)
+	assert.NoError(t, cluster.disconnectServerFromPeers(leader))
 
-	_, err = cluster.leader()
+	time.Sleep(500 * time.Millisecond)
 
+	_, err = cluster.clusterLeader()
 	assert.NoError(t, err)
+
+	assert.NoError(t, cluster.stopCluster())
+}
+
+// TestReplicateSimple tests replicating a single command.
+func TestReplicateSimple(t *testing.T) {
+	numServers := 3
+	cluster, err := newCluster(numServers)
+	assert.NoError(t, err)
+
+	assert.NoError(t, cluster.startCluster())
+
+	time.Sleep(500 * time.Millisecond)
+
+	command := []byte("test")
+	assert.NoError(t, cluster.replicate(command))
+
+	time.Sleep(500 * time.Millisecond)
+
+	for id := 0; id < numServers; id++ {
+		responses := cluster.responses(id)
+		assert.Len(t, responses, 1)
+		response := responses[0]
+		assert.Equal(t, response.command, command)
+		assert.Equal(t, int(response.index), 1)
+	}
+
+	assert.NoError(t, cluster.stopCluster())
+}
+
+// TestReplicateMultiple tests replicating multiple commands.
+func TestReplicateMultiple(t *testing.T) {
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	assert.NoError(t, err)
+
+	assert.NoError(t, cluster.startCluster())
+
+	time.Sleep(500 * time.Millisecond)
+
+	commands := [][]byte{[]byte("command1"), []byte("command2"), []byte("command3"), []byte("command4")}
+	for _, command := range commands {
+		assert.NoError(t, cluster.replicate(command))
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	for id := 0; id < numServers; id++ {
+		responses := cluster.responses(id)
+		assert.Len(t, responses, len(commands))
+		for i, response := range responses {
+			assert.Equal(t, response.command, commands[i])
+			assert.Equal(t, int(response.index), i+1)
+		}
+	}
+
+	assert.NoError(t, cluster.stopCluster())
+}
+
+// TestReplicationNoQuorum tests that replication is not successful if there is not a quorum.
+func TestReplicateNoQuorum(t *testing.T) {
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	assert.NoError(t, err)
+
+	assert.NoError(t, cluster.startCluster())
+
+	time.Sleep(500 * time.Millisecond)
+
+	leader, err := cluster.clusterLeader()
+	assert.NoError(t, err)
+
+	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+1)%numServers))
+	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+2)%numServers))
+	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
+
+	command := []byte("test")
+	assert.NoError(t, cluster.replicate(command))
+
+	// Wait a bit to make sure command was not committed.
+	time.Sleep(1000 * time.Millisecond)
+
+	for id := 0; id < numServers; id++ {
+		responses := cluster.responses(id)
+		assert.Empty(t, responses)
+	}
+
 	assert.NoError(t, cluster.stopCluster())
 }

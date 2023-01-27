@@ -17,10 +17,10 @@ type Server struct {
 	raft            *Raft
 }
 
-func NewServer(id string, peers []*Peer, log Log, storage Storage, listenInterface net.Addr, opts ...Option) (*Server, error) {
-	raft, err := newRaft(id, peers, log, storage, opts...)
+func NewServer(id string, peers []*Peer, log Log, storage Storage, listenInterface net.Addr, responseCh chan<- Response, opts ...Option) (*Server, error) {
+	raft, err := NewRaft(id, peers, log, storage, responseCh, opts...)
 	if err != nil {
-		return nil, errors.WrapError(err, "failed tro create new server: %s", err.Error())
+		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}
 
 	server := &Server{
@@ -37,14 +37,13 @@ func (s *Server) Start(ready <-chan interface{}) error {
 		return errors.WrapError(err, "failed to start server: %s", err.Error())
 	}
 	s.listener = listener
-	// TODO: configure grpc server options.
 	var opts []grpc.ServerOption
 	s.server = grpc.NewServer(opts...)
 	pb.RegisterRaftServer(s.server, s)
 	go s.server.Serve(listener)
 	go func() {
 		<-ready
-		s.raft.start()
+		s.raft.Start()
 	}()
 	return nil
 }
@@ -54,7 +53,8 @@ func (s *Server) Stop() error {
 		return errors.WrapError(nil, "server has not been started")
 	}
 	s.server.GracefulStop()
-	s.raft.stop()
+	s.listener.Close()
+	s.raft.Stop()
 	s.server = nil
 	s.listener = nil
 	return nil
@@ -65,7 +65,7 @@ func (s *Server) IsStarted() bool {
 }
 
 func (s *Server) Replicate(command []byte) error {
-	return s.raft.replicate(command)
+	return s.raft.Replicate(command)
 }
 
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {

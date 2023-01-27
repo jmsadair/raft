@@ -38,10 +38,12 @@ func (p *Peer) Clone() *Peer {
 }
 
 func (p *Peer) connect() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.client != nil {
 		return errors.WrapError(nil, "connection already established with peer %s", p.id)
 	}
-	// TODO: Configure grpc client options.
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
 		return errors.WrapError(err, "failed to connect to peer: %s", err.Error())
@@ -52,16 +54,22 @@ func (p *Peer) connect() error {
 }
 
 func (p *Peer) disconnect() error {
-	if p.conn == nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.client == nil {
 		return errors.WrapError(nil, "no connection established with peer %s", p.id)
 	}
 	if err := p.conn.Close(); err != nil {
 		return errors.WrapError(err, "failed to close connection with peer: %s", err.Error())
 	}
+	p.conn = nil
+	p.client = nil
 	return nil
 }
 
 func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.client == nil {
 		return nil, errors.WrapError(nil, "no connection established with peer %s", p.id)
 	}
@@ -69,6 +77,8 @@ func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntrie
 }
 
 func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.client == nil {
 		return nil, errors.WrapError(nil, "no connection established with peer %s", p.id)
 	}

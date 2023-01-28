@@ -35,13 +35,13 @@ message RequestVoteResponse {
 }
 
 message InstallSnapshotRequest {
-    uint64 term = 1;
-    string leader = 2;
+    uint64 term              = 1;
+    string leader            = 2;
     uint64 lastIncludedIndex = 3;
-    uint64 lastIncludedTerm = 4;
-    uint64 offset = 5;
-    bytes data = 6;
-    bool done = 7;
+    uint64 lastIncludedTerm  = 4;
+    uint64 offset            = 5;
+    bytes  data              = 6;
+    bool   done              = 7;
 }
 
 message InstallSnapshotResponse {

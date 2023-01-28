@@ -16,6 +16,10 @@ type Log interface {
 	// than or equal to the provided index.
 	Truncate(index uint64) error
 
+	// Compact deletes all log entries with index less than
+	// or equal to the provided index.
+	Compact(index uint64) error
+
 	// Contains returns true if the index exists in the log and
 	// false otherwise.
 	Contains(index uint64) bool

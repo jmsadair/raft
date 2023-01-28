@@ -70,13 +70,26 @@ func (l *VolatileLog) Truncate(index uint64) error {
 		return errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
 
-	entry := l.entries[index-l.firstIndex]
-
-	l.entries = l.entries[:entry.Index()-l.firstIndex]
-
+	l.entries = l.entries[:index-l.firstIndex]
 	if len(l.entries) != 0 {
 		l.lastIndex = l.entries[len(l.entries)-1].Index()
 		l.lastTerm = l.entries[len(l.entries)-1].Term()
+	}
+
+	return nil
+}
+
+func (l *VolatileLog) Compact(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.firstIndex > index || l.lastIndex < index {
+		return errors.WrapError(nil, errIndexDoesNotExist, index)
+	}
+
+	l.entries = l.entries[index-l.firstIndex:]
+	if len(l.entries) != 0 {
+		l.firstIndex = l.entries[0].Index()
 	}
 
 	return nil

@@ -354,6 +354,10 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	return response
 }
 
+func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSnapshotResponse {
+	panic("installSnapshot: not implemented")
+}
+
 func (r *Raft) leaderLoop() {
 	heartbeatInterval := r.options.heartbeatInterval
 	heartbeat := time.NewTicker(heartbeatInterval)

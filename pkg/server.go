@@ -75,3 +75,7 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	return s.raft.requestVote(request), nil
 }
+
+func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+	return s.raft.installSnapshot(request), nil
+}

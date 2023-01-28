@@ -11,6 +11,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+const (
+	errConnEstablished = "connection already established with peer %s"
+	errNoConn          = "no connection established with peer %s"
+)
+
 type Peer struct {
 	id         string
 	address    net.Addr
@@ -42,7 +47,7 @@ func (p *Peer) connect() error {
 	defer p.mu.Unlock()
 
 	if p.client != nil {
-		return errors.WrapError(nil, "connection already established with peer %s", p.id)
+		return errors.WrapError(nil, errConnEstablished, p.id)
 	}
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
@@ -57,7 +62,7 @@ func (p *Peer) disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.client == nil {
-		return errors.WrapError(nil, "no connection established with peer %s", p.id)
+		return errors.WrapError(nil, errNoConn, p.id)
 	}
 	if err := p.conn.Close(); err != nil {
 		return errors.WrapError(err, "failed to close connection with peer: %s", err.Error())
@@ -71,7 +76,7 @@ func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntrie
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.client == nil {
-		return nil, errors.WrapError(nil, "no connection established with peer %s", p.id)
+		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
 	return p.client.AppendEntries(context.Background(), request, []grpc.CallOption{}...)
 }
@@ -80,9 +85,18 @@ func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteRespo
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.client == nil {
-		return nil, errors.WrapError(nil, "no connection established with peer %s", p.id)
+		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
 	return p.client.RequestVote(context.Background(), request, []grpc.CallOption{}...)
+}
+
+func (p *Peer) installSnapshot(request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.client == nil {
+		return nil, errors.WrapError(nil, errNoConn, p.id)
+	}
+	return p.client.InstallSnapshot(context.Background(), request, []grpc.CallOption{}...)
 }
 
 func (p *Peer) setNextIndex(index uint64) {

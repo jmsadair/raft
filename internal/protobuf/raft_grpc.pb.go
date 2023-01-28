@@ -20,6 +20,7 @@ const _ = grpc.SupportPackageIsVersion7
 type RaftClient interface {
 	AppendEntries(ctx context.Context, in *AppendEntriesRequest, opts ...grpc.CallOption) (*AppendEntriesResponse, error)
 	RequestVote(ctx context.Context, in *RequestVoteRequest, opts ...grpc.CallOption) (*RequestVoteResponse, error)
+	InstallSnapshot(ctx context.Context, in *InstallSnapshotRequest, opts ...grpc.CallOption) (*InstallSnapshotResponse, error)
 }
 
 type raftClient struct {
@@ -48,12 +49,22 @@ func (c *raftClient) RequestVote(ctx context.Context, in *RequestVoteRequest, op
 	return out, nil
 }
 
+func (c *raftClient) InstallSnapshot(ctx context.Context, in *InstallSnapshotRequest, opts ...grpc.CallOption) (*InstallSnapshotResponse, error) {
+	out := new(InstallSnapshotResponse)
+	err := c.cc.Invoke(ctx, "/Raft/InstallSnapshot", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RaftServer is the server API for Raft service.
 // All implementations must embed UnimplementedRaftServer
 // for forward compatibility
 type RaftServer interface {
 	AppendEntries(context.Context, *AppendEntriesRequest) (*AppendEntriesResponse, error)
 	RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error)
+	InstallSnapshot(context.Context, *InstallSnapshotRequest) (*InstallSnapshotResponse, error)
 	mustEmbedUnimplementedRaftServer()
 }
 
@@ -66,6 +77,9 @@ func (UnimplementedRaftServer) AppendEntries(context.Context, *AppendEntriesRequ
 }
 func (UnimplementedRaftServer) RequestVote(context.Context, *RequestVoteRequest) (*RequestVoteResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RequestVote not implemented")
+}
+func (UnimplementedRaftServer) InstallSnapshot(context.Context, *InstallSnapshotRequest) (*InstallSnapshotResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InstallSnapshot not implemented")
 }
 func (UnimplementedRaftServer) mustEmbedUnimplementedRaftServer() {}
 
@@ -116,6 +130,24 @@ func _Raft_RequestVote_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Raft_InstallSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InstallSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RaftServer).InstallSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/Raft/InstallSnapshot",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RaftServer).InstallSnapshot(ctx, req.(*InstallSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Raft_ServiceDesc is the grpc.ServiceDesc for Raft service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -130,6 +162,10 @@ var Raft_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RequestVote",
 			Handler:    _Raft_RequestVote_Handler,
+		},
+		{
+			MethodName: "InstallSnapshot",
+			Handler:    _Raft_InstallSnapshot_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

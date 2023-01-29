@@ -1,10 +1,119 @@
 package raft
 
 import (
+	"sync"
 	"testing"
 
+	"github.com/jmsadair/raft/internal/errors"
 	"github.com/stretchr/testify/assert"
 )
+
+const (
+	errIndexDoesNotExist = "index %d does not exist"
+)
+
+// LogMock implements the Log interface.
+// It is completely in-memory and should only be used for testing purposes.
+type LogMock struct {
+	entries    []*LogEntry
+	firstIndex uint64
+	lastIndex  uint64
+	lastTerm   uint64
+	mu         sync.RWMutex
+}
+
+func NewLogMock() *LogMock {
+	return &LogMock{entries: make([]*LogEntry, 0)}
+}
+
+func (l *LogMock) GetEntry(index uint64) (*LogEntry, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.firstIndex == 0 || l.firstIndex > index || l.lastIndex < index {
+		return nil, errors.WrapError(nil, errIndexDoesNotExist, index)
+	}
+
+	entry := l.entries[index-l.firstIndex]
+
+	return entry, nil
+}
+
+func (l *LogMock) Contains(index uint64) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.firstIndex <= index && index <= l.lastIndex
+}
+
+func (l *LogMock) AppendEntry(entry *LogEntry) error {
+	return l.AppendEntries([]*LogEntry{entry})
+}
+
+func (l *LogMock) AppendEntries(entries []*LogEntry) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.entries = append(l.entries, entries...)
+
+	if len(l.entries) != 0 {
+		l.firstIndex = l.entries[0].Index()
+		l.lastIndex = l.entries[len(l.entries)-1].Index()
+		l.lastTerm = l.entries[len(l.entries)-1].Term()
+	}
+
+	return nil
+}
+
+func (l *LogMock) Truncate(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.firstIndex > index || l.lastIndex < index {
+		return errors.WrapError(nil, errIndexDoesNotExist, index)
+	}
+
+	l.entries = l.entries[:index-l.firstIndex]
+	if len(l.entries) != 0 {
+		l.lastIndex = l.entries[len(l.entries)-1].Index()
+		l.lastTerm = l.entries[len(l.entries)-1].Term()
+	}
+
+	return nil
+}
+
+func (l *LogMock) Compact(index uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.firstIndex > index || l.lastIndex < index {
+		return errors.WrapError(nil, errIndexDoesNotExist, index)
+	}
+
+	l.entries = l.entries[index-l.firstIndex:]
+	if len(l.entries) != 0 {
+		l.firstIndex = l.entries[0].Index()
+	}
+
+	return nil
+}
+
+func (l *LogMock) LastTerm() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.lastTerm
+}
+
+func (l *LogMock) FirstIndex() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.firstIndex
+}
+
+func (l *LogMock) LastIndex() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.lastIndex
+}
 
 func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
 	assert.Equal(t, expectedIndex, entry.Index(), "entry has incorrect index")
@@ -13,14 +122,14 @@ func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expec
 }
 
 func TestNewLog(t *testing.T) {
-	log := NewVolatileLog()
+	log := NewLogMock()
 	assert.Zero(t, log.FirstIndex())
 	assert.Zero(t, log.LastIndex())
 	assert.Zero(t, log.LastTerm())
 }
 
 func TestAppendEntries(t *testing.T) {
-	log := NewVolatileLog()
+	log := NewLogMock()
 
 	var entry1, entry2 *LogEntry
 
@@ -48,7 +157,7 @@ func TestAppendEntries(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	log := NewVolatileLog()
+	log := NewLogMock()
 
 	var entry1, entry2, entry3 *LogEntry
 
@@ -79,7 +188,7 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestCompact(t *testing.T) {
-	log := NewVolatileLog()
+	log := NewLogMock()
 
 	var entry1, entry2, entry3 *LogEntry
 

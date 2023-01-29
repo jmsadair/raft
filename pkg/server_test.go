@@ -27,17 +27,17 @@ var (
 type TestCluster struct {
 	peers              []*Peer
 	servers            []*Server
-	replicateCh        []chan Response
+	replicateCh        []chan ReplicateResponse
 	shutdownCh         chan interface{}
-	replicateResponses [][]Response
+	replicateResponses [][]ReplicateResponse
 	mu                 []sync.Mutex
 }
 
 func newCluster(numServers int) (*TestCluster, error) {
 	peers := make([]*Peer, numServers)
 	servers := make([]*Server, numServers)
-	replicateCh := make([]chan Response, numServers)
-	responses := make([][]Response, numServers)
+	replicateCh := make([]chan ReplicateResponse, numServers)
+	responses := make([][]ReplicateResponse, numServers)
 
 	ipPrefix := "127.0.0."
 	port := 8080
@@ -54,12 +54,13 @@ func newCluster(numServers int) (*TestCluster, error) {
 				serverPeers = append(serverPeers, peers[j].Clone())
 			}
 
-			replicateCh[i] = make(chan Response)
-			responses[i] = make([]Response, 0)
-			log := NewVolatileLog()
-			storage := NewVolatileStorage()
+			replicateCh[i] = make(chan ReplicateResponse)
+			responses[i] = make([]ReplicateResponse, 0)
+			log := NewLogMock()
+			storage := NewStorageMock()
+			fsm := NewStateMachineMock()
 
-			server, err := NewServer(peers[i].id, serverPeers, log, storage, peers[i].address, replicateCh[i])
+			server, err := NewServer(peers[i].id, serverPeers, log, storage, fsm, peers[i].address, replicateCh[i])
 			if err != nil {
 				return nil, errors.WrapError(err, errCreateCluster, err.Error())
 			}
@@ -112,10 +113,10 @@ func (tc *TestCluster) processResponses(id int) {
 	}
 }
 
-func (tc *TestCluster) responses(id int) []Response {
+func (tc *TestCluster) responses(id int) []ReplicateResponse {
 	tc.mu[id].Lock()
 	defer tc.mu[id].Unlock()
-	responses := make([]Response, len(tc.replicateResponses[id]))
+	responses := make([]ReplicateResponse, len(tc.replicateResponses[id]))
 	copy(responses, tc.replicateResponses[id])
 	return responses
 }
@@ -258,8 +259,8 @@ func TestReplicateSimple(t *testing.T) {
 		responses := cluster.responses(id)
 		assert.Len(t, responses, 1)
 		response := responses[0]
-		assert.Equal(t, response.command, command)
-		assert.Equal(t, int(response.index), 1)
+		assert.Equal(t, response.Command, command)
+		assert.Equal(t, int(response.Index), 1)
 	}
 
 	assert.NoError(t, cluster.stopCluster())
@@ -286,8 +287,8 @@ func TestReplicateMultiple(t *testing.T) {
 		responses := cluster.responses(id)
 		assert.Len(t, responses, len(commands))
 		for i, response := range responses {
-			assert.Equal(t, response.command, commands[i])
-			assert.Equal(t, int(response.index), i+1)
+			assert.Equal(t, response.Command, commands[i])
+			assert.Equal(t, int(response.Index), i+1)
 		}
 	}
 

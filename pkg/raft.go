@@ -16,6 +16,7 @@ type Raft struct {
 	peers        []*Peer
 	log          Log
 	storage      Storage
+	fsm          StateMachine
 	state        State
 	commitIndex  uint64
 	lastApplied  uint64
@@ -24,18 +25,19 @@ type Raft struct {
 	lastContact  time.Time
 	submissionCh chan interface{}
 	commitCh     chan interface{}
-	responseCh   chan<- Response
+	responseCh   chan<- ReplicateResponse
 	shutdownCh   chan interface{}
 	mu           sync.Mutex
 }
 
-type Response struct {
-	term    uint64
-	index   uint64
-	command []byte
+type ReplicateResponse struct {
+	Term     uint64
+	Index    uint64
+	Command  []byte
+	Response interface{}
 }
 
-func NewRaft(id string, peers []*Peer, log Log, storage Storage, responseCh chan<- Response, opts ...Option) (*Raft, error) {
+func NewRaft(id string, peers []*Peer, log Log, storage Storage, fsm StateMachine, responseCh chan<- ReplicateResponse, opts ...Option) (*Raft, error) {
 	var options options
 	for _, opt := range opts {
 		if err := opt(&options); err != nil {
@@ -78,6 +80,7 @@ func NewRaft(id string, peers []*Peer, log Log, storage Storage, responseCh chan
 		peers:       peers,
 		log:         log,
 		storage:     storage,
+		fsm:         fsm,
 		state:       Shutdown,
 		currentTerm: currentTerm,
 		votedFor:    votedFor,
@@ -482,17 +485,24 @@ func (r *Raft) commitLoop() {
 		case <-r.commitCh:
 			r.mu.Lock()
 			if r.lastApplied < r.commitIndex {
-				responses := make([]Response, r.commitIndex-r.lastApplied)
+				responses := make([]ReplicateResponse, r.commitIndex-r.lastApplied)
 				for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 					entry, err := r.log.GetEntry(index)
 					if err != nil {
 						r.options.logger.Fatalf("failed to get log entry: %s", err.Error())
 					}
-					responses[index-r.lastApplied-1] = Response{term: entry.Term(), index: entry.Index(), command: entry.Data()}
+					response := ReplicateResponse{
+						Term:     entry.Term(),
+						Index:    entry.Index(),
+						Command:  entry.Data(),
+						Response: r.fsm.Apply(entry.Data()),
+					}
+					responses[index-r.lastApplied-1] = response
+					r.lastApplied = index
 				}
-				r.lastApplied = r.commitIndex
 				r.options.logger.Debugf("%s updated lastApplied index to %d", r.id, r.lastApplied)
 				r.mu.Unlock()
+
 				for _, response := range responses {
 					r.responseCh <- response
 				}

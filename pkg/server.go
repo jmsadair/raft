@@ -17,8 +17,8 @@ type Server struct {
 	raft            *Raft
 }
 
-func NewServer(id string, peers []*Peer, log Log, storage Storage, listenInterface net.Addr, responseCh chan<- Response, opts ...Option) (*Server, error) {
-	raft, err := NewRaft(id, peers, log, storage, responseCh, opts...)
+func NewServer(id string, peers []*Peer, log Log, storage Storage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- ReplicateResponse, opts ...Option) (*Server, error) {
+	raft, err := NewRaft(id, peers, log, storage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}

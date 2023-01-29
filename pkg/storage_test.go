@@ -4,23 +4,25 @@ import (
 	"bytes"
 	"encoding/gob"
 	"sync"
+	"testing"
 
 	"github.com/jmsadair/raft/internal/errors"
+	"github.com/stretchr/testify/assert"
 )
 
-// VolatileStorage implements the Storage Interface.
+// StorageMock implements the Storage Interface.
 // It is completely in-memory and should only be used
 // for testing purposes.
-type VolatileStorage struct {
+type StorageMock struct {
 	store map[string][]byte
 	mu    sync.Mutex
 }
 
-func NewVolatileStorage() *VolatileStorage {
-	return &VolatileStorage{store: make(map[string][]byte)}
+func NewStorageMock() *StorageMock {
+	return &StorageMock{store: make(map[string][]byte)}
 }
 
-func (vs *VolatileStorage) Set(key, value []byte) error {
+func (vs *StorageMock) Set(key, value []byte) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -28,7 +30,7 @@ func (vs *VolatileStorage) Set(key, value []byte) error {
 	return nil
 }
 
-func (vs *VolatileStorage) Get(key []byte) ([]byte, error) {
+func (vs *StorageMock) Get(key []byte) ([]byte, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -39,7 +41,7 @@ func (vs *VolatileStorage) Get(key []byte) ([]byte, error) {
 	return value, nil
 }
 
-func (vs *VolatileStorage) SetUint64(key []byte, value uint64) error {
+func (vs *StorageMock) SetUint64(key []byte, value uint64) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -52,7 +54,7 @@ func (vs *VolatileStorage) SetUint64(key []byte, value uint64) error {
 	return nil
 }
 
-func (vs *VolatileStorage) GetUint64(key []byte) (uint64, error) {
+func (vs *StorageMock) GetUint64(key []byte) (uint64, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
@@ -67,4 +69,17 @@ func (vs *VolatileStorage) GetUint64(key []byte) (uint64, error) {
 		return 0, errors.WrapError(err, "error getting uint64 value: %s", err.Error())
 	}
 	return value, nil
+}
+
+func TestSetAndGet(t *testing.T) {
+	storage := NewStorageMock()
+
+	key := "votedFor"
+	value := "candidateId"
+	err := storage.Set([]byte(key), []byte(value))
+	assert.NoError(t, err)
+
+	valueBytes, err := storage.Get([]byte(key))
+	assert.NoError(t, err)
+	assert.Equal(t, string(valueBytes), value)
 }

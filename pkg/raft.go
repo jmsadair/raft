@@ -485,7 +485,7 @@ func (r *Raft) commitLoop() {
 		case <-r.commitCh:
 			r.mu.Lock()
 			if r.lastApplied < r.commitIndex {
-				responses := make([]ReplicateResponse, r.commitIndex-r.lastApplied)
+				responses := make([]ReplicateResponse, 0, r.commitIndex-r.lastApplied)
 				for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 					entry, err := r.log.GetEntry(index)
 					if err != nil {
@@ -497,7 +497,7 @@ func (r *Raft) commitLoop() {
 						Command:  entry.Data(),
 						Response: r.fsm.Apply(entry.Data()),
 					}
-					responses[index-r.lastApplied-1] = response
+					responses = append(responses, response)
 					r.lastApplied = index
 				}
 				r.options.logger.Debugf("%s updated lastApplied index to %d", r.id, r.lastApplied)

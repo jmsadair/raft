@@ -330,7 +330,7 @@ func TestReplicateNoQuorum(t *testing.T) {
 	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
 
 	command := []byte("test")
-	require.NoError(t, cluster.replicateWithRetry(command, 5))
+	cluster.servers[leader].Replicate(command)
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)

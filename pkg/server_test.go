@@ -171,21 +171,25 @@ func (tc *TestCluster) disconnectServerFromPeers(id int) error {
 	return nil
 }
 
-func (tc *TestCluster) replicate(command []byte) error {
-	leader, err := tc.hasOneLeader()
-	if err != nil {
-		return errors.WrapError(err, errReplicate)
-	}
+func (tc *TestCluster) replicateWithRetry(command []byte, numRetries int) error {
+	for i := 0; i < numRetries+1; i++ {
+		leader, err := tc.hasOneLeader()
+		if err != nil {
+			return errors.WrapError(err, errReplicate)
+		}
 
-	if index, _ := tc.servers[leader].Replicate(command); index != 0 {
-		for j := 0; j < 10; j++ {
-			if tc.numberCommitted(index) == len(tc.servers) {
-				return nil
-			}
-			time.Sleep(100 * time.Millisecond)
+		index, _ := tc.servers[leader].Replicate(command)
+		if index == 0 {
+			continue
+		}
+
+		// Wait a bit for the command to be committed across all servers.
+		time.Sleep(100 * time.Millisecond)
+
+		if tc.numberCommitted(index) == len(tc.servers) {
+			return nil
 		}
 	}
-
 	return errors.WrapError(nil, errReplicate)
 }
 
@@ -207,7 +211,7 @@ func (tc *TestCluster) hasOneLeader() (int, error) {
 		}
 
 		// Wait for a bit to see if leader is elected.
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(time.Duration(100+50*i) * time.Millisecond)
 	}
 
 	return -1, errors.WrapError(nil, errNoLeader)
@@ -267,7 +271,7 @@ func TestReplicateSimple(t *testing.T) {
 	require.NoError(t, cluster.startCluster())
 
 	command := []byte("test")
-	require.NoError(t, cluster.replicate(command))
+	require.NoError(t, cluster.replicateWithRetry(command, 5))
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
@@ -295,7 +299,7 @@ func TestReplicateMultiple(t *testing.T) {
 	}
 
 	for _, command := range commands {
-		require.NoError(t, cluster.replicate(command))
+		require.NoError(t, cluster.replicateWithRetry(command, 5))
 	}
 
 	for id := 0; id < numServers; id++ {
@@ -312,7 +316,7 @@ func TestReplicateMultiple(t *testing.T) {
 
 // TestReplicationNoQuorum tests that replication is not successful if there is not a quorum.
 func TestReplicateNoQuorum(t *testing.T) {
-	numServers := 3
+	numServers := 5
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
 
@@ -326,10 +330,7 @@ func TestReplicateNoQuorum(t *testing.T) {
 	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
 
 	command := []byte("test")
-	require.NoError(t, cluster.replicate(command))
-
-	// Wait a bit to make sure command was not committed.
-	time.Sleep(1000 * time.Millisecond)
+	require.NoError(t, cluster.replicateWithRetry(command, 5))
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)

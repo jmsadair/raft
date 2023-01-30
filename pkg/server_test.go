@@ -9,19 +9,19 @@ import (
 	"time"
 
 	"github.com/jmsadair/raft/internal/errors"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Error strings used by TestCluster.
 var (
 	errMultipleLeader = "cluster has more than one leader"
-	errNoLeader       = "cluster does not have a leader"
+	errNoLeader       = "cluster has no leader"
 	errDisconnect     = "failed to disconnect from peer: %s"
 	errConnect        = "failed to connect to peer: %s"
 	errCreateCluster  = "failed to create cluster: %s"
 	errStopCluster    = "failed to stop cluster: %s"
 	errStartCluster   = "failed to start cluster: %s"
-	errReplicate      = "failed to replicate command: %s"
+	errReplicate      = "failed to replicate command"
 )
 
 type TestCluster struct {
@@ -172,48 +172,70 @@ func (tc *TestCluster) disconnectServerFromPeers(id int) error {
 }
 
 func (tc *TestCluster) replicate(command []byte) error {
-	leader, err := tc.clusterLeader()
+	leader, err := tc.hasOneLeader()
 	if err != nil {
-		return errors.WrapError(err, errReplicate, err.Error())
+		return errors.WrapError(err, errReplicate)
 	}
-	err = tc.servers[leader].Replicate(command)
-	if err != nil {
-		return errors.WrapError(err, errReplicate, err.Error())
+
+	if index, _ := tc.servers[leader].Replicate(command); index != 0 {
+		for j := 0; j < 10; j++ {
+			if tc.numberCommitted(index) == len(tc.servers) {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
-	return nil
+
+	return errors.WrapError(nil, errReplicate)
 }
 
-func (tc *TestCluster) clusterLeader() (int, error) {
-	leader := -1
+func (tc *TestCluster) hasOneLeader() (int, error) {
+	for i := 0; i < 10; i++ {
+		leader := -1
+		for _, server := range tc.servers {
+			id, _, _, state := server.raft.Status()
+			if state == Leader && leader != -1 {
+				return -1, errors.WrapError(nil, errMultipleLeader)
+			}
+			if state == Leader {
+				leader, _ = strconv.Atoi(id)
+			}
+		}
+
+		if leader != -1 {
+			return leader, nil
+		}
+
+		// Wait for a bit to see if leader is elected.
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return -1, errors.WrapError(nil, errNoLeader)
+}
+
+func (tc *TestCluster) numberCommitted(index uint64) int {
+	committed := 0
 	for _, server := range tc.servers {
-		id, _, state := server.raft.Status()
-		if state == Leader && leader != -1 {
-			return -1, errors.WrapError(nil, errMultipleLeader)
-		}
-		if state == Leader {
-			leader, _ = strconv.Atoi(id)
+		_, _, commitIndex, _ := server.raft.Status()
+		if commitIndex >= index {
+			committed++
 		}
 	}
-	if leader == -1 {
-		return 0, errors.WrapError(nil, errNoLeader)
-	}
-	return leader, nil
+	return committed
 }
 
 // TestBasicElection tests that a new cluster is able to successfully elect a leader.
 func TestBasicElection(t *testing.T) {
 	numServers := 3
 	cluster, err := newCluster(numServers)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	assert.NoError(t, cluster.startCluster())
+	require.NoError(t, cluster.startCluster())
 
-	time.Sleep(500 * time.Millisecond)
+	_, err = cluster.hasOneLeader()
+	require.NoError(t, err)
 
-	_, err = cluster.clusterLeader()
-	assert.NoError(t, err)
-
-	assert.NoError(t, cluster.stopCluster())
+	require.NoError(t, cluster.stopCluster())
 }
 
 // TestLeaderFailElection tests that the cluster is able to elect a new leader after the
@@ -221,107 +243,98 @@ func TestBasicElection(t *testing.T) {
 func TestLeaderFailElection(t *testing.T) {
 	numServers := 3
 	cluster, err := newCluster(numServers)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	assert.NoError(t, cluster.startCluster())
+	require.NoError(t, cluster.startCluster())
 
-	time.Sleep(500 * time.Millisecond)
+	leader, err := cluster.hasOneLeader()
+	require.NoError(t, err)
 
-	leader, err := cluster.clusterLeader()
-	assert.NoError(t, err)
+	require.NoError(t, cluster.disconnectServerFromPeers(leader))
 
-	assert.NoError(t, cluster.disconnectServerFromPeers(leader))
+	_, err = cluster.hasOneLeader()
+	require.NoError(t, err)
 
-	time.Sleep(500 * time.Millisecond)
-
-	_, err = cluster.clusterLeader()
-	assert.NoError(t, err)
-
-	assert.NoError(t, cluster.stopCluster())
+	require.NoError(t, cluster.stopCluster())
 }
 
 // TestReplicateSimple tests replicating a single command.
 func TestReplicateSimple(t *testing.T) {
 	numServers := 3
 	cluster, err := newCluster(numServers)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	assert.NoError(t, cluster.startCluster())
-
-	time.Sleep(500 * time.Millisecond)
+	require.NoError(t, cluster.startCluster())
 
 	command := []byte("test")
-	assert.NoError(t, cluster.replicate(command))
-
-	time.Sleep(500 * time.Millisecond)
+	require.NoError(t, cluster.replicate(command))
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
-		assert.Len(t, responses, 1)
+		require.Len(t, responses, 1)
 		response := responses[0]
-		assert.Equal(t, response.Command, command)
-		assert.Equal(t, int(response.Index), 1)
+		require.Equal(t, response.Command, command)
+		require.Equal(t, int(response.Index), 1)
 	}
 
-	assert.NoError(t, cluster.stopCluster())
+	require.NoError(t, cluster.stopCluster())
 }
 
 // TestReplicateMultiple tests replicating multiple commands.
 func TestReplicateMultiple(t *testing.T) {
-	numServers := 5
+	numServers := 3
 	cluster, err := newCluster(numServers)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	assert.NoError(t, cluster.startCluster())
+	require.NoError(t, cluster.startCluster())
 
-	time.Sleep(500 * time.Millisecond)
-
-	commands := [][]byte{[]byte("command1"), []byte("command2"), []byte("command3"), []byte("command4")}
-	for _, command := range commands {
-		assert.NoError(t, cluster.replicate(command))
+	numCommands := 5
+	commands := make([][]byte, numCommands)
+	for i := 0; i < numCommands; i++ {
+		commands[i] = []byte(fmt.Sprintf("command%d", i))
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	for _, command := range commands {
+		require.NoError(t, cluster.replicate(command))
+	}
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
-		assert.Len(t, responses, len(commands))
+		require.Len(t, responses, len(commands))
 		for i, response := range responses {
-			assert.Equal(t, response.Command, commands[i])
-			assert.Equal(t, int(response.Index), i+1)
+			require.Equal(t, response.Command, commands[i])
+			require.Equal(t, int(response.Index), i+1)
 		}
 	}
 
-	assert.NoError(t, cluster.stopCluster())
+	require.NoError(t, cluster.stopCluster())
 }
 
 // TestReplicationNoQuorum tests that replication is not successful if there is not a quorum.
 func TestReplicateNoQuorum(t *testing.T) {
-	numServers := 5
+	numServers := 3
 	cluster, err := newCluster(numServers)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	assert.NoError(t, cluster.startCluster())
+	require.NoError(t, cluster.startCluster())
 
-	time.Sleep(500 * time.Millisecond)
+	leader, err := cluster.hasOneLeader()
+	require.NoError(t, err)
 
-	leader, err := cluster.clusterLeader()
-	assert.NoError(t, err)
-
-	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+1)%numServers))
-	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+2)%numServers))
-	assert.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+1)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+2)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
 
 	command := []byte("test")
-	assert.NoError(t, cluster.replicate(command))
+	require.NoError(t, cluster.replicate(command))
 
 	// Wait a bit to make sure command was not committed.
 	time.Sleep(1000 * time.Millisecond)
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
-		assert.Empty(t, responses)
+		require.Empty(t, responses)
 	}
 
-	assert.NoError(t, cluster.stopCluster())
+	require.NoError(t, cluster.stopCluster())
 }

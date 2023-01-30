@@ -64,7 +64,7 @@ func (s *Server) IsStarted() bool {
 	return s.server != nil
 }
 
-func (s *Server) Replicate(command []byte) error {
+func (s *Server) Replicate(command []byte) (uint64, error) {
 	return s.raft.Replicate(command)
 }
 

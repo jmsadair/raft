@@ -110,7 +110,7 @@ func (r *Raft) Start() {
 	r.submissionCh = make(chan interface{})
 	r.lastContact = time.Now()
 
-	r.becomeCandidate()
+	r.becomeFollower(0)
 
 	go r.commitLoop()
 	go r.mainLoop()
@@ -125,17 +125,16 @@ func (r *Raft) Stop() {
 	if r.state == Shutdown {
 		return
 	}
-
 	r.state = Shutdown
 	close(r.shutdownCh)
 	r.options.logger.Infof("raft server with ID %s stopped", r.id)
 }
 
-func (r *Raft) Replicate(command []byte) error {
+func (r *Raft) Replicate(command []byte) (uint64, error) {
 	r.mu.Lock()
 	if r.state != Leader {
 		r.mu.Unlock()
-		return errors.WrapError(nil, "%s is not the leader", r.id)
+		return 0, errors.WrapError(nil, "%s is not the leader", r.id)
 	}
 	entry := NewLogEntry(r.log.LastIndex()+1, r.currentTerm, command)
 	r.log.AppendEntry(entry)
@@ -143,18 +142,18 @@ func (r *Raft) Replicate(command []byte) error {
 
 	r.submissionCh <- struct{}{}
 
-	return nil
+	return entry.Index(), nil
 }
 
 func (r *Raft) Quorum() int {
 	return len(r.peers)/2 + 1
 }
 
-func (r *Raft) Status() (id string, term uint64, state State) {
+func (r *Raft) Status() (id string, term uint64, commitIndex uint64, state State) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.id, r.currentTerm, r.state
+	return r.id, r.currentTerm, r.commitIndex, r.state
 }
 
 func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntriesResponse {
@@ -237,6 +236,11 @@ func (r *Raft) sendAppendEntries() {
 	for _, peer := range r.peers {
 		go func(peer *Peer) {
 			r.mu.Lock()
+			if r.state != Leader {
+				r.mu.Unlock()
+				return
+			}
+
 			nextIndex := peer.getNextIndex()
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := uint64(0)
@@ -277,6 +281,12 @@ func (r *Raft) sendAppendEntries() {
 				r.mu.Unlock()
 				return
 			}
+
+			if r.state != Leader {
+				r.mu.Unlock()
+				return
+			}
+
 			if !response.GetSuccess() {
 				if nextIndex != 1 {
 					peer.setNextIndex(nextIndex - 1)
@@ -285,11 +295,12 @@ func (r *Raft) sendAppendEntries() {
 				r.submissionCh <- struct{}{}
 				return
 			}
+
 			peer.setNextIndex(nextIndex + uint64(len(entries)))
 			peer.setMatchIndex(nextIndex - 1)
 
 			oldCommitIndex := r.commitIndex
-			for index := r.commitIndex; index <= r.log.LastIndex(); index++ {
+			for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
 				if entry, _ := r.log.GetEntry(index); entry == nil || entry.Term() != r.currentTerm {
 					continue
 				}
@@ -362,6 +373,7 @@ func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSn
 }
 
 func (r *Raft) leaderLoop() {
+	r.sendAppendEntries()
 	heartbeatInterval := r.options.heartbeatInterval
 	heartbeat := time.NewTicker(heartbeatInterval)
 
@@ -478,37 +490,27 @@ func (r *Raft) candidateLoop() {
 }
 
 func (r *Raft) commitLoop() {
-	for {
-		select {
-		case <-r.shutdownCh:
-			return
-		case <-r.commitCh:
-			r.mu.Lock()
-			if r.lastApplied < r.commitIndex {
-				responses := make([]ReplicateResponse, 0, r.commitIndex-r.lastApplied)
-				for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
-					entry, err := r.log.GetEntry(index)
-					if err != nil {
-						r.options.logger.Fatalf("failed to get log entry: %s", err.Error())
-					}
-					response := ReplicateResponse{
-						Term:     entry.Term(),
-						Index:    entry.Index(),
-						Command:  entry.Data(),
-						Response: r.fsm.Apply(entry.Data()),
-					}
-					responses = append(responses, response)
-					r.lastApplied = index
-				}
-				r.options.logger.Debugf("%s updated lastApplied index to %d", r.id, r.lastApplied)
-				r.mu.Unlock()
-
-				for _, response := range responses {
-					r.responseCh <- response
-				}
-				break
+	for range r.commitCh {
+		r.mu.Lock()
+		responses := make([]ReplicateResponse, r.commitIndex-r.lastApplied)
+		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
+			entry, err := r.log.GetEntry(index)
+			if err != nil {
+				r.options.logger.Fatalf("failed to get log entry: %s", err.Error())
 			}
-			r.mu.Unlock()
+			response := ReplicateResponse{
+				Term:     entry.Term(),
+				Index:    entry.Index(),
+				Command:  entry.Data(),
+				Response: r.fsm.Apply(entry.Data()),
+			}
+			responses[index-r.lastApplied-1] = response
+		}
+		r.lastApplied = r.commitIndex
+		r.mu.Unlock()
+
+		for _, response := range responses {
+			r.responseCh <- response
 		}
 	}
 }

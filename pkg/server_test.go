@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -230,6 +231,8 @@ func (tc *TestCluster) numberCommitted(index uint64) int {
 
 // TestBasicElection tests that a new cluster is able to successfully elect a leader.
 func TestBasicElection(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 3
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
@@ -245,6 +248,8 @@ func TestBasicElection(t *testing.T) {
 // TestLeaderFailElection tests that the cluster is able to elect a new leader after the
 // original leader fails.
 func TestLeaderFailElection(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 3
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
@@ -264,6 +269,8 @@ func TestLeaderFailElection(t *testing.T) {
 
 // TestReplicateSimple tests replicating a single command.
 func TestReplicateSimple(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 3
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
@@ -286,6 +293,8 @@ func TestReplicateSimple(t *testing.T) {
 
 // TestReplicateMultiple tests replicating multiple commands.
 func TestReplicateMultiple(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 3
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
@@ -316,6 +325,8 @@ func TestReplicateMultiple(t *testing.T) {
 
 // TestReplicationNoQuorum tests that replication is not successful if there is not a quorum.
 func TestReplicateNoQuorum(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 5
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)

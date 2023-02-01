@@ -52,7 +52,7 @@ func (s *Server) Stop() error {
 	if s.server == nil {
 		return errors.WrapError(nil, "server has not been started")
 	}
-	s.server.GracefulStop()
+	s.server.Stop()
 	s.listener.Close()
 	s.raft.Stop()
 	s.server = nil

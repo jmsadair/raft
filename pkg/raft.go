@@ -11,23 +11,24 @@ import (
 )
 
 type Raft struct {
-	id           string
-	options      options
-	peers        []*Peer
-	log          Log
-	storage      Storage
-	fsm          StateMachine
-	state        State
-	commitIndex  uint64
-	lastApplied  uint64
-	currentTerm  uint64
-	votedFor     string
-	lastContact  time.Time
-	submissionCh chan interface{}
-	commitCh     chan interface{}
-	responseCh   chan<- ReplicateResponse
-	shutdownCh   chan interface{}
-	mu           sync.Mutex
+	id               string
+	options          options
+	peers            []*Peer
+	log              Log
+	storage          Storage
+	fsm              StateMachine
+	state            State
+	commitIndex      uint64
+	lastApplied      uint64
+	currentTerm      uint64
+	votedFor         string
+	lastContact      time.Time
+	appendEntriesCh  chan interface{}
+	applyCh          chan interface{}
+	clientResponseCh chan<- ReplicateResponse
+	stateCh          chan interface{}
+	shutdownCh       chan interface{}
+	mu               sync.Mutex
 }
 
 type ReplicateResponse struct {
@@ -35,6 +36,12 @@ type ReplicateResponse struct {
 	Index    uint64
 	Command  []byte
 	Response interface{}
+}
+
+type AppendEntriesResponse struct {
+	peer       *Peer
+	numEntries int
+	response   *pb.AppendEntriesResponse
 }
 
 func NewRaft(id string, peers []*Peer, log Log, storage Storage, fsm StateMachine, responseCh chan<- ReplicateResponse, opts ...Option) (*Raft, error) {
@@ -75,16 +82,16 @@ func NewRaft(id string, peers []*Peer, log Log, storage Storage, fsm StateMachin
 	votedFor := string(votedForBytes)
 
 	raft := &Raft{
-		id:          id,
-		options:     options,
-		peers:       peers,
-		log:         log,
-		storage:     storage,
-		fsm:         fsm,
-		state:       Shutdown,
-		currentTerm: currentTerm,
-		votedFor:    votedFor,
-		responseCh:  responseCh,
+		id:               id,
+		options:          options,
+		peers:            peers,
+		log:              log,
+		storage:          storage,
+		fsm:              fsm,
+		state:            Shutdown,
+		currentTerm:      currentTerm,
+		votedFor:         votedFor,
+		clientResponseCh: responseCh,
 	}
 
 	return raft, nil
@@ -105,14 +112,15 @@ func (r *Raft) Start() {
 		}
 	}
 
-	r.commitCh = make(chan interface{})
+	r.applyCh = make(chan interface{}, 1)
 	r.shutdownCh = make(chan interface{})
-	r.submissionCh = make(chan interface{})
+	r.appendEntriesCh = make(chan interface{}, 1)
+	r.stateCh = make(chan interface{}, 1)
 	r.lastContact = time.Now()
 
 	r.becomeFollower(0)
 
-	go r.commitLoop()
+	go r.applyLoop()
 	go r.mainLoop()
 
 	r.options.logger.Infof("raft server with ID %s started", r.id)
@@ -125,8 +133,18 @@ func (r *Raft) Stop() {
 	if r.state == Shutdown {
 		return
 	}
+
 	r.state = Shutdown
+
 	close(r.shutdownCh)
+	close(r.applyCh)
+	close(r.stateCh)
+	close(r.appendEntriesCh)
+
+	for _, peer := range r.peers {
+		peer.disconnect()
+	}
+
 	r.options.logger.Infof("raft server with ID %s stopped", r.id)
 }
 
@@ -140,7 +158,7 @@ func (r *Raft) Replicate(command []byte) (uint64, error) {
 	r.log.AppendEntry(entry)
 	r.mu.Unlock()
 
-	r.submissionCh <- struct{}{}
+	r.appendEntriesCh <- struct{}{}
 
 	return entry.Index(), nil
 }
@@ -177,6 +195,7 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	if request.GetTerm() > r.currentTerm {
 		r.becomeFollower(request.GetTerm())
 		response.Term = r.currentTerm
+		r.stateCh <- struct{}{}
 	}
 
 	if request.GetPrevLogIndex() != 0 {
@@ -222,25 +241,19 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 
 	if request.GetLeaderCommit() > r.commitIndex {
 		r.commitIndex = util.Min(request.GetLeaderCommit(), r.log.LastIndex())
-		r.commitCh <- struct{}{}
+		r.applyCh <- struct{}{}
 	}
 
 	response.Success = true
-
 	r.lastContact = time.Now()
 
 	return response
 }
 
-func (r *Raft) sendAppendEntries() {
+func (r *Raft) sendAppendEntries(peerResponseCh chan<- AppendEntriesResponse) {
 	for _, peer := range r.peers {
 		go func(peer *Peer) {
 			r.mu.Lock()
-			if r.state != Leader {
-				r.mu.Unlock()
-				return
-			}
-
 			nextIndex := peer.getNextIndex()
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := uint64(0)
@@ -273,56 +286,7 @@ func (r *Raft) sendAppendEntries() {
 				r.options.logger.Errorf("error appending entries to peer: %s", err.Error())
 				return
 			}
-
-			r.mu.Lock()
-			if response.GetTerm() > r.currentTerm {
-				r.becomeFollower(request.GetTerm())
-				response.Term = r.currentTerm
-				r.mu.Unlock()
-				return
-			}
-
-			if r.state != Leader {
-				r.mu.Unlock()
-				return
-			}
-
-			if !response.GetSuccess() {
-				if nextIndex != 1 {
-					peer.setNextIndex(nextIndex - 1)
-				}
-				r.mu.Unlock()
-				r.submissionCh <- struct{}{}
-				return
-			}
-
-			peer.setNextIndex(nextIndex + uint64(len(entries)))
-			peer.setMatchIndex(nextIndex - 1)
-
-			oldCommitIndex := r.commitIndex
-			for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
-				if entry, _ := r.log.GetEntry(index); entry == nil || entry.Term() != r.currentTerm {
-					continue
-				}
-				matches := 1
-				for _, peer := range r.peers {
-					if peer.getMatchIndex() >= index {
-						matches += 1
-					}
-					if matches >= r.Quorum() {
-						r.commitIndex = index
-						break
-					}
-				}
-			}
-
-			if r.commitIndex != oldCommitIndex {
-				r.mu.Unlock()
-				r.commitCh <- struct{}{}
-				r.submissionCh <- struct{}{}
-				return
-			}
-			r.mu.Unlock()
+			peerResponseCh <- AppendEntriesResponse{peer: peer, numEntries: len(entries), response: response}
 		}(peer)
 	}
 }
@@ -345,6 +309,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	if request.GetTerm() > r.currentTerm {
 		r.becomeFollower(request.GetTerm())
 		response.Term = r.currentTerm
+		r.stateCh <- struct{}{}
 	}
 
 	if r.votedFor != "" && r.votedFor != request.GetCandidateId() {
@@ -373,27 +338,70 @@ func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSn
 }
 
 func (r *Raft) leaderLoop() {
-	r.sendAppendEntries()
+	peerResponseCh := make(chan AppendEntriesResponse, len(r.peers))
 	heartbeatInterval := r.options.heartbeatInterval
-	heartbeat := time.NewTicker(heartbeatInterval)
+	r.sendAppendEntries(peerResponseCh)
 
 	for {
 		select {
-		case <-heartbeat.C:
-			r.sendAppendEntries()
-			heartbeat.Reset(heartbeatInterval)
-		case <-r.submissionCh:
-			r.sendAppendEntries()
-		case <-r.shutdownCh:
-			return
-		default:
-			<-time.After(5 * time.Millisecond)
+		case <-time.After(heartbeatInterval):
+			r.sendAppendEntries(peerResponseCh)
+		case <-r.stateCh:
 			r.mu.Lock()
 			if r.state != Leader {
 				r.mu.Unlock()
 				return
 			}
 			r.mu.Unlock()
+		case <-r.appendEntriesCh:
+			r.sendAppendEntries(peerResponseCh)
+		case peerResponse := <-peerResponseCh:
+			r.mu.Lock()
+			peer := peerResponse.peer
+			response := peerResponse.response
+			entriesAppended := peerResponse.numEntries
+
+			if response.GetTerm() > r.currentTerm {
+				r.becomeFollower(response.GetTerm())
+				r.stateCh <- struct{}{}
+			}
+
+			if !response.GetSuccess() {
+				if peer.getNextIndex() != 1 {
+					peer.setNextIndex(peer.getNextIndex() - 1)
+				}
+				r.mu.Unlock()
+				break
+			}
+
+			peer.setNextIndex(peer.getNextIndex() + uint64(entriesAppended))
+			peer.setMatchIndex(peer.getNextIndex() - 1)
+
+			oldCommitIndex := r.commitIndex
+			for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
+				if entry, _ := r.log.GetEntry(index); entry.Term() != r.currentTerm {
+					continue
+				}
+				matches := 1
+				for _, peer := range r.peers {
+					if peer.getMatchIndex() >= index {
+						matches += 1
+					}
+					if matches >= r.Quorum() {
+						r.commitIndex = index
+						break
+					}
+				}
+			}
+			newCommitIndex := r.commitIndex
+			r.mu.Unlock()
+
+			if newCommitIndex != oldCommitIndex {
+				r.applyCh <- struct{}{}
+				r.appendEntriesCh <- struct{}{}
+			}
+		case <-r.shutdownCh:
+			return
 		}
 	}
 }
@@ -413,7 +421,14 @@ func (r *Raft) followerLoop() {
 				return
 			}
 			r.mu.Unlock()
-		case <-r.submissionCh:
+		case <-r.stateCh:
+			r.mu.Lock()
+			if r.state != Follower {
+				r.mu.Unlock()
+				return
+			}
+			r.mu.Unlock()
+		case <-r.appendEntriesCh:
 			r.options.logger.Warnf("ignoring request to replicate: %s is not the leader", r.id)
 		case <-r.shutdownCh:
 			return
@@ -429,8 +444,7 @@ func (r *Raft) candidateLoop() {
 	r.currentTerm++
 	r.mu.Unlock()
 
-	responses := make(chan *pb.RequestVoteResponse)
-
+	peerResponsesCh := make(chan *pb.RequestVoteResponse, len(r.peers))
 	electionTimeout := r.options.electionTimeout
 	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
 
@@ -451,13 +465,13 @@ func (r *Raft) candidateLoop() {
 				return
 			}
 
-			responses <- response
+			peerResponsesCh <- response
 		}(peer)
 	}
 
 	for {
 		select {
-		case response := <-responses:
+		case response := <-peerResponsesCh:
 			if response.VoteGranted {
 				votesReceived++
 			}
@@ -473,24 +487,23 @@ func (r *Raft) candidateLoop() {
 				return
 			}
 			r.mu.Unlock()
-		case <-r.shutdownCh:
-			return
-		case <-electionTimer:
-			return
-		default:
-			<-time.After(5 * time.Millisecond)
+		case <-r.stateCh:
 			r.mu.Lock()
 			if r.state != Candidate {
 				r.mu.Unlock()
 				return
 			}
 			r.mu.Unlock()
+		case <-r.shutdownCh:
+			return
+		case <-electionTimer:
+			return
 		}
 	}
 }
 
-func (r *Raft) commitLoop() {
-	for range r.commitCh {
+func (r *Raft) applyLoop() {
+	for range r.applyCh {
 		r.mu.Lock()
 		responses := make([]ReplicateResponse, r.commitIndex-r.lastApplied)
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
@@ -510,7 +523,7 @@ func (r *Raft) commitLoop() {
 		r.mu.Unlock()
 
 		for _, response := range responses {
-			r.responseCh <- response
+			r.clientResponseCh <- response
 		}
 	}
 }

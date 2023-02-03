@@ -81,19 +81,20 @@ func (l *LogMock) Truncate(index uint64) error {
 	return nil
 }
 
-func (l *LogMock) Compact(index uint64) error {
+func (l *LogMock) Compact(index, term uint64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	if l.firstIndex > index || l.lastIndex < index {
-		return errors.WrapError(nil, errIndexDoesNotExist, index)
+	newEntries := []*LogEntry{NewLogEntry(index, term, nil)}
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].Index() == index && l.entries[i].Term() == term {
+			newEntries = append(newEntries, l.entries[i+1:]...)
+			break
+		}
 	}
-
-	l.entries = l.entries[index-l.firstIndex:]
-	if len(l.entries) != 0 {
-		l.firstIndex = l.entries[0].Index()
-	}
-
+	l.entries = newEntries
+	l.firstIndex = l.entries[0].Index()
+	l.lastIndex = l.entries[len(l.entries)-1].Index()
+	l.lastTerm = l.entries[len(l.entries)-1].Term()
 	return nil
 }
 
@@ -209,7 +210,7 @@ func TestCompact(t *testing.T) {
 
 	log.AppendEntries([]*LogEntry{entry1, entry2, entry3})
 
-	log.Compact(entry2Index)
+	log.Compact(entry2Index, entry2Term)
 
 	entry3, _ = log.GetEntry(entry3Index)
 	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)

@@ -1,5 +1,31 @@
 package raft
 
+type LogEntry struct {
+	term  uint64
+	index uint64
+	data  []byte
+}
+
+func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
+	return &LogEntry{term: term, index: index, data: data}
+}
+
+func (e *LogEntry) Term() uint64 {
+	return e.term
+}
+
+func (e *LogEntry) Index() uint64 {
+	return e.index
+}
+
+func (e *LogEntry) Data() []byte {
+	return e.data
+}
+
+func (e *LogEntry) IsConflict(other *LogEntry) bool {
+	return e.index == other.index && e.term != other.term
+}
+
 // Log supports appending and retrieving log entries in
 // in a durable manner. Must be concurrent-safe.
 type Log interface {
@@ -18,7 +44,7 @@ type Log interface {
 
 	// Compact deletes all log entries with index less than
 	// or equal to the provided index.
-	Compact(index uint64) error
+	Compact(index, term uint64) error
 
 	// Contains returns true if the index exists in the log and
 	// false otherwise.

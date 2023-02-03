@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"sync"
 	"testing"
 
 	"github.com/jmsadair/raft/internal/errors"
@@ -11,6 +12,7 @@ import (
 
 type StateMachineMock struct {
 	commands [][]byte
+	mu       sync.Mutex
 }
 
 func NewStateMachineMock() *StateMachineMock {
@@ -18,11 +20,15 @@ func NewStateMachineMock() *StateMachineMock {
 }
 
 func (s *StateMachineMock) Apply(command []byte) interface{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.commands = append(s.commands, command)
 	return len(s.commands)
 }
 
 func (s *StateMachineMock) Snapshot() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var data bytes.Buffer
 	enc := gob.NewEncoder(&data)
 	if err := enc.Encode(s.commands); err != nil {
@@ -32,6 +38,8 @@ func (s *StateMachineMock) Snapshot() ([]byte, error) {
 }
 
 func (s *StateMachineMock) Restore(snapshot []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var commands [][]byte
 	data := bytes.NewBuffer(snapshot)
 	dec := gob.NewDecoder(data)

@@ -17,8 +17,8 @@ type Server struct {
 	raft            *Raft
 }
 
-func NewServer(id string, peers []*Peer, log Log, storage Storage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- ReplicateResponse, opts ...Option) (*Server, error) {
-	raft, err := NewRaft(id, peers, log, storage, fsm, responseCh, opts...)
+func NewServer(id string, peers []*Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
+	raft, err := NewRaft(id, peers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}
@@ -52,7 +52,7 @@ func (s *Server) Stop() error {
 	if s.server == nil {
 		return errors.WrapError(nil, "server has not been started")
 	}
-	s.server.Stop()
+	s.server.GracefulStop()
 	s.listener.Close()
 	s.raft.Stop()
 	s.server = nil
@@ -64,18 +64,27 @@ func (s *Server) IsStarted() bool {
 	return s.server != nil
 }
 
-func (s *Server) Replicate(command []byte) (uint64, error) {
-	return s.raft.Replicate(command)
+func (s *Server) Replicate(command Command) (uint64, error) {
+	return s.raft.SubmitCommand(command)
 }
 
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	return s.raft.appendEntries(request), nil
+	rpc := AppendEntriesRPC{request: request, responseCh: make(chan *pb.AppendEntriesResponse)}
+	s.raft.appendEntriesCh <- rpc
+	response := <-rpc.responseCh
+	return response, nil
 }
 
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-	return s.raft.requestVote(request), nil
+	rpc := RequestVoteRPC{request: request, responseCh: make(chan *pb.RequestVoteResponse)}
+	s.raft.requestVoteCh <- rpc
+	response := <-rpc.responseCh
+	return response, nil
 }
 
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
-	return s.raft.installSnapshot(request), nil
+	rpc := InstallSnapshotRPC{request: request, responseCh: make(chan *pb.InstallSnapshotResponse)}
+	s.raft.installSnapshotCh <- rpc
+	response := <-rpc.responseCh
+	return response, nil
 }

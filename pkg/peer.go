@@ -49,53 +49,70 @@ func (p *Peer) connect() error {
 	if p.client != nil {
 		return errors.WrapError(nil, errConnEstablished, p.id)
 	}
+
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
 		return errors.WrapError(err, "failed to connect to peer: %s", err.Error())
 	}
+
 	p.client = pb.NewRaftClient(conn)
 	p.conn = conn
+
 	return nil
 }
 
 func (p *Peer) disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.client == nil {
 		return errors.WrapError(nil, errNoConn, p.id)
 	}
+
 	if err := p.conn.Close(); err != nil {
 		return errors.WrapError(err, "failed to close connection with peer: %s", err.Error())
 	}
+
 	p.conn = nil
 	p.client = nil
+
 	return nil
+}
+
+func (p *Peer) isConnected() bool {
+	return p.client != nil
 }
 
 func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.client == nil {
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
+
 	return p.client.AppendEntries(context.Background(), request, []grpc.CallOption{}...)
 }
 
 func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.client == nil {
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
+
 	return p.client.RequestVote(context.Background(), request, []grpc.CallOption{}...)
 }
 
 func (p *Peer) installSnapshot(request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	if p.client == nil {
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
+
 	return p.client.InstallSnapshot(context.Background(), request, []grpc.CallOption{}...)
 }
 

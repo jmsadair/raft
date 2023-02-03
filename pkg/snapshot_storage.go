@@ -9,6 +9,10 @@ type Snapshot struct {
 	Data []byte
 }
 
+func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) *Snapshot {
+	return &Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: data}
+}
+
 type SnapshotStorage interface {
 	// LastSnapshot gets the most recently saved snapshot, if it exists.
 	LastSnapshot() (Snapshot, error)

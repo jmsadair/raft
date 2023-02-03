@@ -5,8 +5,10 @@ import (
 )
 
 const (
-	defaultElectionTimeout = time.Duration(150 * time.Millisecond)
-	defaultHeartbeat       = time.Duration(50 * time.Millisecond)
+	defaultElectionTimeout       = time.Duration(150 * time.Millisecond)
+	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
+	defaultSnapshotInterval      = time.Duration(150 * time.Millisecond)
+	defaultMaxEntriesPerSnapshot = 100
 )
 
 // Logger supports logging message at the debug, info, warn, error, and
@@ -44,13 +46,25 @@ type Logger interface {
 }
 
 type options struct {
-	// The minimum amount of time in milliseconds that must elapse
-	// before a raft node starts an election.
+	// Minimum election timeout in milliseconds. A random time
+	// between electionTimeout and 2 * electionTimeout will be
+	// chosen to determine when a server will hold an election.
 	electionTimeout time.Duration
 
 	// The interval in milliseconds between AppendEntries RPCs that
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
+
+	// Minimum snapshot interval in milliseconds. A random time
+	// between snapshotInterval and 2 * snapshotInterval will
+	// be chosen to determine the interval between the servers checks
+	// to see if it needs to snapshot.
+	snapshotInterval time.Duration
+
+	// The maximum number of log entries before a snapshot is triggered.
+	// If the number of log entries since the last snapshot meets or
+	// exceeds maxEntriesPerSnapshot, a snapshot will be taken.
+	maxEntriesPerSnapshot uint64
 
 	// A logger for debugging and important events.
 	logger Logger
@@ -58,7 +72,7 @@ type options struct {
 
 type Option func(options *options) error
 
-// WithElectionTimeout sets the election timeout for the raft node.
+// WithElectionTimeout sets the election timeout for the raft server.
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
 		options.electionTimeout = time
@@ -66,10 +80,26 @@ func WithElectionTimeout(time time.Duration) Option {
 	}
 }
 
-// WithHeartbeatIntervals sets the heartbeat interval for the raft node.
+// WithHeartbeatIntervals sets the heartbeat interval for the raft server.
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		options.heartbeatInterval = time
+		return nil
+	}
+}
+
+// WithSnapshotInterval sets the snapshot interval for the raft server.
+func WithSnapshotInterval(time time.Duration) Option {
+	return func(options *options) error {
+		options.snapshotInterval = time
+		return nil
+	}
+}
+
+// WithMaxLogEntries sets the maximum log entries for the raft server.
+func WithMaxLogEntries(maxEntriesPerSnapshot uint64) Option {
+	return func(options *options) error {
+		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
 		return nil
 	}
 }

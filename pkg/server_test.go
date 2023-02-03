@@ -28,17 +28,21 @@ var (
 type TestCluster struct {
 	peers              []*Peer
 	servers            []*Server
-	replicateCh        []chan ReplicateResponse
+	snapshotStores     []SnapshotStorage
+	stateMachines      []StateMachine
+	replicateCh        []chan CommandResponse
 	shutdownCh         chan interface{}
-	replicateResponses [][]ReplicateResponse
+	replicateResponses [][]CommandResponse
 	mu                 []sync.Mutex
 }
 
 func newCluster(numServers int) (*TestCluster, error) {
 	peers := make([]*Peer, numServers)
 	servers := make([]*Server, numServers)
-	replicateCh := make([]chan ReplicateResponse, numServers)
-	responses := make([][]ReplicateResponse, numServers)
+	snapshotStores := make([]SnapshotStorage, numServers)
+	stateMachines := make([]StateMachine, numServers)
+	replicateCh := make([]chan CommandResponse, numServers)
+	responses := make([][]CommandResponse, numServers)
 
 	ipPrefix := "127.0.0."
 	port := 8080
@@ -55,13 +59,15 @@ func newCluster(numServers int) (*TestCluster, error) {
 				serverPeers = append(serverPeers, peers[j].Clone())
 			}
 
-			replicateCh[i] = make(chan ReplicateResponse)
-			responses[i] = make([]ReplicateResponse, 0)
+			replicateCh[i] = make(chan CommandResponse)
+			responses[i] = make([]CommandResponse, 0)
+			snapshotStores[i] = NewSnapshotStorageMock()
+			stateMachines[i] = NewStateMachineMock()
+
 			log := NewLogMock()
 			storage := NewStorageMock()
-			fsm := NewStateMachineMock()
 
-			server, err := NewServer(peers[i].id, serverPeers, log, storage, fsm, peers[i].address, replicateCh[i])
+			server, err := NewServer(peers[i].id, serverPeers, log, storage, snapshotStores[i], stateMachines[i], peers[i].address, replicateCh[i])
 			if err != nil {
 				return nil, errors.WrapError(err, errCreateCluster, err.Error())
 			}
@@ -72,6 +78,8 @@ func newCluster(numServers int) (*TestCluster, error) {
 	return &TestCluster{
 		peers:              peers,
 		servers:            servers,
+		snapshotStores:     snapshotStores,
+		stateMachines:      stateMachines,
 		replicateCh:        replicateCh,
 		replicateResponses: responses,
 		shutdownCh:         make(chan interface{}),
@@ -114,10 +122,10 @@ func (tc *TestCluster) processResponses(id int) {
 	}
 }
 
-func (tc *TestCluster) responses(id int) []ReplicateResponse {
+func (tc *TestCluster) responses(id int) []CommandResponse {
 	tc.mu[id].Lock()
 	defer tc.mu[id].Unlock()
-	responses := make([]ReplicateResponse, len(tc.replicateResponses[id]))
+	responses := make([]CommandResponse, len(tc.replicateResponses[id]))
 	copy(responses, tc.replicateResponses[id])
 	return responses
 }
@@ -172,7 +180,7 @@ func (tc *TestCluster) disconnectServerFromPeers(id int) error {
 	return nil
 }
 
-func (tc *TestCluster) replicateWithRetry(command []byte, numRetries int) error {
+func (tc *TestCluster) replicateWithRetry(command Command, numRetries int, expectedServersCommitted int) error {
 	for i := 0; i < numRetries+1; i++ {
 		leader, err := tc.hasOneLeader()
 		if err != nil {
@@ -187,7 +195,7 @@ func (tc *TestCluster) replicateWithRetry(command []byte, numRetries int) error 
 		// Wait a bit for the command to be committed across all servers.
 		time.Sleep(100 * time.Millisecond)
 
-		if tc.numberCommitted(index) == len(tc.servers) {
+		if tc.numberCommitted(index) == expectedServersCommitted {
 			return nil
 		}
 	}
@@ -198,12 +206,12 @@ func (tc *TestCluster) hasOneLeader() (int, error) {
 	for i := 0; i < 10; i++ {
 		leader := -1
 		for _, server := range tc.servers {
-			id, _, _, state := server.raft.Status()
-			if state == Leader && leader != -1 {
+			status := server.raft.Status()
+			if status.State == Leader && leader != -1 {
 				return -1, errors.WrapError(nil, errMultipleLeader)
 			}
-			if state == Leader {
-				leader, _ = strconv.Atoi(id)
+			if status.State == Leader {
+				leader, _ = strconv.Atoi(status.Id)
 			}
 		}
 
@@ -221,12 +229,28 @@ func (tc *TestCluster) hasOneLeader() (int, error) {
 func (tc *TestCluster) numberCommitted(index uint64) int {
 	committed := 0
 	for _, server := range tc.servers {
-		_, _, commitIndex, _ := server.raft.Status()
-		if commitIndex >= index {
+		status := server.raft.Status()
+		if status.CommitIndex >= index {
 			committed++
 		}
 	}
 	return committed
+}
+
+func (tc *TestCluster) snapshotStorage(id int) SnapshotStorage {
+	return tc.snapshotStores[id]
+}
+
+func (tc *TestCluster) stateMachine(id int) StateMachine {
+	return tc.stateMachines[id]
+}
+
+func makeCommands(numCommands int) []Command {
+	commands := make([]Command, numCommands)
+	for i := 0; i < numCommands; i++ {
+		commands[i] = Command{Bytes: []byte(fmt.Sprintf("command%d", i))}
+	}
+	return commands
 }
 
 // TestBasicElection tests that a new cluster is able to successfully elect a leader.
@@ -277,14 +301,15 @@ func TestReplicateSimple(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	command := []byte("test")
-	require.NoError(t, cluster.replicateWithRetry(command, 5))
+	numCommands := 1
+	commands := makeCommands(numCommands)
+	require.NoError(t, cluster.replicateWithRetry(commands[0], 5, numServers))
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
 		require.Len(t, responses, 1)
 		response := responses[0]
-		require.Equal(t, response.Command, command)
+		require.Equal(t, response.Command, commands[0].Bytes)
 		require.Equal(t, int(response.Index), 1)
 	}
 
@@ -301,21 +326,18 @@ func TestReplicateMultiple(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	numCommands := 5
-	commands := make([][]byte, numCommands)
-	for i := 0; i < numCommands; i++ {
-		commands[i] = []byte(fmt.Sprintf("command%d", i))
-	}
+	numCommands := 10
+	commands := makeCommands(numCommands)
 
 	for _, command := range commands {
-		require.NoError(t, cluster.replicateWithRetry(command, 5))
+		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers))
 	}
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
 		require.Len(t, responses, len(commands))
 		for i, response := range responses {
-			require.Equal(t, response.Command, commands[i])
+			require.Equal(t, response.Command, commands[i].Bytes)
 			require.Equal(t, int(response.Index), i+1)
 		}
 	}
@@ -340,7 +362,7 @@ func TestReplicateNoQuorum(t *testing.T) {
 	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+2)%numServers))
 	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
 
-	command := []byte("test")
+	command := Command{Bytes: []byte("test")}
 	cluster.servers[leader].Replicate(command)
 
 	for id := 0; id < numServers; id++ {
@@ -349,4 +371,77 @@ func TestReplicateNoQuorum(t *testing.T) {
 	}
 
 	require.NoError(t, cluster.stopCluster())
+}
+
+func TestTakeSnapshot(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+	numServers := 3
+	cluster, err := newCluster(numServers)
+	require.NoError(t, err)
+
+	require.NoError(t, cluster.startCluster())
+
+	numCommands := 100
+	commands := makeCommands(numCommands)
+
+	for _, command := range commands {
+		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers))
+	}
+
+	// Wait a bit for all the servers to finish taking snapshot.
+	time.Sleep(2 * time.Second)
+
+	require.NoError(t, cluster.stopCluster())
+
+	for id := 0; id < numServers; id++ {
+		snapshotStorage := cluster.snapshotStorage(id)
+		snapshotList, err := snapshotStorage.ListSnapshots()
+		require.NoError(t, err)
+		require.Len(t, snapshotList, 1)
+		last, err := snapshotStorage.LastSnapshot()
+		require.NoError(t, err)
+		fsm := cluster.stateMachine(id)
+		fsmSnapshot, err := fsm.Snapshot()
+		require.NoError(t, err)
+		require.Equal(t, last.LastIncludedIndex, uint64(numCommands))
+		require.Equal(t, last.Data, fsmSnapshot)
+	}
+}
+
+func TestSendSnapshot(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	require.NoError(t, err)
+
+	require.NoError(t, cluster.startCluster())
+
+	leader, err := cluster.hasOneLeader()
+	require.NoError(t, err)
+
+	disconnected := (leader + 1) % numServers
+	require.NoError(t, cluster.disconnectServerFromPeer(leader, disconnected))
+	require.NoError(t, cluster.disconnectServerFromPeers(disconnected))
+
+	numCommands := 110
+	commands := makeCommands(numCommands)
+
+	for _, command := range commands {
+		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers-1))
+	}
+
+	// Wait a bit for all the servers to finish taking snapshot.
+	time.Sleep(2 * time.Second)
+
+	require.NoError(t, cluster.connectServerToPeer(leader, disconnected))
+	require.NoError(t, cluster.connectServerToPeers(disconnected))
+
+	// Wait a bit for snapshot to send and log to be updated.
+	time.Sleep(2 * time.Second)
+
+	require.NoError(t, cluster.stopCluster())
+
+	status := cluster.servers[disconnected].raft.Status()
+	require.Equal(t, status.CommitIndex, uint64(numCommands))
+	require.Equal(t, status.LastApplied, uint64(numCommands))
 }

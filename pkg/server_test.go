@@ -193,7 +193,7 @@ func (tc *TestCluster) replicateWithRetry(command Command, numRetries int, expec
 		}
 
 		// Wait a bit for the command to be committed across all servers.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		if tc.numberCommitted(index) == expectedServersCommitted {
 			return nil
@@ -264,8 +264,8 @@ func TestBasicElection(t *testing.T) {
 	require.NoError(t, cluster.startCluster())
 
 	_, err = cluster.hasOneLeader()
-	require.NoError(t, err)
 
+	require.NoError(t, err)
 	require.NoError(t, cluster.stopCluster())
 }
 
@@ -389,7 +389,7 @@ func TestTakeSnapshot(t *testing.T) {
 	}
 
 	// Wait a bit for all the servers to finish taking snapshot.
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	require.NoError(t, cluster.stopCluster())
 
@@ -410,6 +410,7 @@ func TestTakeSnapshot(t *testing.T) {
 
 func TestSendSnapshot(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 5
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
@@ -423,7 +424,7 @@ func TestSendSnapshot(t *testing.T) {
 	require.NoError(t, cluster.disconnectServerFromPeer(leader, disconnected))
 	require.NoError(t, cluster.disconnectServerFromPeers(disconnected))
 
-	numCommands := 110
+	numCommands := 150
 	commands := makeCommands(numCommands)
 
 	for _, command := range commands {
@@ -431,13 +432,13 @@ func TestSendSnapshot(t *testing.T) {
 	}
 
 	// Wait a bit for all the servers to finish taking snapshot.
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	require.NoError(t, cluster.connectServerToPeer(leader, disconnected))
 	require.NoError(t, cluster.connectServerToPeers(disconnected))
 
 	// Wait a bit for snapshot to send and log to be updated.
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	require.NoError(t, cluster.stopCluster())
 

@@ -5,8 +5,8 @@ import (
 )
 
 const (
-	defaultElectionTimeout       = time.Duration(150 * time.Millisecond)
-	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
+	defaultElectionTimeout       = time.Duration(100 * time.Millisecond)
+	defaultHeartbeat             = time.Duration(25 * time.Millisecond)
 	defaultSnapshotInterval      = time.Duration(150 * time.Millisecond)
 	defaultMaxEntriesPerSnapshot = 100
 )
@@ -66,6 +66,10 @@ type options struct {
 	// exceeds maxEntriesPerSnapshot, a snapshot will be taken.
 	maxEntriesPerSnapshot uint64
 
+	// Indicates whether raft should attempt to restore from the most recent
+	// snapshot upon initialization.
+	restoreFromSnapshot bool
+
 	// A logger for debugging and important events.
 	logger Logger
 }
@@ -100,6 +104,15 @@ func WithSnapshotInterval(time time.Duration) Option {
 func WithMaxLogEntries(maxEntriesPerSnapshot uint64) Option {
 	return func(options *options) error {
 		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
+		return nil
+	}
+}
+
+// WithRestoreFromSnapshot is used to indicate whether the raft server
+// should attempt to restore from snapshot upon initialization.
+func WithRestoreFromSnapshot(restoreFromSnapshot bool) Option {
+	return func(options *options) error {
+		options.restoreFromSnapshot = restoreFromSnapshot
 		return nil
 	}
 }

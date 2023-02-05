@@ -10,6 +10,7 @@ import (
 
 	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/errors"
+	"github.com/jmsadair/raft/internal/util"
 	"github.com/stretchr/testify/require"
 )
 
@@ -571,6 +572,63 @@ func TestSendSnapshot(t *testing.T) {
 	require.NoError(t, cluster.stopCluster())
 }
 
+// TestMultipleSnapshot checks that a snapshot will properly be installed when
+// there are multiple peers lagging.
+func TestSendMultipleSnapshot(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	require.NoError(t, err)
+
+	require.NoError(t, cluster.startCluster())
+
+	leader, err := cluster.checkOneLeader()
+	require.NoError(t, err)
+
+	// Disconnect a server so that it will lag.
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
+
+	// Submit enough commands to force a snapshot. Disconnect another server
+	// after replicating some commands.
+	numCommands := 150
+	commands := makeCommands(numCommands)
+	disconnectIndex := util.RandomInt(1, 99)
+	for index, command := range commands {
+		if index == disconnectIndex {
+			require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
+		}
+
+		if index < disconnectIndex {
+			require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
+		} else {
+			require.NoError(t, cluster.checkSubmitCommand(command, numServers-2))
+		}
+	}
+
+	// Reconnect the servers so that they can have its snapshot installed.
+	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
+	require.NoError(t, cluster.connectServerToPeers((leader+2)%numServers))
+
+	// Check that servers have correct commit index and last applied index now.
+	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
+	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
+	require.NoError(t, cluster.checkCommitIndex((leader+2)%numServers, uint64(numCommands)))
+	require.NoError(t, cluster.checkLastApplied((leader+2)%numServers, uint64(numCommands)))
+
+	// Check that all servers have same state machine snapshot.
+	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
+	for id := 0; id < numServers; id++ {
+		if id == leader {
+			continue
+		}
+		other, _ := cluster.stateMachines[id].Snapshot()
+		require.Equal(t, fsmSnapshot, other)
+	}
+
+	require.NoError(t, cluster.stopCluster())
+}
+
 // TestSendSnapshotLeaderFailure ensures that a snapshot will be installed on a lagging
 // peer even in the case of a leader failure.
 func TestSendSnapshotLeaderFailure(t *testing.T) {
@@ -589,7 +647,7 @@ func TestSendSnapshotLeaderFailure(t *testing.T) {
 	// installed.
 	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
 
-	// Submit enough commands to a force a snapshot.
+	// Submit enough commands to force a snapshot
 	numCommands := 150
 	commands := makeCommands(numCommands)
 	for _, command := range commands {

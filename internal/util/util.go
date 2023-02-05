@@ -26,3 +26,8 @@ func RandomTimeout(min time.Duration, max time.Duration) <-chan time.Time {
 	n := rand.Int63n(max.Milliseconds()-min.Milliseconds()) + min.Milliseconds()
 	return time.After(time.Duration(n) * time.Millisecond)
 }
+
+func RandomInt(min int, max int) int {
+	rand.Seed(time.Now().UnixNano())
+	return min + rand.Intn(max-min)
+}

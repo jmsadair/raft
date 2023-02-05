@@ -341,7 +341,7 @@ func (r *Raft) sendAppendEntries(responseCh chan<- AppendEntriesMessage) {
 
 			response, err := peer.appendEntries(request)
 			if err != nil {
-				//r.options.logger.Errorf("error appending entries to peer: %s", err.Error())
+				r.options.logger.Errorf("error appending entries to peer: %s", err.Error())
 				return
 			}
 
@@ -403,7 +403,7 @@ func (r *Raft) sendRequestVote(responseCh chan<- *pb.RequestVoteResponse) {
 
 			response, err := peer.requestVote(request)
 			if err != nil {
-				//r.options.logger.Errorf("error requesting vote from peer %s: %s", peer.id, err.Error())
+				r.options.logger.Errorf("error requesting vote from peer %s: %s", peer.id, err.Error())
 				return
 			}
 

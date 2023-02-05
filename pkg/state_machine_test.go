@@ -46,6 +46,7 @@ func (s *StateMachineMock) Restore(snapshot []byte) error {
 	if err := dec.Decode(&commands); err != nil {
 		return errors.WrapError(err, "error restoring from snapshot: %s", err.Error())
 	}
+	s.commands = commands
 	return nil
 }
 

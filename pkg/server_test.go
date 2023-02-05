@@ -17,17 +17,30 @@ import (
 var (
 	errMultipleLeader = "cluster has more than one leader"
 	errNoLeader       = "cluster has no leader"
+	errHasLeader      = "cluster has leader: %s"
 	errDisconnect     = "failed to disconnect from peer: %s"
 	errConnect        = "failed to connect to peer: %s"
 	errCreateCluster  = "failed to create cluster: %s"
 	errStopCluster    = "failed to stop cluster: %s"
 	errStartCluster   = "failed to start cluster: %s"
-	errReplicate      = "failed to replicate command"
+	errNoConsensus    = "cluster does not have consensus"
+	errCommitIndex    = "expected commit index %d, got commit index %d"
+	errLastApplied    = "expected last applied %d, got last applied %d"
+	errSnapshots      = "expected %d snapshots, got %d snapshots"
 )
+
+func makeCommands(numCommands int) []Command {
+	commands := make([]Command, numCommands)
+	for i := 0; i < numCommands; i++ {
+		commands[i] = Command{Bytes: []byte(fmt.Sprintf("command%d", i))}
+	}
+	return commands
+}
 
 type TestCluster struct {
 	peers              []*Peer
 	servers            []*Server
+	connected          []bool
 	snapshotStores     []SnapshotStorage
 	stateMachines      []StateMachine
 	replicateCh        []chan CommandResponse
@@ -43,6 +56,7 @@ func newCluster(numServers int) (*TestCluster, error) {
 	stateMachines := make([]StateMachine, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([][]CommandResponse, numServers)
+	connected := make([]bool, numServers)
 
 	ipPrefix := "127.0.0."
 	port := 8080
@@ -63,6 +77,7 @@ func newCluster(numServers int) (*TestCluster, error) {
 			responses[i] = make([]CommandResponse, 0)
 			snapshotStores[i] = NewSnapshotStorageMock()
 			stateMachines[i] = NewStateMachineMock()
+			connected[i] = true
 
 			log := NewLogMock()
 			storage := NewStorageMock()
@@ -78,6 +93,7 @@ func newCluster(numServers int) (*TestCluster, error) {
 	return &TestCluster{
 		peers:              peers,
 		servers:            servers,
+		connected:          connected,
 		snapshotStores:     snapshotStores,
 		stateMachines:      stateMachines,
 		replicateCh:        replicateCh,
@@ -130,82 +146,109 @@ func (tc *TestCluster) responses(id int) []CommandResponse {
 	return responses
 }
 
-func (tc *TestCluster) connectServerToPeer(id, peerId int) error {
-	raft := tc.servers[id].raft
-	for _, peer := range raft.peers {
-		if peer.Id() == fmt.Sprint(peerId) {
-			err := peer.connect()
-			if err != nil {
-				return errors.WrapError(err, errConnect, err.Error())
-			}
-			return nil
-		}
-	}
-	return errors.WrapError(nil, errConnect, fmt.Sprintf("peer %d does not exist", peerId))
-}
-
-func (tc *TestCluster) disconnectServerFromPeer(id, peerId int) error {
-	raft := tc.servers[id].raft
-	for _, peer := range raft.peers {
-		if peer.Id() == fmt.Sprint(peerId) {
-			err := peer.disconnect()
-			if err != nil {
-				return errors.WrapError(err, errDisconnect, err.Error())
-			}
-			return nil
-		}
-	}
-	return errors.WrapError(nil, errDisconnect, fmt.Sprintf("peer %d does not exist", peerId))
-}
-
 func (tc *TestCluster) connectServerToPeers(id int) error {
 	raft := tc.servers[id].raft
+
+	// Ensure outgoing RPCs from server with provided ID.
 	for _, peer := range raft.peers {
-		err := peer.connect()
-		if err != nil {
+		if peer.isConnected() {
+			continue
+		}
+		if err := peer.connect(); err != nil {
 			return errors.WrapError(err, errConnect, err.Error())
 		}
 	}
+
+	// Ensure incoming RPCs from server with provided ID.
+	for i := 0; i < len(tc.servers); i++ {
+		if i == id {
+			continue
+		}
+		peer := tc.servers[i].raft.peers[fmt.Sprint(id)]
+		if peer.isConnected() {
+			continue
+		}
+		if err := peer.connect(); err != nil {
+			return errors.WrapError(err, errConnect, err.Error())
+		}
+	}
+
+	tc.connected[id] = true
+
 	return nil
 }
 
 func (tc *TestCluster) disconnectServerFromPeers(id int) error {
 	raft := tc.servers[id].raft
+
+	// Ensure no outgoing RPCs from server with provided ID.
 	for _, peer := range raft.peers {
-		err := peer.disconnect()
-		if err != nil {
+		if !peer.isConnected() {
+			continue
+		}
+		if err := peer.disconnect(); err != nil {
 			return errors.WrapError(err, errDisconnect, err.Error())
 		}
 	}
+
+	// Ensure no incoming RPCs from server with provided ID.
+	for i := 0; i < len(tc.servers); i++ {
+		if i == id {
+			continue
+		}
+		peer := tc.servers[i].raft.peers[fmt.Sprint(id)]
+		if !peer.isConnected() {
+			continue
+		}
+		if err := peer.disconnect(); err != nil {
+			return errors.WrapError(err, errDisconnect, err.Error())
+		}
+	}
+
+	tc.connected[id] = false
+
 	return nil
 }
 
-func (tc *TestCluster) replicateWithRetry(command Command, numRetries int, expectedServersCommitted int) error {
-	for i := 0; i < numRetries+1; i++ {
-		leader, err := tc.hasOneLeader()
+func (tc *TestCluster) checkSubmitCommand(command Command, expectedServersCommitted int) error {
+	for i := 0; i < 10; i++ {
+		leader, err := tc.checkOneLeader()
 		if err != nil {
-			return errors.WrapError(err, errReplicate)
+			return errors.WrapError(err, errMultipleLeader)
 		}
 
-		index, _ := tc.servers[leader].Replicate(command)
+		index, _ := tc.servers[leader].SubmitCommand(command)
 		if index == 0 {
 			continue
 		}
 
 		// Wait a bit for the command to be committed across all servers.
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
-		if tc.numberCommitted(index) == expectedServersCommitted {
+		// Check that command has been committed to expected number of servers.
+		committed := 0
+		for _, server := range tc.servers {
+			status := server.raft.Status()
+			if status.CommitIndex >= index {
+				committed++
+			}
+		}
+
+		if committed == expectedServersCommitted {
 			return nil
 		}
 	}
-	return errors.WrapError(nil, errReplicate)
+
+	return errors.WrapError(nil, errNoConsensus)
 }
 
-func (tc *TestCluster) hasOneLeader() (int, error) {
+func (tc *TestCluster) checkOneLeader() (int, error) {
 	for i := 0; i < 10; i++ {
 		leader := -1
-		for _, server := range tc.servers {
+		for id, server := range tc.servers {
+			if !tc.connected[id] {
+				continue
+			}
 			status := server.raft.Status()
 			if status.State == Leader && leader != -1 {
 				return -1, errors.WrapError(nil, errMultipleLeader)
@@ -220,37 +263,79 @@ func (tc *TestCluster) hasOneLeader() (int, error) {
 		}
 
 		// Wait for a bit to see if leader is elected.
-		time.Sleep(time.Duration(100+50*i) * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
 
 	return -1, errors.WrapError(nil, errNoLeader)
 }
 
-func (tc *TestCluster) numberCommitted(index uint64) int {
-	committed := 0
-	for _, server := range tc.servers {
-		status := server.raft.Status()
-		if status.CommitIndex >= index {
-			committed++
+func (tc *TestCluster) checkNoLeader() error {
+	leader := -1
+	for i := 0; i < 10; i++ {
+		for id, server := range tc.servers {
+			if !tc.connected[id] {
+				continue
+			}
+			status := server.raft.Status()
+			if status.State == Leader {
+				leader, _ = strconv.Atoi(status.Id)
+				break
+			}
 		}
+
+		if leader == -1 {
+			return nil
+		}
+
+		// Wait for a bit to see if servers enter candidate state.
+		time.Sleep(150 * time.Millisecond)
 	}
-	return committed
+
+	return errors.WrapError(nil, errHasLeader, fmt.Sprint(leader))
 }
 
-func (tc *TestCluster) snapshotStorage(id int) SnapshotStorage {
-	return tc.snapshotStores[id]
-}
+func (tc *TestCluster) checkCommitIndex(id int, expectedCommitIndex uint64) error {
+	commitIndex := uint64(0)
 
-func (tc *TestCluster) stateMachine(id int) StateMachine {
-	return tc.stateMachines[id]
-}
-
-func makeCommands(numCommands int) []Command {
-	commands := make([]Command, numCommands)
-	for i := 0; i < numCommands; i++ {
-		commands[i] = Command{Bytes: []byte(fmt.Sprintf("command%d", i))}
+	for i := 0; i < 10; i++ {
+		commitIndex = tc.servers[id].raft.Status().CommitIndex
+		if commitIndex == expectedCommitIndex {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return commands
+
+	return errors.WrapError(nil, errCommitIndex, expectedCommitIndex, commitIndex)
+}
+
+func (tc *TestCluster) checkLastApplied(id int, expectedLastApplied uint64) error {
+	lastApplied := uint64(0)
+
+	for i := 0; i < 10; i++ {
+		lastApplied = tc.servers[id].raft.Status().CommitIndex
+		if lastApplied == expectedLastApplied {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return errors.WrapError(nil, errLastApplied, expectedLastApplied, lastApplied)
+}
+
+func (tc *TestCluster) checkSnapshots(id, expectedNumSnapshots int) ([]Snapshot, error) {
+	numSnapshots := 0
+
+	for i := 0; i < 10; i++ {
+		snapshotStore := tc.snapshotStores[id]
+		snapshots, _ := snapshotStore.ListSnapshots()
+		numSnapshots = len(snapshots)
+		if numSnapshots == expectedNumSnapshots {
+			return snapshots, nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return nil, errors.WrapError(nil, errSnapshots, expectedNumSnapshots, numSnapshots)
 }
 
 // TestBasicElection tests that a new cluster is able to successfully elect a leader.
@@ -263,9 +348,10 @@ func TestBasicElection(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	_, err = cluster.hasOneLeader()
-
+	// Cluster should have exactly one leader.
+	_, err = cluster.checkOneLeader()
 	require.NoError(t, err)
+
 	require.NoError(t, cluster.stopCluster())
 }
 
@@ -280,19 +366,54 @@ func TestLeaderFailElection(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	leader, err := cluster.hasOneLeader()
+	// Cluster should have exactly one leader.
+	leader1, err := cluster.checkOneLeader()
 	require.NoError(t, err)
 
-	require.NoError(t, cluster.disconnectServerFromPeers(leader))
+	// Disconnect leader from peers.
+	require.NoError(t, cluster.disconnectServerFromPeers(leader1))
 
-	_, err = cluster.hasOneLeader()
+	// CLuster should elect new leader.
+	leader2, err := cluster.checkOneLeader()
+	require.NoError(t, err)
+	require.NotEqual(t, leader1, leader2)
+
+	require.NoError(t, cluster.stopCluster())
+}
+
+func TestElectionNoQuorum(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	require.NoError(t, err)
+
+	require.NoError(t, cluster.startCluster())
+
+	// Cluster should have exactly one leader.
+	leader, err := cluster.checkOneLeader()
+	require.NoError(t, err)
+
+	// Disconnect majority of servers to prevent quorum.
+	require.NoError(t, cluster.disconnectServerFromPeers(leader))
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
+
+	// No leader should be present since there is not quorum.
+	require.NoError(t, cluster.checkNoLeader())
+
+	// Rejoin a disconnected server to allow quorum
+	require.NoError(t, cluster.connectServerToPeers(leader))
+
+	// Leader should be elected now.
+	_, err = cluster.checkOneLeader()
 	require.NoError(t, err)
 
 	require.NoError(t, cluster.stopCluster())
 }
 
-// TestReplicateSimple tests replicating a single command.
-func TestReplicateSimple(t *testing.T) {
+// TestReplicateSingle tests replicating a single command.
+func TestReplicateSingle(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
 
 	numServers := 3
@@ -303,7 +424,7 @@ func TestReplicateSimple(t *testing.T) {
 
 	numCommands := 1
 	commands := makeCommands(numCommands)
-	require.NoError(t, cluster.replicateWithRetry(commands[0], 5, numServers))
+	require.NoError(t, cluster.checkSubmitCommand(commands[0], numServers))
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
@@ -330,7 +451,7 @@ func TestReplicateMultiple(t *testing.T) {
 	commands := makeCommands(numCommands)
 
 	for _, command := range commands {
-		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers))
+		require.NoError(t, cluster.checkSubmitCommand(command, numServers))
 	}
 
 	for id := 0; id < numServers; id++ {
@@ -355,15 +476,15 @@ func TestReplicateNoQuorum(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	leader, err := cluster.hasOneLeader()
+	leader, err := cluster.checkOneLeader()
 	require.NoError(t, err)
 
-	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+1)%numServers))
-	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+2)%numServers))
-	require.NoError(t, cluster.disconnectServerFromPeer(leader, (leader+3)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+3)%numServers))
 
 	command := Command{Bytes: []byte("test")}
-	cluster.servers[leader].Replicate(command)
+	cluster.servers[leader].SubmitCommand(command)
 
 	for id := 0; id < numServers; id++ {
 		responses := cluster.responses(id)
@@ -373,41 +494,40 @@ func TestReplicateNoQuorum(t *testing.T) {
 	require.NoError(t, cluster.stopCluster())
 }
 
-func TestTakeSnapshot(t *testing.T) {
+// TestSingleSnapshot checks that servers take a snapshot once the log
+// has grown past a predefined size.
+func TestSingleSnapshot(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
 	numServers := 3
 	cluster, err := newCluster(numServers)
 	require.NoError(t, err)
 
 	require.NoError(t, cluster.startCluster())
 
-	numCommands := 100
+	// Submit enough commands to force a snapshot.
+	numCommands := defaultMaxEntriesPerSnapshot
 	commands := makeCommands(numCommands)
-
 	for _, command := range commands {
-		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers))
+		require.NoError(t, cluster.checkSubmitCommand(command, numServers))
 	}
 
-	// Wait a bit for all the servers to finish taking snapshot.
-	time.Sleep(1 * time.Second)
-
-	require.NoError(t, cluster.stopCluster())
-
+	// Ensure that each server has a single, correct snapshot.
 	for id := 0; id < numServers; id++ {
-		snapshotStorage := cluster.snapshotStorage(id)
-		snapshotList, err := snapshotStorage.ListSnapshots()
+		snapshots, err := cluster.checkSnapshots(id, 1)
 		require.NoError(t, err)
-		require.Len(t, snapshotList, 1)
-		last, err := snapshotStorage.LastSnapshot()
-		require.NoError(t, err)
-		fsm := cluster.stateMachine(id)
+		fsm := cluster.stateMachines[id]
 		fsmSnapshot, err := fsm.Snapshot()
 		require.NoError(t, err)
-		require.Equal(t, last.LastIncludedIndex, uint64(numCommands))
-		require.Equal(t, last.Data, fsmSnapshot)
+		require.Equal(t, snapshots[len(snapshots)-1].LastIncludedIndex, uint64(numCommands))
+		require.Equal(t, snapshots[len(snapshots)-1].Data, fsmSnapshot)
 	}
+
+	require.NoError(t, cluster.stopCluster())
 }
 
+// TestSendSnapshot checks that the leader will send a snapshot to a peer
+// that is lagging behind.
 func TestSendSnapshot(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
 
@@ -417,32 +537,84 @@ func TestSendSnapshot(t *testing.T) {
 
 	require.NoError(t, cluster.startCluster())
 
-	leader, err := cluster.hasOneLeader()
+	leader, err := cluster.checkOneLeader()
 	require.NoError(t, err)
 
-	disconnected := (leader + 1) % numServers
-	require.NoError(t, cluster.disconnectServerFromPeer(leader, disconnected))
-	require.NoError(t, cluster.disconnectServerFromPeers(disconnected))
+	// Disconnect a server so that it will lag behind the others and need a snapshot
+	// installed.
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
 
+	// Submit enough commands to a force a snapshot.
 	numCommands := 150
 	commands := makeCommands(numCommands)
-
 	for _, command := range commands {
-		require.NoError(t, cluster.replicateWithRetry(command, 5, numServers-1))
+		require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
 	}
 
-	// Wait a bit for all the servers to finish taking snapshot.
-	time.Sleep(1 * time.Second)
+	// Reconnect the server so that it can have its snapshot installed.
+	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
 
-	require.NoError(t, cluster.connectServerToPeer(leader, disconnected))
-	require.NoError(t, cluster.connectServerToPeers(disconnected))
+	// Check that server has correct commit index and last applied index now.
+	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
+	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
 
-	// Wait a bit for snapshot to send and log to be updated.
-	time.Sleep(1 * time.Second)
+	// Check that all servers have same state machine snapshot.
+	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
+	for id := 0; id < numServers; id++ {
+		if id == leader {
+			continue
+		}
+		other, _ := cluster.stateMachines[id].Snapshot()
+		require.Equal(t, fsmSnapshot, other)
+	}
 
 	require.NoError(t, cluster.stopCluster())
+}
 
-	status := cluster.servers[disconnected].raft.Status()
-	require.Equal(t, status.CommitIndex, uint64(numCommands))
-	require.Equal(t, status.LastApplied, uint64(numCommands))
+// TestSendSnapshotLeaderFailure ensures that a snapshot will be installed on a lagging
+// peer even in the case of a leader failure.
+func TestSendSnapshotLeaderFailure(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+
+	numServers := 5
+	cluster, err := newCluster(numServers)
+	require.NoError(t, err)
+
+	require.NoError(t, cluster.startCluster())
+
+	leader, err := cluster.checkOneLeader()
+	require.NoError(t, err)
+
+	// Disconnect a server so that it will lag behind the others and need a snapshot
+	// installed.
+	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
+
+	// Submit enough commands to a force a snapshot.
+	numCommands := 150
+	commands := makeCommands(numCommands)
+	for _, command := range commands {
+		require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
+	}
+
+	// Disconnect the leader.
+	require.NoError(t, cluster.disconnectServerFromPeers(leader))
+
+	// Reconnect the server so that it can have its snapshot installed.
+	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
+
+	// Check that server has correct commit index and last applied index now.
+	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
+	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
+
+	// Check that all servers have same state machine snapshot.
+	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
+	for id := 0; id < numServers; id++ {
+		if id == leader {
+			continue
+		}
+		other, _ := cluster.stateMachines[id].Snapshot()
+		require.Equal(t, fsmSnapshot, other)
+	}
+
+	require.NoError(t, cluster.stopCluster())
 }

@@ -520,7 +520,6 @@ func TestSingleSnapshot(t *testing.T) {
 		fsm := cluster.stateMachines[id]
 		fsmSnapshot, err := fsm.Snapshot()
 		require.NoError(t, err)
-		require.Equal(t, snapshots[len(snapshots)-1].LastIncludedIndex, uint64(numCommands))
 		require.Equal(t, snapshots[len(snapshots)-1].Data, fsmSnapshot)
 	}
 

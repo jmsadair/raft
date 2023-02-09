@@ -8,7 +8,7 @@ import (
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/internal/status"
+	"google.golang.org/grpc/status"
 )
 
 type Server struct {

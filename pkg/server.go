@@ -7,6 +7,8 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/internal/status"
 )
 
 type Server struct {
@@ -69,6 +71,10 @@ func (s *Server) SubmitCommand(command Command) (uint64, error) {
 }
 
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+	if request == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "received nil request")
+	}
+
 	rpc := AppendEntriesRPC{request: request, responseCh: make(chan *pb.AppendEntriesResponse)}
 	s.raft.appendEntriesCh <- rpc
 	response := <-rpc.responseCh
@@ -76,6 +82,10 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 }
 
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+	if request == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "received nil request")
+	}
+
 	rpc := RequestVoteRPC{request: request, responseCh: make(chan *pb.RequestVoteResponse)}
 	s.raft.requestVoteCh <- rpc
 	response := <-rpc.responseCh
@@ -83,6 +93,10 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 }
 
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+	if request == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "received nil request")
+	}
+
 	rpc := InstallSnapshotRPC{request: request, responseCh: make(chan *pb.InstallSnapshotResponse)}
 	s.raft.installSnapshotCh <- rpc
 	response := <-rpc.responseCh

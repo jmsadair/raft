@@ -257,7 +257,7 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	// become a follower.
 	if request.GetTerm() > r.state.getCurrentTerm() {
 		r.becomeFollower(request.GetTerm())
-		response.GetTerm() = r.state.getCurrentTerm()
+		response.Term = r.state.getCurrentTerm()
 	}
 
 	// Reject any request that do not have a matching previous log entry (if one exists).
@@ -364,7 +364,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	// become a follower.
 	if request.GetTerm() > r.state.getCurrentTerm() {
 		r.becomeFollower(request.GetTerm())
-		response.GetTerm() = r.state.getCurrentTerm()
+		response.Term = r.state.getCurrentTerm()
 	}
 
 	// Reject the request if this server has already voted.
@@ -383,7 +383,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 
 	r.updateVotedFor(request.GetCandidateId())
 
-	response.GetVoteGranted() = true
+	response.VoteGranted = true
 
 	return response
 }
@@ -422,7 +422,7 @@ func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSn
 	// become a follower.
 	if request.GetTerm() > r.state.getCurrentTerm() {
 		r.becomeFollower(request.GetTerm())
-		response.GetTerm() = request.GetTerm()
+		response.Term = request.GetTerm()
 	}
 
 	r.fsm.Restore(request.GetData())

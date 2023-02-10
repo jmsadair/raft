@@ -59,7 +59,7 @@ func NewLogger(opts ...Option) (*Logger, error) {
 	}
 
 	if options.level == 0 {
-		options.level = Fatal
+		options.level = Debug
 	}
 
 	return &Logger{options: options, base: log.New(options.writer, options.prefix, options.flag)}, nil

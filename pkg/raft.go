@@ -176,7 +176,6 @@ func (r *Raft) Start() {
 	r.state.setLastContact(time.Now())
 
 	r.becomeFollower(0)
-	go r.snapshotLoop()
 	go r.applyLoop()
 	go r.mainLoop()
 
@@ -341,7 +340,6 @@ func (r *Raft) sendAppendEntries(responseCh chan<- AppendEntriesMessage) {
 
 			response, err := peer.appendEntries(request)
 			if err != nil {
-				r.options.logger.Errorf("error appending entries to peer: %s", err.Error())
 				return
 			}
 
@@ -403,7 +401,6 @@ func (r *Raft) sendRequestVote(responseCh chan<- *pb.RequestVoteResponse) {
 
 			response, err := peer.requestVote(request)
 			if err != nil {
-				r.options.logger.Errorf("error requesting vote from peer %s: %s", peer.id, err.Error())
 				return
 			}
 
@@ -523,6 +520,8 @@ func (r *Raft) leaderLoop() {
 	appendEntriesResponses := make(chan AppendEntriesMessage, len(r.peers))
 	installSnapshotResponses := make(chan InstallSnapshotMessage, len(r.peers))
 
+	snapshotTimer := util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
+
 	// Send AppendEntries to peers to establish leadership.
 	r.sendAppendEntries(appendEntriesResponses)
 
@@ -616,6 +615,12 @@ func (r *Raft) leaderLoop() {
 			if r.state.getState() != Leader {
 				return
 			}
+		case <-snapshotTimer:
+			entriesSinceSnapshot := r.log.LastIndex() - r.state.getLastSnapshotIndex()
+			if entriesSinceSnapshot >= uint64(r.options.maxEntriesPerSnapshot) {
+				go r.takeSnapshot()
+			}
+			snapshotTimer = util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
 		case <-r.shutdownCh:
 			return
 		}
@@ -627,6 +632,7 @@ func (r *Raft) leaderLoop() {
 func (r *Raft) followerLoop() {
 	electionTimeout := r.options.electionTimeout
 	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
+	snapshotTimer := util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
 
 	for {
 		select {
@@ -635,6 +641,7 @@ func (r *Raft) followerLoop() {
 			// If this server has not heard from the leader within the election timeout,
 			// become a candidate.
 			if time.Since(r.state.getLastContact()) > electionTimeout {
+				r.options.logger.Debugf("%s election timer timed out", r.id)
 				r.becomeCandidate()
 				return
 			}
@@ -646,6 +653,12 @@ func (r *Raft) followerLoop() {
 			rpc.responseCh <- r.requestVote(rpc.request)
 		case rpc := <-r.installSnapshotCh:
 			rpc.responseCh <- r.installSnapshot(rpc.request)
+		case <-snapshotTimer:
+			entriesSinceSnapshot := r.log.LastIndex() - r.state.getLastSnapshotIndex()
+			if entriesSinceSnapshot >= uint64(r.options.maxEntriesPerSnapshot) {
+				go r.takeSnapshot()
+			}
+			snapshotTimer = util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
 		case <-r.shutdownCh:
 			return
 		}
@@ -732,25 +745,6 @@ func (r *Raft) applyLoop() {
 
 		for _, response := range responses {
 			r.commandResponseCh <- response
-		}
-	}
-}
-
-// snapshotLoop takes a snapshot any time the log has exceeded the client specified
-// maximum number of log entries.
-func (r *Raft) snapshotLoop() {
-	snapshotTimer := util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
-
-	for {
-		select {
-		case <-snapshotTimer:
-			entriesSinceSnapshot := r.log.LastIndex() - r.state.getLastSnapshotIndex()
-			if entriesSinceSnapshot >= uint64(r.options.maxEntriesPerSnapshot) {
-				r.takeSnapshot()
-			}
-			snapshotTimer = util.RandomTimeout(r.options.snapshotInterval, r.options.snapshotInterval*2)
-		case <-r.shutdownCh:
-			return
 		}
 	}
 }

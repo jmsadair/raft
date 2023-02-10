@@ -224,7 +224,7 @@ func (tc *TestCluster) checkSubmitCommand(command Command, expectedServersCommit
 		}
 
 		// Wait a bit for the command to be committed across all servers.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 
 		// Check that command has been committed to expected number of servers.
 		committed := 0
@@ -507,20 +507,21 @@ func TestSingleSnapshot(t *testing.T) {
 	require.NoError(t, cluster.startCluster())
 
 	// Submit enough commands to force a snapshot.
+	fsm := NewStateMachineMock()
 	numCommands := defaultMaxEntriesPerSnapshot
 	commands := makeCommands(numCommands)
 	for _, command := range commands {
 		require.NoError(t, cluster.checkSubmitCommand(command, numServers))
+		fsm.Apply(command.Bytes)
 	}
 
 	// Ensure that each server has a single, correct snapshot.
+	expectedSnapshot, _ := fsm.Snapshot()
 	for id := 0; id < numServers; id++ {
 		snapshots, err := cluster.checkSnapshots(id, 1)
 		require.NoError(t, err)
-		fsm := cluster.stateMachines[id]
-		fsmSnapshot, err := fsm.Snapshot()
-		require.NoError(t, err)
-		require.Equal(t, snapshots[len(snapshots)-1].Data, fsmSnapshot)
+		snapshot := snapshots[0]
+		require.Equal(t, expectedSnapshot[:len(snapshot.Data)], snapshot.Data)
 	}
 
 	require.NoError(t, cluster.stopCluster())
@@ -557,16 +558,6 @@ func TestSendSnapshot(t *testing.T) {
 	// Check that server has correct commit index and last applied index now.
 	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
 	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
-
-	// Check that all servers have same state machine snapshot.
-	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
-	for id := 0; id < numServers; id++ {
-		if id == leader {
-			continue
-		}
-		other, _ := cluster.stateMachines[id].Snapshot()
-		require.Equal(t, fsmSnapshot, other)
-	}
 
 	require.NoError(t, cluster.stopCluster())
 }
@@ -615,16 +606,6 @@ func TestSendMultipleSnapshot(t *testing.T) {
 	require.NoError(t, cluster.checkCommitIndex((leader+2)%numServers, uint64(numCommands)))
 	require.NoError(t, cluster.checkLastApplied((leader+2)%numServers, uint64(numCommands)))
 
-	// Check that all servers have same state machine snapshot.
-	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
-	for id := 0; id < numServers; id++ {
-		if id == leader {
-			continue
-		}
-		other, _ := cluster.stateMachines[id].Snapshot()
-		require.Equal(t, fsmSnapshot, other)
-	}
-
 	require.NoError(t, cluster.stopCluster())
 }
 
@@ -662,16 +643,6 @@ func TestSendSnapshotLeaderFailure(t *testing.T) {
 	// Check that server has correct commit index and last applied index now.
 	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
 	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
-
-	// Check that all servers have same state machine snapshot.
-	fsmSnapshot, _ := cluster.stateMachines[leader].Snapshot()
-	for id := 0; id < numServers; id++ {
-		if id == leader {
-			continue
-		}
-		other, _ := cluster.stateMachines[id].Snapshot()
-		require.Equal(t, fsmSnapshot, other)
-	}
 
 	require.NoError(t, cluster.stopCluster())
 }

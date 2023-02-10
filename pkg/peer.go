@@ -80,38 +80,40 @@ func (p *Peer) disconnect() error {
 }
 
 func (p *Peer) isConnected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.client != nil
 }
 
 func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.client == nil {
-		p.mu.Unlock()
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
-	p.mu.Unlock()
 
 	return p.client.AppendEntries(context.Background(), request, []grpc.CallOption{}...)
 }
 
 func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.client == nil {
-		p.mu.Unlock()
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
-	p.mu.Unlock()
 
 	return p.client.RequestVote(context.Background(), request, []grpc.CallOption{}...)
 }
 
 func (p *Peer) installSnapshot(request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.client == nil {
-		p.mu.Unlock()
 		return nil, errors.WrapError(nil, errNoConn, p.id)
 	}
-	p.mu.Unlock()
 
 	return p.client.InstallSnapshot(context.Background(), request, []grpc.CallOption{}...)
 }

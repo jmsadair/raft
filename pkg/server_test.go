@@ -224,7 +224,7 @@ func (tc *TestCluster) checkSubmitCommand(command Command, expectedServersCommit
 		}
 
 		// Wait a bit for the command to be committed across all servers.
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Check that command has been committed to expected number of servers.
 		committed := 0

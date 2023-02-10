@@ -249,31 +249,31 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	}
 
 	// Reject any requests with out-of-date term.
-	if request.Term < r.state.getCurrentTerm() {
+	if request.GetTerm() < r.state.getCurrentTerm() {
 		return response
 	}
 
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
-	if request.Term > r.state.getCurrentTerm() {
-		r.becomeFollower(request.Term)
-		response.Term = r.state.getCurrentTerm()
+	if request.GetTerm() > r.state.getCurrentTerm() {
+		r.becomeFollower(request.GetTerm())
+		response.GetTerm() = r.state.getCurrentTerm()
 	}
 
 	// Reject any request that do not have a matching previous log entry (if one exists).
-	if request.PrevLogIndex != 0 {
-		if prevLogEntry, err = r.log.GetEntry(request.PrevLogIndex); err != nil {
+	if request.GetPrevLogIndex() != 0 {
+		if prevLogEntry, err = r.log.GetEntry(request.GetPrevLogIndex()); err != nil {
 			return response
 		}
 
-		if prevLogEntry.Term() != request.PrevLogTerm {
+		if prevLogEntry.Term() != request.GetPrevLogTerm() {
 			return response
 		}
 	}
 
-	entries := make([]*LogEntry, len(request.Entries))
-	for i, entry := range request.Entries {
-		entries[i] = NewLogEntry(entry.GetIndex(), entry.Term, entry.Data)
+	entries := make([]*LogEntry, len(request.GetEntries()))
+	for i, entry := range request.GetEntries() {
+		entries[i] = NewLogEntry(entry.GetIndex(), entry.GetTerm(), entry.GetData())
 	}
 
 	var toAppend []*LogEntry
@@ -297,8 +297,8 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 		r.options.logger.Fatalf("error appending entries to log: %s", err.Error())
 	}
 
-	if request.LeaderCommit > r.state.getCommitIndex() {
-		r.state.setCommitIndex(util.Min(request.LeaderCommit, r.log.LastIndex()))
+	if request.GetLeaderCommit() > r.state.getCommitIndex() {
+		r.state.setCommitIndex(util.Min(request.GetLeaderCommit(), r.log.LastIndex()))
 		r.applyCh <- struct{}{}
 	}
 
@@ -356,19 +356,19 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	}
 
 	// Reject the request if the term is out-of-date.
-	if request.Term < r.state.getCurrentTerm() {
+	if request.GetTerm() < r.state.getCurrentTerm() {
 		return response
 	}
 
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
-	if request.Term > r.state.getCurrentTerm() {
-		r.becomeFollower(request.Term)
-		response.Term = r.state.getCurrentTerm()
+	if request.GetTerm() > r.state.getCurrentTerm() {
+		r.becomeFollower(request.GetTerm())
+		response.GetTerm() = r.state.getCurrentTerm()
 	}
 
 	// Reject the request if this server has already voted.
-	if r.state.getVotedFor() != "" && r.state.getVotedFor() != request.CandidateId {
+	if r.state.getVotedFor() != "" && r.state.getVotedFor() != request.GetCandidateId() {
 		return response
 	}
 
@@ -377,13 +377,13 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	// 1. If the logs have last entries with different terms, than the log with the
 	//    greater term is more up-to-date.
 	// 2. If the logs end with the same term, the longer log is more up-to-date.
-	if request.LastLogTerm < r.log.LastTerm() || (request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
+	if request.GetLastLogTerm() < r.log.LastTerm() || (request.GetLastLogTerm() == r.log.LastTerm() && r.log.LastIndex() > request.GetLastLogIndex()) {
 		return response
 	}
 
-	r.updateVotedFor(request.CandidateId)
+	r.updateVotedFor(request.GetCandidateId())
 
-	response.VoteGranted = true
+	response.GetVoteGranted() = true
 
 	return response
 }
@@ -414,26 +414,26 @@ func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSn
 	response := &pb.InstallSnapshotResponse{Term: r.state.getCurrentTerm()}
 
 	// Reject any requests with out-of-date term.
-	if request.Term < r.state.getCurrentTerm() {
+	if request.GetTerm() < r.state.getCurrentTerm() {
 		return response
 	}
 
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
-	if request.Term > r.state.getCurrentTerm() {
-		r.becomeFollower(request.Term)
-		response.Term = request.Term
+	if request.GetTerm() > r.state.getCurrentTerm() {
+		r.becomeFollower(request.GetTerm())
+		response.GetTerm() = request.GetTerm()
 	}
 
-	r.fsm.Restore(request.Data)
+	r.fsm.Restore(request.GetData())
 
-	r.state.setLastSnapshotIndex(request.LastIncludedIndex)
-	r.state.setLastSnapshotTerm(request.LastIncludedTerm)
+	r.state.setLastSnapshotIndex(request.GetLastIncludedIndex())
+	r.state.setLastSnapshotTerm(request.GetLastIncludedTerm())
 
-	r.log.Compact(request.LastIncludedIndex, request.LastIncludedTerm)
+	r.log.Compact(request.GetLastIncludedIndex(), request.GetLastIncludedTerm())
 
-	r.state.setCommitIndex(request.LastIncludedIndex)
-	r.state.setLastApplied(request.LastIncludedIndex)
+	r.state.setCommitIndex(request.GetLastIncludedIndex())
+	r.state.setLastApplied(request.GetLastIncludedIndex())
 
 	return response
 }
@@ -460,7 +460,7 @@ func (r *Raft) sendInstallSnapshot(peer *Peer, responseCh chan<- InstallSnapshot
 			return
 		}
 
-		responseCh <- InstallSnapshotMessage{response: response, peer: peer, lastIncludedIndex: request.LastIncludedIndex}
+		responseCh <- InstallSnapshotMessage{response: response, peer: peer, lastIncludedIndex: request.GetLastIncludedIndex()}
 	}(peer)
 }
 
@@ -546,23 +546,23 @@ func (r *Raft) leaderLoop() {
 			r.sendAppendEntries(appendEntriesResponses)
 		case message := <-appendEntriesResponses:
 			// Become a follower if a peer has a more up-to-date term.
-			if message.response.Term > r.state.getCurrentTerm() {
-				r.becomeFollower(message.response.Term)
+			if message.response.GetTerm() > r.state.getCurrentTerm() {
+				r.becomeFollower(message.response.GetTerm())
 				return
 			}
 
 			// If the follower is lagging, send them an InstallSnapshot RPC.
-			if !message.response.Success && message.peer.getMatchIndex()+r.options.maxEntriesPerSnapshot < r.log.LastIndex() {
+			if !message.response.GetSuccess() && message.peer.getMatchIndex()+r.options.maxEntriesPerSnapshot < r.log.LastIndex() {
 				r.sendInstallSnapshot(message.peer, installSnapshotResponses)
 				break
 			}
 
 			// If the AppendEntries RPC was not successful, decrement the next index associated
 			// with the peer.
-			if !message.response.Success && message.peer.getNextIndex() > 1 {
+			if !message.response.GetSuccess() && message.peer.getNextIndex() > 1 {
 				message.peer.setNextIndex(message.peer.getNextIndex() - 1)
 				break
-			} else if !message.response.Success {
+			} else if !message.response.GetSuccess() {
 				break
 			}
 
@@ -594,8 +594,8 @@ func (r *Raft) leaderLoop() {
 			}
 		case message := <-installSnapshotResponses:
 			// Become a follower if a peer has a more up-to-date term.
-			if message.response.Term > r.state.getCurrentTerm() {
-				r.becomeFollower(message.response.Term)
+			if message.response.GetTerm() > r.state.getCurrentTerm() {
+				r.becomeFollower(message.response.GetTerm())
 				return
 			}
 			message.peer.setMatchIndex(message.lastIncludedIndex)
@@ -682,12 +682,12 @@ func (r *Raft) candidateLoop() {
 	for {
 		select {
 		case response := <-requestVoteResponses:
-			if response.VoteGranted {
+			if response.GetVoteGranted() {
 				votesReceived++
 			}
 			// Become a follower if a peer has a more up-to-date term.
-			if response.Term > r.state.getCurrentTerm() {
-				r.becomeFollower(response.Term)
+			if response.GetTerm() > r.state.getCurrentTerm() {
+				r.becomeFollower(response.GetTerm())
 				return
 			}
 			// If we have received votes from the majority of peers, become a leader.

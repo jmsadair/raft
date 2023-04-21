@@ -11,35 +11,35 @@ import (
 	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/errors"
 	"github.com/jmsadair/raft/internal/util"
-	"github.com/stretchr/testify/require"
-)
-
-// Error strings used by TestCluster.
-var (
-	errMultipleLeader = "cluster has more than one leader"
-	errNoLeader       = "cluster has no leader"
-	errHasLeader      = "cluster has leader: %s"
-	errDisconnect     = "failed to disconnect from peer: %s"
-	errConnect        = "failed to connect to peer: %s"
-	errCreateCluster  = "failed to create cluster: %s"
-	errStopCluster    = "failed to stop cluster: %s"
-	errStartCluster   = "failed to start cluster: %s"
-	errNoConsensus    = "cluster does not have consensus"
-	errCommitIndex    = "%s has incorrect commit index: expected commit index %d, got commit index %d"
-	errLastApplied    = "expected last applied %d, got last applied %d"
-	errSnapshots      = "expected %d snapshots, got %d snapshots"
 )
 
 func makeCommands(numCommands int) []Command {
 	commands := make([]Command, numCommands)
-	for i := 0; i < numCommands; i++ {
-		commands[i] = Command{Bytes: []byte(fmt.Sprintf("command%d", i))}
+	for i := 1; i <= numCommands; i++ {
+		commands[i-1] = Command{Bytes: []byte(fmt.Sprintf("command %d", i))}
 	}
 	return commands
 }
 
+func makePeers(numServers int) [][]*Peer {
+	ipPrefix := "127.0.0."
+	port := 8080
+	clusterPeers := make([][]*Peer, numServers)
+	for i := 0; i < numServers; i++ {
+		clusterPeers[i] = make([]*Peer, numServers)
+		for j := 0; j < numServers; j++ {
+			ip := ipPrefix + fmt.Sprint(j)
+			peerId := fmt.Sprint(j)
+			clusterPeers[i][j] = NewPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
+		}
+	}
+
+	return clusterPeers
+}
+
 type TestCluster struct {
-	peers              []*Peer
+	t                  *testing.T
+	peers              [][]*Peer
 	servers            []*Server
 	connected          []bool
 	snapshotStores     []SnapshotStorage
@@ -47,51 +47,41 @@ type TestCluster struct {
 	replicateCh        []chan CommandResponse
 	shutdownCh         chan interface{}
 	replicateResponses [][]CommandResponse
-	mu                 []sync.Mutex
+	applyIndex         uint64
+	mu                 sync.Mutex
+	wg                 sync.WaitGroup
 }
 
-func newCluster(numServers int) (*TestCluster, error) {
-	peers := make([]*Peer, numServers)
+func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	servers := make([]*Server, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stateMachines := make([]StateMachine, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([][]CommandResponse, numServers)
 	connected := make([]bool, numServers)
-
-	ipPrefix := "127.0.0."
-	port := 8080
-	for i := 0; i < numServers; i++ {
-		ip := ipPrefix + fmt.Sprint(i)
-		peerId := fmt.Sprint(i)
-		peers[i] = NewPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
-	}
+	peers := makePeers(numServers)
 
 	for i := 0; i < numServers; i++ {
-		serverPeers := make([]*Peer, 0, numServers-1)
-		for j := 0; j < numServers; j++ {
-			if i != j {
-				serverPeers = append(serverPeers, peers[j].Clone())
-			}
+		replicateCh[i] = make(chan CommandResponse)
+		responses[i] = make([]CommandResponse, 0)
+		snapshotStores[i] = NewSnapshotStorageMock()
+		stateMachines[i] = NewStateMachineMock()
+		connected[i] = true
 
-			replicateCh[i] = make(chan CommandResponse)
-			responses[i] = make([]CommandResponse, 0)
-			snapshotStores[i] = NewSnapshotStorageMock()
-			stateMachines[i] = NewStateMachineMock()
-			connected[i] = true
+		log := NewLogMock(0, 0)
+		storage := NewStorageMock()
+		id := peers[0][i].Id()
+		address := peers[0][i].Address()
 
-			log := NewLogMock()
-			storage := NewStorageMock()
-
-			server, err := NewServer(peers[i].id, serverPeers, log, storage, snapshotStores[i], stateMachines[i], peers[i].address, replicateCh[i])
-			if err != nil {
-				return nil, errors.WrapError(err, errCreateCluster, err.Error())
-			}
-			servers[i] = server
+		server, err := NewServer(id, peers[i], log, storage, snapshotStores[i], stateMachines[i], address, replicateCh[i])
+		if err != nil {
+			return nil, errors.WrapError(err, "error creating cluster server: %s", err.Error())
 		}
+		servers[i] = server
 	}
 
 	return &TestCluster{
+		t:                  t,
 		peers:              peers,
 		servers:            servers,
 		connected:          connected,
@@ -100,549 +90,235 @@ func newCluster(numServers int) (*TestCluster, error) {
 		replicateCh:        replicateCh,
 		replicateResponses: responses,
 		shutdownCh:         make(chan interface{}),
-		mu:                 make([]sync.Mutex, numServers),
 	}, nil
 }
 
-func (tc *TestCluster) startCluster() error {
+func (tc *TestCluster) startCluster() {
 	ready := make(chan interface{})
-	for index, server := range tc.servers {
+	for i, server := range tc.servers {
 		if err := server.Start(ready); err != nil {
-			return errors.WrapError(err, errStartCluster, err.Error())
+			tc.t.Fatalf("error starting cluster server: %s", err.Error())
 		}
-		go tc.processResponses(index)
+		tc.wg.Add(1)
+		go tc.applyLoop(i)
 	}
 	close(ready)
-	return nil
 }
 
-func (tc *TestCluster) stopCluster() error {
+func (tc *TestCluster) stopCluster() {
 	for _, server := range tc.servers {
 		if err := server.Stop(); err != nil {
-			return errors.WrapError(err, errStopCluster, err.Error())
+			tc.t.Fatalf("error stopping cluster server: %s", err.Error())
 		}
 	}
 	close(tc.shutdownCh)
-	return nil
+	tc.wg.Wait()
 }
 
-func (tc *TestCluster) processResponses(id int) {
-	for {
-		select {
-		case <-tc.shutdownCh:
-			return
-		case response := <-tc.replicateCh[id]:
-			tc.mu[id].Lock()
-			tc.replicateResponses[id] = append(tc.replicateResponses[id], response)
-			tc.mu[id].Unlock()
-		}
-	}
-}
-
-func (tc *TestCluster) responses(id int) []CommandResponse {
-	tc.mu[id].Lock()
-	defer tc.mu[id].Unlock()
-	responses := make([]CommandResponse, len(tc.replicateResponses[id]))
-	copy(responses, tc.replicateResponses[id])
-	return responses
-}
-
-func (tc *TestCluster) connectServerToPeers(id int) error {
-	raft := tc.servers[id].raft
-
-	// Ensure outgoing RPCs from server with provided ID.
-	for _, peer := range raft.peers {
-		if peer.isConnected() {
-			continue
-		}
-		if err := peer.connect(); err != nil {
-			return errors.WrapError(err, errConnect, err.Error())
-		}
-	}
-
-	// Ensure incoming RPCs from server with provided ID.
-	for i := 0; i < len(tc.servers); i++ {
-		if i == id {
-			continue
-		}
-		peer := tc.servers[i].raft.peers[fmt.Sprint(id)]
-		if peer.isConnected() {
-			continue
-		}
-		if err := peer.connect(); err != nil {
-			return errors.WrapError(err, errConnect, err.Error())
-		}
-	}
-
-	tc.connected[id] = true
-
-	return nil
-}
-
-func (tc *TestCluster) disconnectServerFromPeers(id int) error {
-	raft := tc.servers[id].raft
-
-	// Ensure no outgoing RPCs from server with provided ID.
-	for _, peer := range raft.peers {
-		if !peer.isConnected() {
-			continue
-		}
-		if err := peer.disconnect(); err != nil {
-			return errors.WrapError(err, errDisconnect, err.Error())
-		}
-	}
-
-	// Ensure no incoming RPCs from server with provided ID.
-	for i := 0; i < len(tc.servers); i++ {
-		if i == id {
-			continue
-		}
-		peer := tc.servers[i].raft.peers[fmt.Sprint(id)]
-		if !peer.isConnected() {
-			continue
-		}
-		if err := peer.disconnect(); err != nil {
-			return errors.WrapError(err, errDisconnect, err.Error())
-		}
-	}
-
-	tc.connected[id] = false
-
-	return nil
-}
-
-func (tc *TestCluster) checkSubmitCommand(command Command, expectedServersCommitted int) error {
+func (tc *TestCluster) submit(command Command, retry bool) {
 	for i := 0; i < 10; i++ {
-		leader, err := tc.checkOneLeader()
-		if err != nil {
-			return errors.WrapError(err, errMultipleLeader)
-		}
-
-		index, _ := tc.servers[leader].SubmitCommand(command)
-		if index == 0 {
-			continue
-		}
-
-		// Wait a bit for the command to be committed across all servers.
-		time.Sleep(100 * time.Millisecond)
-
-		// Check that command has been committed to expected number of servers.
-		committed := 0
 		for _, server := range tc.servers {
-			status := server.raft.Status()
-			if status.CommitIndex >= index {
-				committed++
-			}
-		}
-
-		if committed == expectedServersCommitted {
-			return nil
-		}
-	}
-
-	return errors.WrapError(nil, errNoConsensus)
-}
-
-func (tc *TestCluster) checkOneLeader() (int, error) {
-	for i := 0; i < 10; i++ {
-		leader := -1
-		for id, server := range tc.servers {
-			if !tc.connected[id] {
-				continue
-			}
-			status := server.raft.Status()
-			if status.State == Leader && leader != -1 {
-				return -1, errors.WrapError(nil, errMultipleLeader)
-			}
+			status := server.Status()
 			if status.State == Leader {
-				leader, _ = strconv.Atoi(status.Id)
+				index, term, err := server.SubmitCommand(command)
+				if err != nil {
+					continue
+				}
+				for j := 0; j < 10; j++ {
+					time.Sleep(100 * time.Millisecond)
+					tc.mu.Lock()
+					if tc.applyIndex >= index {
+						tc.mu.Unlock()
+						return
+					}
+					status = server.Status()
+					if status.Term != term {
+						tc.mu.Unlock()
+						break
+					}
+					tc.mu.Unlock()
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		if !retry {
+			break
+		}
+	}
+
+	tc.t.Fatalf("cluster failed to apply command: command = %v", command)
+}
+
+func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
+	leaders := make([]string, 0)
+
+	// A maximum of 3 seconds is given to successfully elect a leader.
+	electionTimeout := 300 * time.Millisecond
+	for i := 0; i < 10; i++ {
+		for j, server := range tc.servers {
+			status := server.Status()
+
+			// We need to check if the server is connected to the
+			// cluster since it is possible to have two leaders if
+			// one is disconnected.
+			if status.State == Leader && tc.connected[j] {
+				leaders = append(leaders, status.Id)
 			}
 		}
-
-		if leader != -1 {
-			return leader, nil
+		if len(leaders) > 1 {
+			tc.t.Fatal("cluster has more than one leader")
 		}
-
-		// Wait for a bit to see if leader is elected.
-		time.Sleep(150 * time.Millisecond)
+		if len(leaders) == 1 {
+			break
+		}
+		time.Sleep(electionTimeout)
 	}
 
-	return -1, errors.WrapError(nil, errNoLeader)
+	if len(leaders) == 0 && !expectNoLeader {
+		tc.t.Fatal("cluster failed to elect a leader")
+	}
+	if len(leaders) != 0 && expectNoLeader {
+		tc.t.Fatal("cluster elected a leader when it should not have")
+	}
+	if expectNoLeader {
+		return ""
+	}
+
+	return leaders[0]
 }
 
-func (tc *TestCluster) checkNoLeader() error {
-	leader := -1
-	for i := 0; i < 10; i++ {
-		for id, server := range tc.servers {
-			if !tc.connected[id] {
-				continue
+func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	responses := tc.replicateResponses[index]
+	expectedIndex := uint64(1)
+	expectedCommand := fmt.Sprintf("command %d", expectedIndex)
+	if len(tc.replicateResponses[index]) > 0 {
+		expectedIndex = tc.replicateResponses[index][len(responses)-1].Index + 1
+	}
+
+	if response.Index != expectedIndex {
+		tc.t.Fatalf("command applied out of order: expected index %d, got index %d", expectedIndex, response.Index)
+	}
+	if expectedCommand != string(response.Command) {
+		tc.t.Fatalf("command does not match: expected command %s, got command %s", expectedCommand, string(response.Command))
+	}
+
+	tc.replicateResponses[index] = append(tc.replicateResponses[index], response)
+	numApplied := 0
+
+	// Check the last applied command of each server. If there
+	// is a majority, update the apply index.
+	for i := 0; i < len(tc.servers); i++ {
+		if len(tc.replicateResponses[i]) == 0 {
+			continue
+		}
+		if tc.applyIndex <= response.Index {
+			numApplied += 1
+		}
+		if numApplied > len(tc.servers)/2 {
+			tc.applyIndex = util.Max(response.Index, tc.applyIndex)
+			return
+		}
+	}
+}
+
+func (tc *TestCluster) applyLoop(index int) {
+	defer tc.wg.Done()
+
+	for response := range tc.replicateCh[index] {
+		tc.checkLogs(index, response)
+	}
+}
+
+func (tc *TestCluster) disconnectServerOneWay(serverID string) {
+	server, _ := strconv.Atoi(serverID)
+	tc.connected[server] = false
+	for i := 0; i < len(tc.peers); i++ {
+		if i == server {
+			continue
+		}
+		tc.peers[i][server].disconnect()
+	}
+}
+
+func (tc *TestCluster) disconnectServerTwoWay(serverID string) {
+	server, _ := strconv.Atoi(serverID)
+	tc.connected[server] = false
+	for i := 0; i < len(tc.peers); i++ {
+		if i == server {
+			for j := 0; j < len(tc.peers[i]); j++ {
+				tc.peers[i][j].disconnect()
 			}
-			status := server.raft.Status()
-			if status.State == Leader {
-				leader, _ = strconv.Atoi(status.Id)
-				break
-			}
+			continue
 		}
-
-		if leader == -1 {
-			return nil
-		}
-
-		// Wait for a bit to see if servers enter candidate state.
-		time.Sleep(150 * time.Millisecond)
+		tc.peers[i][server].disconnect()
 	}
-
-	return errors.WrapError(nil, errHasLeader, fmt.Sprint(leader))
 }
 
-func (tc *TestCluster) checkCommitIndex(id int, expectedCommitIndex uint64) error {
-	commitIndex := uint64(0)
-
-	for i := 0; i < 10; i++ {
-		commitIndex = tc.servers[id].raft.Status().CommitIndex
-		if commitIndex == expectedCommitIndex {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	return errors.WrapError(nil, errCommitIndex, fmt.Sprint(id), expectedCommitIndex, commitIndex)
-}
-
-func (tc *TestCluster) checkLastApplied(id int, expectedLastApplied uint64) error {
-	lastApplied := uint64(0)
-
-	for i := 0; i < 10; i++ {
-		lastApplied = tc.servers[id].raft.Status().CommitIndex
-		if lastApplied == expectedLastApplied {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	return errors.WrapError(nil, errLastApplied, expectedLastApplied, lastApplied)
-}
-
-func (tc *TestCluster) checkSnapshots(id, expectedNumSnapshots int) ([]Snapshot, error) {
-	numSnapshots := 0
-
-	for i := 0; i < 10; i++ {
-		snapshotStore := tc.snapshotStores[id]
-		snapshots, _ := snapshotStore.ListSnapshots()
-		numSnapshots = len(snapshots)
-		if numSnapshots == expectedNumSnapshots {
-			return snapshots, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	return nil, errors.WrapError(nil, errSnapshots, expectedNumSnapshots, numSnapshots)
-}
-
-// TestBasicElection tests that a new cluster is able to successfully elect a leader.
 func TestBasicElection(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	numServers := 3
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	// Cluster should have exactly one leader.
-	_, err = cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.stopCluster())
-}
-
-// TestLeaderFailElection tests that the cluster is able to elect a new leader after the
-// original leader fails.
-func TestLeaderFailElection(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 3
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	// Cluster should have exactly one leader.
-	leader1, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	// Disconnect leader from peers.
-	require.NoError(t, cluster.disconnectServerFromPeers(leader1))
-
-	// CLuster should elect new leader.
-	leader2, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-	require.NotEqual(t, leader1, leader2)
-
-	require.NoError(t, cluster.stopCluster())
-}
-
-func TestElectionNoQuorum(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 5
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	// Cluster should have exactly one leader.
-	leader, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	// Disconnect majority of servers to prevent quorum.
-	require.NoError(t, cluster.disconnectServerFromPeers(leader))
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
-
-	// No leader should be present since there is not quorum.
-	require.NoError(t, cluster.checkNoLeader())
-
-	// Rejoin a disconnected server to allow quorum
-	require.NoError(t, cluster.connectServerToPeers(leader))
-
-	// Leader should be elected now.
-	_, err = cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.stopCluster())
-}
-
-// TestReplicateSingle tests replicating a single command.
-func TestReplicateSingle(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 3
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	numCommands := 1
-	commands := makeCommands(numCommands)
-	require.NoError(t, cluster.checkSubmitCommand(commands[0], numServers))
-
-	for id := 0; id < numServers; id++ {
-		responses := cluster.responses(id)
-		require.Len(t, responses, 1)
-		response := responses[0]
-		require.Equal(t, response.Command, commands[0].Bytes)
-		require.Equal(t, int(response.Index), 1)
+	cluster, err := newCluster(t, 3)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
 	}
 
-	require.NoError(t, cluster.stopCluster())
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	cluster.checkLeaders(false)
 }
 
-// TestReplicateMultiple tests replicating multiple commands.
-func TestReplicateMultiple(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+func TestElectLeaderDisconnect(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	numServers := 3
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	numCommands := 10
-	commands := makeCommands(numCommands)
-
-	for _, command := range commands {
-		require.NoError(t, cluster.checkSubmitCommand(command, numServers))
+	cluster, err := newCluster(t, 3)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
 	}
 
-	for id := 0; id < numServers; id++ {
-		responses := cluster.responses(id)
-		require.Len(t, responses, len(commands))
-		for i, response := range responses {
-			require.Equal(t, response.Command, commands[i].Bytes)
-			require.Equal(t, int(response.Index), i+1)
-		}
-	}
+	cluster.startCluster()
+	defer cluster.stopCluster()
 
-	require.NoError(t, cluster.stopCluster())
+	leader := cluster.checkLeaders(false)
+	cluster.disconnectServerTwoWay(leader)
+	cluster.checkLeaders(false)
 }
 
-// TestReplicationNoQuorum tests that replication is not successful if there is not a quorum.
-func TestReplicateNoQuorum(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+func TestFailElectLeaderDisconnect(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	numServers := 5
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	leader, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+3)%numServers))
-
-	command := Command{Bytes: []byte("test")}
-	cluster.servers[leader].SubmitCommand(command)
-
-	for id := 0; id < numServers; id++ {
-		responses := cluster.responses(id)
-		require.Empty(t, responses)
+	cluster, err := newCluster(t, 3)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
 	}
 
-	require.NoError(t, cluster.stopCluster())
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	disconnectServer1 := cluster.checkLeaders(false)
+	serverID, _ := strconv.Atoi(disconnectServer1)
+	disconnectServer2 := fmt.Sprint((serverID + 1) % 3)
+	cluster.disconnectServerTwoWay(disconnectServer1)
+	cluster.disconnectServerTwoWay(disconnectServer2)
+	cluster.checkLeaders(true)
 }
 
-// TestSingleSnapshot checks that servers take a snapshot once the log
-// has grown past a predefined size.
-func TestSingleSnapshot(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
+func TestBasicSubmit(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	numServers := 3
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	// Submit enough commands to force a snapshot.
-	fsm := NewStateMachineMock()
-	numCommands := defaultMaxEntriesPerSnapshot
-	commands := makeCommands(numCommands)
-	for _, command := range commands {
-		require.NoError(t, cluster.checkSubmitCommand(command, numServers))
-		fsm.Apply(command.Bytes)
+	cluster, err := newCluster(t, 3)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
 	}
 
-	// Ensure that each server has a single, correct snapshot.
-	expectedSnapshot, _ := fsm.Snapshot()
-	for id := 0; id < numServers; id++ {
-		snapshots, err := cluster.checkSnapshots(id, 1)
-		require.NoError(t, err)
-		snapshot := snapshots[0]
-		require.Equal(t, expectedSnapshot[:len(snapshot.Data)], snapshot.Data)
-	}
+	cluster.startCluster()
+	defer cluster.stopCluster()
 
-	require.NoError(t, cluster.stopCluster())
-}
-
-// TestSendSnapshot checks that the leader will send a snapshot to a peer
-// that is lagging behind.
-func TestSendSnapshot(t *testing.T) {
-	//defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 5
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	leader, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	// Disconnect a server so that it will lag behind the others and need a snapshot
-	// installed.
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
-
-	// Submit enough commands to a force a snapshot.
-	numCommands := 150
-	commands := makeCommands(numCommands)
-	for _, command := range commands {
-		require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
-	}
-
-	// Reconnect the server so that it can have its snapshot installed.
-	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
-
-	// Check that server has correct commit index and last applied index now.
-	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
-	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
-
-	require.NoError(t, cluster.stopCluster())
-}
-
-// TestMultipleSnapshot checks that a snapshot will properly be installed when
-// there are multiple peers lagging.
-func TestSendMultipleSnapshot(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 5
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	leader, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	// Disconnect a server so that it will lag.
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
-
-	// Submit enough commands to force a snapshot. Disconnect another server
-	// after replicating some commands.
-	numCommands := 150
-	commands := makeCommands(numCommands)
-	disconnectIndex := util.RandomInt(1, 99)
-	for index, command := range commands {
-		if index == disconnectIndex {
-			require.NoError(t, cluster.disconnectServerFromPeers((leader+2)%numServers))
-		}
-
-		if index < disconnectIndex {
-			require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
-		} else {
-			require.NoError(t, cluster.checkSubmitCommand(command, numServers-2))
-		}
-	}
-
-	// Reconnect the servers so that they can have its snapshot installed.
-	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
-	require.NoError(t, cluster.connectServerToPeers((leader+2)%numServers))
-
-	// Check that servers have correct commit index and last applied index now.
-	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
-	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
-	require.NoError(t, cluster.checkCommitIndex((leader+2)%numServers, uint64(numCommands)))
-	require.NoError(t, cluster.checkLastApplied((leader+2)%numServers, uint64(numCommands)))
-
-	require.NoError(t, cluster.stopCluster())
-}
-
-// TestSendSnapshotLeaderFailure ensures that a snapshot will be installed on a lagging
-// peer even in the case of a leader failure.
-func TestSendSnapshotLeaderFailure(t *testing.T) {
-	//defer leaktest.CheckTimeout(t, 250*time.Millisecond)()
-
-	numServers := 5
-	cluster, err := newCluster(numServers)
-	require.NoError(t, err)
-
-	require.NoError(t, cluster.startCluster())
-
-	leader, err := cluster.checkOneLeader()
-	require.NoError(t, err)
-
-	// Disconnect a server so that it will lag behind the others and need a snapshot
-	// installed.
-	require.NoError(t, cluster.disconnectServerFromPeers((leader+1)%numServers))
-
-	// Submit enough commands to force a snapshot
-	numCommands := 150
-	commands := makeCommands(numCommands)
-	for _, command := range commands {
-		require.NoError(t, cluster.checkSubmitCommand(command, numServers-1))
-	}
-
-	// Disconnect the leader.
-	require.NoError(t, cluster.disconnectServerFromPeers(leader))
-
-	// Reconnect the server so that it can have its snapshot installed.
-	require.NoError(t, cluster.connectServerToPeers((leader+1)%numServers))
-
-	// Check that server has correct commit index and last applied index now.
-	require.NoError(t, cluster.checkCommitIndex((leader+1)%numServers, uint64(numCommands)))
-	require.NoError(t, cluster.checkLastApplied((leader+1)%numServers, uint64(numCommands)))
-
-	require.NoError(t, cluster.stopCluster())
+	cluster.checkLeaders(false)
+	commands := makeCommands(1)
+	cluster.submit(commands[0], false)
 }

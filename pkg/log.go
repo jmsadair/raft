@@ -33,10 +33,10 @@ type Log interface {
 	GetEntry(index uint64) (*LogEntry, error)
 
 	// AppendEntry appends a log entry to the log.
-	AppendEntry(entry *LogEntry) error
+	AppendEntry(entry *LogEntry)
 
 	// AppendEntries appends multiple log entries to the log.
-	AppendEntries(entries []*LogEntry) error
+	AppendEntries(entries []*LogEntry)
 
 	// Truncate deletes all log entries with index greater
 	// than or equal to the provided index.
@@ -44,15 +44,11 @@ type Log interface {
 
 	// Compact deletes all log entries with index less than
 	// or equal to the provided index.
-	Compact(index, term uint64) error
+	Compact(index uint64) error
 
 	// Contains returns true if the index exists in the log and
 	// false otherwise.
 	Contains(index uint64) bool
-
-	// FirstIndex returns the smallest index that exists in the log and
-	// zero if the log is empty.
-	FirstIndex() uint64
 
 	// LastIndex returns the largest index that exists in the log and zero
 	// if the log is empty.
@@ -61,4 +57,7 @@ type Log interface {
 	// LastTerm returns the largest term in the log and zero if the log
 	// is empty.
 	LastTerm() uint64
+
+	// NextIndex returns the next index to append to the log.
+	NextIndex() uint64
 }

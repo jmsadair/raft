@@ -50,6 +50,7 @@ func (p *Peer) connect() error {
 		return errors.WrapError(nil, errConnEstablished, p.id)
 	}
 
+	// TODO: Fix grpc dial options.
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
 		return errors.WrapError(err, "failed to connect to peer: %s", err.Error())
@@ -66,7 +67,7 @@ func (p *Peer) disconnect() error {
 	defer p.mu.Unlock()
 
 	if p.client == nil {
-		return errors.WrapError(nil, errNoConn, p.id)
+		return nil
 	}
 
 	if err := p.conn.Close(); err != nil {

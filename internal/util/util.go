@@ -21,10 +21,10 @@ func Max[T constraints.Ordered](a, b T) T {
 	return b
 }
 
-func RandomTimeout(min time.Duration, max time.Duration) <-chan time.Time {
+func RandomTimeout(min time.Duration, max time.Duration) time.Duration {
 	rand.Seed(time.Now().UnixNano())
 	n := rand.Int63n(max.Milliseconds()-min.Milliseconds()) + min.Milliseconds()
-	return time.After(time.Duration(n) * time.Millisecond)
+	return time.Duration(n)
 }
 
 func RandomInt(min int, max int) int {

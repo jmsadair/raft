@@ -10,16 +10,7 @@ import (
 
 	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/errors"
-	"github.com/jmsadair/raft/internal/util"
 )
-
-func makeCommands(numCommands int) []Command {
-	commands := make([]Command, numCommands)
-	for i := 1; i <= numCommands; i++ {
-		commands[i-1] = Command{Bytes: []byte(fmt.Sprintf("command %d", i))}
-	}
-	return commands
-}
 
 func makePeers(numServers int) [][]*Peer {
 	ipPrefix := "127.0.0."
@@ -38,18 +29,20 @@ func makePeers(numServers int) [][]*Peer {
 }
 
 type TestCluster struct {
-	t                  *testing.T
-	peers              [][]*Peer
-	servers            []*Server
-	connected          []bool
-	snapshotStores     []SnapshotStorage
-	stateMachines      []StateMachine
-	replicateCh        []chan CommandResponse
-	shutdownCh         chan interface{}
-	replicateResponses [][]CommandResponse
-	applyIndex         uint64
-	mu                 sync.Mutex
-	wg                 sync.WaitGroup
+	t                *testing.T
+	peers            [][]*Peer
+	servers          []*Server
+	connected        []bool
+	snapshotStores   []SnapshotStorage
+	stateMachines    []StateMachine
+	replicateCh      []chan CommandResponse
+	shutdownCh       chan interface{}
+	commandResponses []map[uint64]CommandResponse
+	serverErrors     []string
+	commands         []Command
+	lastApplied      []uint64
+	mu               sync.Mutex
+	wg               sync.WaitGroup
 }
 
 func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
@@ -57,16 +50,19 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stateMachines := make([]StateMachine, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
-	responses := make([][]CommandResponse, numServers)
+	responses := make([]map[uint64]CommandResponse, numServers)
+	expected := make([]Command, 0)
 	connected := make([]bool, numServers)
 	peers := makePeers(numServers)
+	serverErrors := make([]string, numServers)
+	lastApplied := make([]uint64, numServers)
 
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
-		responses[i] = make([]CommandResponse, 0)
 		snapshotStores[i] = NewSnapshotStorageMock()
 		stateMachines[i] = NewStateMachineMock()
 		connected[i] = true
+		responses[i] = make(map[uint64]CommandResponse)
 
 		log := NewLogMock(0, 0)
 		storage := NewStorageMock()
@@ -81,15 +77,18 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	}
 
 	return &TestCluster{
-		t:                  t,
-		peers:              peers,
-		servers:            servers,
-		connected:          connected,
-		snapshotStores:     snapshotStores,
-		stateMachines:      stateMachines,
-		replicateCh:        replicateCh,
-		replicateResponses: responses,
-		shutdownCh:         make(chan interface{}),
+		t:                t,
+		peers:            peers,
+		servers:          servers,
+		connected:        connected,
+		snapshotStores:   snapshotStores,
+		stateMachines:    stateMachines,
+		replicateCh:      replicateCh,
+		commandResponses: responses,
+		commands:         expected,
+		serverErrors:     serverErrors,
+		lastApplied:      lastApplied,
+		shutdownCh:       make(chan interface{}),
 	}, nil
 }
 
@@ -115,39 +114,51 @@ func (tc *TestCluster) stopCluster() {
 	tc.wg.Wait()
 }
 
-func (tc *TestCluster) submit(command Command, retry bool) {
+func (tc *TestCluster) makeCommands(numCommands int) []Command {
+	commands := make([]Command, numCommands)
+	for i := 1; i <= numCommands; i++ {
+		commands[i-1] = Command{Bytes: []byte(fmt.Sprintf("command %d", i))}
+	}
+
+	return commands
+}
+
+func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
 	for i := 0; i < 10; i++ {
-		for _, server := range tc.servers {
+		for j, server := range tc.servers {
 			status := server.Status()
-			if status.State == Leader {
+			if status.State == Leader && tc.connected[j] {
 				index, term, err := server.SubmitCommand(command)
 				if err != nil {
 					continue
 				}
-				for j := 0; j < 10; j++ {
-					time.Sleep(100 * time.Millisecond)
-					tc.mu.Lock()
-					if tc.applyIndex >= index {
-						tc.mu.Unlock()
+				for k := 0; k < 10; k++ {
+					time.Sleep(25 * time.Millisecond)
+					successful := tc.checkApplied(index, expectedApplied)
+					if successful {
+						if expectFail {
+							tc.t.Fatalf("cluster applied command when it should not have")
+						}
 						return
 					}
 					status = server.Status()
 					if status.Term != term {
-						tc.mu.Unlock()
 						break
 					}
-					tc.mu.Unlock()
 				}
 			}
-			time.Sleep(300 * time.Millisecond)
 		}
 
 		if !retry {
 			break
 		}
+
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	tc.t.Fatalf("cluster failed to apply command: command = %v", command)
+	if !expectFail {
+		tc.t.Fatalf("cluster failed to apply command: command = %v", command)
+	}
 }
 
 func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
@@ -192,37 +203,36 @@ func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	responses := tc.replicateResponses[index]
-	expectedIndex := uint64(1)
-	expectedCommand := fmt.Sprintf("command %d", expectedIndex)
-	if len(tc.replicateResponses[index]) > 0 {
-		expectedIndex = tc.replicateResponses[index][len(responses)-1].Index + 1
-	}
-
+	expectedIndex := tc.lastApplied[index] + 1
 	if response.Index != expectedIndex {
-		tc.t.Fatalf("command applied out of order: expected index %d, got index %d", expectedIndex, response.Index)
+		tc.serverErrors[index] = fmt.Sprintf("command applied out of order: expected index %d, got index %d", expectedIndex, response.Index)
 	}
-	if expectedCommand != string(response.Command) {
-		tc.t.Fatalf("command does not match: expected command %s, got command %s", expectedCommand, string(response.Command))
-	}
+	tc.commandResponses[index][response.Index] = response
+	tc.lastApplied[index]++
+}
 
-	tc.replicateResponses[index] = append(tc.replicateResponses[index], response)
-	numApplied := 0
+func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
-	// Check the last applied command of each server. If there
-	// is a majority, update the apply index.
+	var expectedCommandResponse CommandResponse
+	hasApplied := 0
 	for i := 0; i < len(tc.servers); i++ {
-		if len(tc.replicateResponses[i]) == 0 {
-			continue
+		if tc.serverErrors[i] != "" {
+			tc.t.Fatalf(tc.serverErrors[i])
 		}
-		if tc.applyIndex <= response.Index {
-			numApplied += 1
-		}
-		if numApplied > len(tc.servers)/2 {
-			tc.applyIndex = util.Max(response.Index, tc.applyIndex)
-			return
+
+		if commandResponse, ok := tc.commandResponses[i][index]; ok {
+			if hasApplied != 0 && string(commandResponse.Command) != string(expectedCommandResponse.Command) {
+				tc.t.Fatalf("server applied different commands at same index: index = %d, command1 = %v, command2 = %v",
+					index, expectedCommandResponse.Command, commandResponse.Command)
+			}
+			expectedCommandResponse = commandResponse
+			hasApplied++
 		}
 	}
+
+	return hasApplied >= expectedApplied
 }
 
 func (tc *TestCluster) applyLoop(index int) {
@@ -319,6 +329,68 @@ func TestBasicSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := makeCommands(1)
-	cluster.submit(commands[0], false)
+	commands := cluster.makeCommands(1)
+	cluster.submit(commands[0], false, false, 3)
+}
+
+func TestMultipleSubmit(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	cluster.checkLeaders(false)
+	commands := cluster.makeCommands(100)
+	for _, command := range commands {
+		cluster.submit(command, false, false, 5)
+	}
+}
+
+func TestSubmitDisconnect(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 3)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	leader := cluster.checkLeaders(false)
+	cluster.disconnectServerTwoWay(leader)
+	commands := cluster.makeCommands(20)
+	for _, command := range commands {
+		cluster.submit(command, true, false, 2)
+	}
+}
+
+func TestSubmitDisconnectFail(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	leader := cluster.checkLeaders(false)
+	serverID, _ := strconv.Atoi(leader)
+	disconnectServer1 := fmt.Sprint((serverID + 1) % 5)
+	disconnectServer2 := fmt.Sprint((serverID + 2) % 5)
+	disconnectServer3 := fmt.Sprint((serverID + 3) % 5)
+	cluster.disconnectServerTwoWay(disconnectServer1)
+	cluster.disconnectServerTwoWay(disconnectServer2)
+	cluster.disconnectServerTwoWay(disconnectServer3)
+	commands := cluster.makeCommands(20)
+	for _, command := range commands {
+		cluster.submit(command, false, true, 1)
+	}
 }

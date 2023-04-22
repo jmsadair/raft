@@ -77,16 +77,13 @@ type Raft struct {
 	fsm StateMachine
 
 	// Notifies applier that the commit index has been updated.
-	applyCh chan interface{}
+	applyCond *sync.Cond
 
 	// Notifies committer that new log entries may be ready to be committed.
-	commitCh chan interface{}
+	commitCond *sync.Cond
 
 	// Notifies receivers that command has been applied.
 	commandResponseCh chan<- CommandResponse
-
-	// Notifies raft server to shutdown.
-	shutdownCh chan interface{}
 
 	state State
 
@@ -171,6 +168,9 @@ func NewRaft(id string, peers []*Peer, log Log, storage Storage, snapshotStorage
 		lastApplied:       0,
 	}
 
+	raft.applyCond = sync.NewCond(&raft.mu)
+	raft.commitCond = sync.NewCond(&raft.mu)
+
 	if !options.restoreFromSnapshot {
 		return raft, nil
 	}
@@ -186,7 +186,6 @@ func NewRaft(id string, peers []*Peer, log Log, storage Storage, snapshotStorage
 func (r *Raft) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	if r.state != Shutdown {
 		return
 	}
@@ -198,11 +197,7 @@ func (r *Raft) Start() {
 		}
 	}
 
-	r.applyCh = make(chan interface{})
-	r.commitCh = make(chan interface{})
-	r.shutdownCh = make(chan interface{})
 	r.lastContact = time.Now()
-
 	r.becomeFollower(r.currentTerm)
 
 	r.wg.Add(4)
@@ -218,14 +213,14 @@ func (r *Raft) Start() {
 func (r *Raft) Stop() {
 	r.mu.Lock()
 	if r.state == Shutdown {
+		r.mu.Unlock()
 		return
 	}
 	r.state = Shutdown
-	close(r.shutdownCh)
-	close(r.applyCh)
-	close(r.commitCh)
 	r.mu.Unlock()
 
+	r.applyCond.Broadcast()
+	r.commitCond.Broadcast()
 	r.wg.Wait()
 
 	for _, peer := range r.peers {
@@ -271,6 +266,7 @@ func (r *Raft) Status() Status {
 // appendEntries is used to append log entries to the log of this raft server.
 func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntriesResponse {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
 		r.id, request.GetLeaderId(), request.GetLeaderCommit(), request.GetTerm(), request.GetPrevLogIndex(), request.GetPrevLogTerm())
@@ -283,7 +279,6 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 	// Reject any requests with out-of-date term.
 	if request.GetTerm() < r.currentTerm {
 		r.options.logger.Debugf("server %s rejecting AppendEntries RPC: out of date term: %d > %d", r.id, r.currentTerm, request.GetTerm())
-		r.mu.Unlock()
 		return response
 	}
 
@@ -304,7 +299,6 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 		if r.log.NextIndex() <= request.GetPrevLogIndex() {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
 				r.id, request.GetPrevLogIndex())
-			r.mu.Unlock()
 			return response
 		}
 
@@ -317,7 +311,6 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 		if prevLogEntry.Term() != request.GetPrevLogTerm() {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
 				r.id, request.GetPrevLogIndex(), prevLogEntry.Term(), request.GetPrevLogTerm())
-			r.mu.Unlock()
 			return response
 		}
 	}
@@ -348,15 +341,9 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 
 	r.log.AppendEntries(toAppend)
 
-	apply := false
 	if request.GetLeaderCommit() > r.commitIndex {
 		r.commitIndex = util.Min(request.GetLeaderCommit(), r.log.LastIndex())
-		apply = true
-	}
-	r.mu.Unlock()
-
-	if apply {
-		r.applyCh <- struct{}{}
+		r.applyCond.Broadcast()
 	}
 
 	return response
@@ -390,7 +377,7 @@ func (r *Raft) sendAppendEntries() {
 				prevLogTerm = prevEntry.Term()
 			}
 
-			entries := make([]*pb.LogEntry, 0)
+			entries := make([]*pb.LogEntry, 0, r.log.NextIndex()-nextIndex)
 			for index := nextIndex; index < r.log.NextIndex(); index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
@@ -427,12 +414,11 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 
-			peer.setNextIndex(peer.getNextIndex() + uint64(len(entries)))
-			peer.setMatchIndex(peer.getNextIndex() - 1)
-
-			r.mu.Unlock()
-			r.commitCh <- struct{}{}
-			r.mu.Lock()
+			if request.GetPrevLogIndex()+uint64(len(entries)) >= peer.getNextIndex() {
+				peer.setNextIndex(request.GetPrevLogIndex() + uint64(len(entries)) + 1)
+				peer.setMatchIndex(peer.getNextIndex() - 1)
+				r.commitCond.Broadcast()
+			}
 		}(peer)
 	}
 }
@@ -489,7 +475,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 }
 
 // sendRequestVote will send vote requests to the peers of this server concurrently.
-func (r *Raft) sendRequestVote(responseCh chan<- *pb.RequestVoteResponse) {
+func (r *Raft) sendRequestVote(votes *int) {
 	for _, peer := range r.peers {
 		if peer.Id() == r.id {
 			continue
@@ -497,20 +483,38 @@ func (r *Raft) sendRequestVote(responseCh chan<- *pb.RequestVoteResponse) {
 
 		go func(peer *Peer) {
 			r.mu.Lock()
+			defer r.mu.Unlock()
+
 			request := &pb.RequestVoteRequest{
 				CandidateId:  r.id,
 				Term:         r.currentTerm,
 				LastLogIndex: r.log.LastIndex(),
 				LastLogTerm:  r.log.LastTerm(),
 			}
-			r.mu.Unlock()
 
+			r.mu.Unlock()
 			response, err := peer.requestVote(request)
+			r.mu.Lock()
+
 			if err != nil {
 				return
 			}
 
-			responseCh <- response
+			if response.GetVoteGranted() {
+				*votes += 1
+			}
+
+			// Become a follower if a peer has a more up-to-date term.
+			if response.GetTerm() > r.currentTerm {
+				r.becomeFollower(response.GetTerm())
+				return
+			}
+
+			// If we have received votes from the majority of peers, become a leader.
+			if r.hasQuorum(*votes) && r.state == Follower {
+				r.becomeLeader()
+				return
+			}
 		}(peer)
 	}
 }
@@ -542,18 +546,18 @@ func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
 	for {
-		select {
-		case <-time.After(r.options.heartbeatInterval):
-			r.mu.Lock()
-			if r.state == Leader {
-				r.mu.Unlock()
-				r.sendAppendEntries()
-				r.mu.Lock()
-			}
+		time.Sleep(r.options.heartbeatInterval)
+		r.mu.Lock()
+		if r.state == Shutdown {
 			r.mu.Unlock()
-		case <-r.shutdownCh:
 			return
 		}
+		if r.state == Leader {
+			r.mu.Unlock()
+			r.sendAppendEntries()
+			r.mu.Lock()
+		}
+		r.mu.Unlock()
 	}
 }
 
@@ -561,65 +565,41 @@ func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
 	for {
-		select {
-		case <-time.After(r.options.electionTimeout):
-			r.election()
-		case <-r.shutdownCh:
+		electionTimer := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
+		time.Sleep(electionTimer * time.Millisecond)
+		r.mu.Lock()
+		if r.state == Shutdown {
+			r.mu.Unlock()
 			return
 		}
+		r.mu.Unlock()
+		r.election()
 	}
 }
 
 func (r *Raft) election() {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.state != Follower || time.Since(r.lastContact) < r.options.electionTimeout {
-		r.mu.Unlock()
 		return
 	}
-	// At the start of an election, a server must vote for itself and increment its current term.
-	r.becomeCandidate()
-	r.mu.Unlock()
 
 	votesReceived := 1
-	requestVoteResponses := make(chan *pb.RequestVoteResponse, len(r.peers))
-	electionTimeout := r.options.electionTimeout
-	electionTimer := util.RandomTimeout(electionTimeout, electionTimeout*2)
-
-	r.sendRequestVote(requestVoteResponses)
-
-	for {
-		select {
-		case response := <-requestVoteResponses:
-			r.mu.Lock()
-			if response.GetVoteGranted() {
-				votesReceived++
-			}
-			// Become a follower if a peer has a more up-to-date term.
-			if response.GetTerm() > r.currentTerm {
-				r.becomeFollower(response.GetTerm())
-				r.mu.Unlock()
-				return
-			}
-			// If we have received votes from the majority of peers, become a leader.
-			if r.hasQuorum(votesReceived) && r.state == Follower {
-				r.becomeLeader()
-				r.mu.Unlock()
-				return
-			}
-			r.mu.Unlock()
-		case <-electionTimer:
-			return
-		}
-	}
+	r.becomeCandidate()
+	r.sendRequestVote(&votesReceived)
 }
 
 func (r *Raft) commitLoop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	defer r.wg.Done()
 
-	for range r.commitCh {
-		r.mu.Lock()
-		if r.state != Leader {
-			r.mu.Unlock()
+	for {
+		r.commitCond.Wait()
+		if r.state == Shutdown {
+			return
+		}
+		if r.state == Follower {
 			continue
 		}
 
@@ -643,10 +623,9 @@ func (r *Raft) commitLoop() {
 				}
 			}
 		}
-		r.mu.Unlock()
 
 		if committed {
-			r.applyCh <- struct{}{}
+			r.applyCond.Broadcast()
 		}
 	}
 }
@@ -655,11 +634,17 @@ func (r *Raft) commitLoop() {
 // and send responses to the client. Must be called in a separate go-routine because it
 // will block.
 func (r *Raft) applyLoop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	defer close(r.commandResponseCh)
 	defer r.wg.Done()
 
-	for range r.applyCh {
-		r.mu.Lock()
+	for {
+		r.applyCond.Wait()
+		if r.state == Shutdown {
+			return
+		}
+
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {
@@ -671,12 +656,12 @@ func (r *Raft) applyLoop() {
 				Command:  entry.data,
 				Response: r.fsm.Apply(entry.data),
 			}
+			r.lastApplied++
 			r.mu.Unlock()
 			r.options.logger.Debugf("server %s applied command: response = %v", r.id, response)
 			r.commandResponseCh <- response
 			r.mu.Lock()
 		}
-		r.mu.Unlock()
 	}
 }
 
@@ -710,5 +695,5 @@ func (r *Raft) becomeFollower(term uint64) {
 // the number that is the majority of peers and false
 // otherwise.
 func (r *Raft) hasQuorum(count int) bool {
-	return count >= len(r.peers)/2+1
+	return count > len(r.peers)/2
 }

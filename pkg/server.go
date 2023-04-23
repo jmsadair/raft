@@ -48,16 +48,14 @@ func (s *Server) Start(ready <-chan interface{}) error {
 	return nil
 }
 
-func (s *Server) Stop() error {
+func (s *Server) Stop() {
 	if s.server == nil {
-		return errors.WrapError(nil, "server has not been started")
+		return
 	}
 	s.server.GracefulStop()
-	s.listener.Close()
 	s.raft.Stop()
+	s.listener.Close()
 	s.server = nil
-	s.listener = nil
-	return nil
 }
 
 func (s *Server) Status() Status {

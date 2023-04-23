@@ -85,16 +85,22 @@ type Raft struct {
 	// Notifies receivers that command has been applied.
 	commandResponseCh chan<- CommandResponse
 
+	// Indicates the current state of this raft instance: leader, follower, or shutdown.
 	state State
 
+	// The index of the last log entry that was committed.
 	commitIndex uint64
 
+	// The index of the last log entry that was applied.
 	lastApplied uint64
 
+	// The current term of this raft instance. Must be persisted.
 	currentTerm uint64
 
+	// The ID of the candidate that this raft instance voted for. Must be persisted.
 	votedFor string
 
+	// The last time this raft instance was contacted by the leader.
 	lastContact time.Time
 
 	wg sync.WaitGroup
@@ -191,8 +197,10 @@ func (r *Raft) Start() {
 	}
 
 	for _, peer := range r.peers {
-		err := peer.connect()
-		if err != nil {
+		if peer.Id() == r.id {
+			continue
+		}
+		if err := peer.connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
 		}
 	}
@@ -217,12 +225,14 @@ func (r *Raft) Stop() {
 		return
 	}
 	r.state = Shutdown
-	r.mu.Unlock()
-
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
+	r.mu.Unlock()
+
+	r.options.logger.Debugf("server %s waiting on wg...", r.id)
 	r.wg.Wait()
 
+	close(r.commandResponseCh)
 	for _, peer := range r.peers {
 		if err := peer.disconnect(); err != nil {
 			r.options.logger.Errorf("error disconnecting from peer: %s", err.Error())
@@ -410,6 +420,7 @@ func (r *Raft) sendAppendEntries() {
 			// If the AppendEntries RPC was not successful, decrement the next index associated with the peer.
 			if !response.GetSuccess() && peer.getNextIndex() > 1 {
 				peer.setNextIndex(peer.getNextIndex() - 1)
+				return
 			} else if !response.GetSuccess() {
 				return
 			}
@@ -418,6 +429,7 @@ func (r *Raft) sendAppendEntries() {
 				peer.setNextIndex(request.GetPrevLogIndex() + uint64(len(entries)) + 1)
 				peer.setMatchIndex(peer.getNextIndex() - 1)
 				r.commitCond.Broadcast()
+				go r.sendAppendEntries()
 			}
 		}(peer)
 	}
@@ -594,11 +606,9 @@ func (r *Raft) commitLoop() {
 	defer r.mu.Unlock()
 	defer r.wg.Done()
 
-	for {
+	for r.state != Shutdown {
 		r.commitCond.Wait()
-		if r.state == Shutdown {
-			return
-		}
+
 		if r.state == Follower {
 			continue
 		}
@@ -636,14 +646,10 @@ func (r *Raft) commitLoop() {
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	defer close(r.commandResponseCh)
 	defer r.wg.Done()
 
-	for {
+	for r.state != Shutdown {
 		r.applyCond.Wait()
-		if r.state == Shutdown {
-			return
-		}
 
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
@@ -669,6 +675,7 @@ func (r *Raft) applyLoop() {
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
+	r.persistTermAndVote()
 	r.options.logger.Infof("%s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
@@ -688,6 +695,7 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
 	r.votedFor = ""
+	r.persistTermAndVote()
 	r.options.logger.Infof("%s has entered the follower state", r.id)
 }
 
@@ -696,4 +704,12 @@ func (r *Raft) becomeFollower(term uint64) {
 // otherwise.
 func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
+}
+
+func (r *Raft) persistTermAndVote() {
+	// TODO: Make atomic?
+	currentTermKey := []byte("currentTerm")
+	r.storage.SetUint64(currentTermKey, r.currentTerm)
+	votedForKey := []byte("votedFor")
+	r.storage.Set(votedForKey, []byte(r.votedFor))
 }

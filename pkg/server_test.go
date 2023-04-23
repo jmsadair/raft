@@ -2,14 +2,17 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/errors"
+	"github.com/jmsadair/raft/internal/util"
 )
 
 func makePeers(numServers int) [][]*Peer {
@@ -33,8 +36,10 @@ type TestCluster struct {
 	peers            [][]*Peer
 	servers          []*Server
 	connected        []bool
+	logs             []Log
 	snapshotStores   []SnapshotStorage
 	stateMachines    []StateMachine
+	stores           []Storage
 	replicateCh      []chan CommandResponse
 	shutdownCh       chan interface{}
 	commandResponses []map[uint64]CommandResponse
@@ -49,6 +54,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	servers := make([]*Server, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stateMachines := make([]StateMachine, numServers)
+	logs := make([]Log, numServers)
+	stores := make([]Storage, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([]map[uint64]CommandResponse, numServers)
 	expected := make([]Command, 0)
@@ -61,15 +68,15 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		replicateCh[i] = make(chan CommandResponse)
 		snapshotStores[i] = NewSnapshotStorageMock()
 		stateMachines[i] = NewStateMachineMock()
+		logs[i] = NewLogMock(0, 0)
+		stores[i] = NewStorageMock()
 		connected[i] = true
 		responses[i] = make(map[uint64]CommandResponse)
 
-		log := NewLogMock(0, 0)
-		storage := NewStorageMock()
 		id := peers[0][i].Id()
 		address := peers[0][i].Address()
 
-		server, err := NewServer(id, peers[i], log, storage, snapshotStores[i], stateMachines[i], address, replicateCh[i])
+		server, err := NewServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i])
 		if err != nil {
 			return nil, errors.WrapError(err, "error creating cluster server: %s", err.Error())
 		}
@@ -83,6 +90,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		connected:        connected,
 		snapshotStores:   snapshotStores,
 		stateMachines:    stateMachines,
+		stores:           stores,
+		logs:             logs,
 		replicateCh:      replicateCh,
 		commandResponses: responses,
 		commands:         expected,
@@ -105,13 +114,14 @@ func (tc *TestCluster) startCluster() {
 }
 
 func (tc *TestCluster) stopCluster() {
-	for _, server := range tc.servers {
-		if err := server.Stop(); err != nil {
-			tc.t.Fatalf("error stopping cluster server: %s", err.Error())
-		}
+	for i, server := range tc.servers {
+		log.Printf("shutting down server %d...", i)
+		server.Stop()
 	}
 	close(tc.shutdownCh)
+	log.Println("waiting on wg...")
 	tc.wg.Wait()
+	log.Println("done")
 }
 
 func (tc *TestCluster) makeCommands(numCommands int) []Command {
@@ -125,26 +135,35 @@ func (tc *TestCluster) makeCommands(numCommands int) []Command {
 
 func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
 	for i := 0; i < 10; i++ {
-		for j, server := range tc.servers {
+		for j := 0; j < len(tc.servers); j++ {
+			tc.mu.Lock()
+			server := tc.servers[j]
 			status := server.Status()
-			if status.State == Leader && tc.connected[j] {
-				index, term, err := server.SubmitCommand(command)
-				if err != nil {
-					continue
+
+			if status.State != Leader || !tc.connected[j] {
+				tc.mu.Unlock()
+				continue
+			}
+
+			index, term, err := server.SubmitCommand(command)
+			if err != nil {
+				tc.mu.Unlock()
+				continue
+			}
+			tc.mu.Unlock()
+
+			for k := 0; k < 10; k++ {
+				time.Sleep(25 * time.Millisecond)
+				successful := tc.checkApplied(index, expectedApplied)
+				if successful {
+					if expectFail {
+						tc.t.Fatalf("cluster applied command when it should not have")
+					}
+					return
 				}
-				for k := 0; k < 10; k++ {
-					time.Sleep(25 * time.Millisecond)
-					successful := tc.checkApplied(index, expectedApplied)
-					if successful {
-						if expectFail {
-							tc.t.Fatalf("cluster applied command when it should not have")
-						}
-						return
-					}
-					status = server.Status()
-					if status.Term != term {
-						break
-					}
+				status = server.Status()
+				if status.Term != term {
+					break
 				}
 			}
 		}
@@ -236,10 +255,55 @@ func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
 }
 
 func (tc *TestCluster) applyLoop(index int) {
+	defer log.Printf("apply loop %d exited", index)
 	defer tc.wg.Done()
 
+	log.Printf("apply loop %d started", index)
 	for response := range tc.replicateCh[index] {
 		tc.checkLogs(index, response)
+	}
+}
+
+func (tc *TestCluster) crashServer(serverID string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	index, _ := strconv.Atoi(serverID)
+	tc.disconnectServerTwoWay(serverID)
+	tc.servers[index].Stop()
+}
+
+func (tc *TestCluster) restartServer(serverID string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	index, _ := strconv.Atoi(serverID)
+	address := tc.peers[index][index].Address()
+
+	tc.replicateCh[index] = make(chan CommandResponse)
+	tc.stateMachines[index] = NewStateMachineMock()
+	newServer, err := NewServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
+		tc.snapshotStores[index], tc.stateMachines[index], address, tc.replicateCh[index])
+	if err != nil {
+		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
+	}
+	tc.servers[index] = newServer
+	tc.connected[index] = true
+	tc.lastApplied[index] = 0
+	tc.commandResponses[index] = make(map[uint64]CommandResponse)
+
+	tc.wg.Add(1)
+	go tc.applyLoop(index)
+
+	readyCh := make(chan interface{})
+	defer close(readyCh)
+	newServer.Start(readyCh)
+
+	for i := 0; i < len(tc.servers); i++ {
+		if i == index {
+			continue
+		}
+		tc.peers[i][index].connect()
 	}
 }
 
@@ -393,4 +457,71 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	for _, command := range commands {
 		cluster.submit(command, false, true, 1)
 	}
+}
+
+func TestCrashRejoin(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	leader := cluster.checkLeaders(false)
+	commands := cluster.makeCommands(50)
+	for i := 0; i < 25; i++ {
+		cluster.submit(commands[i], false, false, 5)
+	}
+	cluster.crashServer(leader)
+	for i := 25; i < 40; i++ {
+		cluster.submit(commands[i], true, false, 4)
+	}
+	cluster.restartServer(leader)
+	cluster.checkLeaders(false)
+	for i := 40; i < len(commands); i++ {
+		cluster.submit(commands[i], true, false, 5)
+	}
+}
+
+func TestMultiCrash(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	crashRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			time.Sleep(400 * time.Millisecond)
+			crash1 := util.RandomInt(0, 5)
+			crash2 := (crash1 + 1) % 5
+			id1 := fmt.Sprint(crash1)
+			id2 := fmt.Sprint(crash2)
+			cluster.crashServer(id1)
+			cluster.crashServer(id2)
+			time.Sleep(300 * time.Millisecond)
+			log.Println("restarting servers...")
+			cluster.restartServer(id1)
+			cluster.restartServer(id2)
+		}
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+	commands := cluster.makeCommands(300)
+	wg.Add(1)
+	go crashRoutine()
+	for _, command := range commands {
+		cluster.submit(command, true, false, 3)
+	}
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
 }

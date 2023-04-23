@@ -27,7 +27,7 @@ func (e *LogEntry) IsConflict(other *LogEntry) bool {
 }
 
 // Log supports appending and retrieving log entries in
-// in a durable manner. Must be concurrent-safe.
+// in a durable manner.
 type Log interface {
 	// GetEntry returns the log entry located at index.
 	GetEntry(index uint64) (*LogEntry, error)

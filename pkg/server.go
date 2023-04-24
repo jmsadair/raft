@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"net"
+	"sync"
 
 	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
@@ -15,6 +16,7 @@ type Server struct {
 	listener        net.Listener
 	server          *grpc.Server
 	raft            *Raft
+	wg              sync.WaitGroup
 }
 
 func NewServer(id string, peers []*Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
@@ -41,7 +43,9 @@ func (s *Server) Start(ready <-chan interface{}) error {
 	s.server = grpc.NewServer(opts...)
 	pb.RegisterRaftServer(s.server, s)
 	go s.server.Serve(listener)
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		<-ready
 		s.raft.Start()
 	}()
@@ -52,6 +56,7 @@ func (s *Server) Stop() {
 	if s.server == nil {
 		return
 	}
+	s.wg.Wait()
 	s.server.GracefulStop()
 	s.raft.Stop()
 	s.listener.Close()

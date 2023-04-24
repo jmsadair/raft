@@ -608,11 +608,6 @@ func (r *Raft) commitLoop() {
 
 	for r.state != Shutdown {
 		r.commitCond.Wait()
-
-		if r.state == Follower {
-			continue
-		}
-
 		committed := false
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
 			if entry, _ := r.log.GetEntry(index); entry.Term() != r.currentTerm {
@@ -650,7 +645,6 @@ func (r *Raft) applyLoop() {
 
 	for r.state != Shutdown {
 		r.applyCond.Wait()
-
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {
@@ -668,6 +662,8 @@ func (r *Raft) applyLoop() {
 			r.commandResponseCh <- response
 			r.mu.Lock()
 		}
+
+		r.options.logger.Debugf("server %s is killed: %v", r.id, r.state == Shutdown)
 	}
 }
 

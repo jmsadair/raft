@@ -332,6 +332,8 @@ func (tc *TestCluster) disconnectServerTwoWay(serverID string) {
 	}
 }
 
+// TestBasicElection checks whether a cluster can elect a leader
+// when there are no failures.
 func TestBasicElection(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -346,6 +348,8 @@ func TestBasicElection(t *testing.T) {
 	cluster.checkLeaders(false)
 }
 
+// TestElectLeaderDisconnect checks whether a cluster can
+// still elect a leader when a single server is disconnected.
 func TestElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -357,11 +361,16 @@ func TestElectLeaderDisconnect(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	// Disconnect the leader.
 	leader := cluster.checkLeaders(false)
 	cluster.disconnectServerTwoWay(leader)
+
+	// See if the cluster can still elect a new leader.
 	cluster.checkLeaders(false)
 }
 
+// TestFailElectLeaderDisconnect checks whether a leader is able
+// to be elected when a majority of the servers are disconnected.
 func TestFailElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -373,14 +382,21 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	// Disconnect the leader and one other server, leaving
+	// only one server that is capable of communicating.
 	disconnectServer1 := cluster.checkLeaders(false)
 	serverID, _ := strconv.Atoi(disconnectServer1)
 	disconnectServer2 := fmt.Sprint((serverID + 1) % 3)
 	cluster.disconnectServerTwoWay(disconnectServer1)
 	cluster.disconnectServerTwoWay(disconnectServer2)
+
+	// Check if the server can elect itself as the leader.
+	// This should not be successful.
 	cluster.checkLeaders(true)
 }
 
+// TestSingleSubmit checks whether the cluster can successfully
+// commit a single command when there are no failures.
 func TestBasicSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -397,6 +413,8 @@ func TestBasicSubmit(t *testing.T) {
 	cluster.submit(commands[0], false, false, 3)
 }
 
+// TestMultipleSubmit checks whether a cluster can successfully
+// commit multiple commands when there are no failures.
 func TestMultipleSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -415,6 +433,8 @@ func TestMultipleSubmit(t *testing.T) {
 	}
 }
 
+// TestSubmitDisconnect checks that a cluster can still
+// commit commands after a single server is disconnected.
 func TestSubmitDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -426,6 +446,7 @@ func TestSubmitDisconnect(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	// Disconnect the leader and see if we can still commit commands.
 	leader := cluster.checkLeaders(false)
 	cluster.disconnectServerTwoWay(leader)
 	commands := cluster.makeCommands(20)
@@ -434,6 +455,9 @@ func TestSubmitDisconnect(t *testing.T) {
 	}
 }
 
+// TestSubmitDisconnectFail checks that a cluster is unable to
+// commit commands when a majority of the servers are unable to
+// communicate.
 func TestSubmitDisconnectFail(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -445,6 +469,8 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	// Disconnect the leader and two other servers, leaving
+	// only a minority of the server able to communicate.
 	leader := cluster.checkLeaders(false)
 	serverID, _ := strconv.Atoi(leader)
 	disconnectServer1 := fmt.Sprint((serverID + 1) % 5)
@@ -453,12 +479,17 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.disconnectServerTwoWay(disconnectServer1)
 	cluster.disconnectServerTwoWay(disconnectServer2)
 	cluster.disconnectServerTwoWay(disconnectServer3)
+
+	// Try to commit some commands. This should be unsuccessful
+	// since only a minority of the cluster can communicate.
 	commands := cluster.makeCommands(20)
 	for _, command := range commands {
 		cluster.submit(command, false, true, 1)
 	}
 }
 
+// TestCrashRejoin checks that a cluster can still make
+// progress after a single server crashes.
 func TestCrashRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -470,15 +501,21 @@ func TestCrashRejoin(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	// Wait for a leader and commit some commands.
 	leader := cluster.checkLeaders(false)
 	commands := cluster.makeCommands(50)
 	for i := 0; i < 25; i++ {
 		cluster.submit(commands[i], false, false, 5)
 	}
+
+	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
 	for i := 25; i < 40; i++ {
 		cluster.submit(commands[i], true, false, 4)
 	}
+
+	// Allow the leader to rejoin and see if we can make progress
+	// committing commands.
 	cluster.restartServer(leader)
 	cluster.checkLeaders(false)
 	for i := 40; i < len(commands); i++ {
@@ -486,6 +523,9 @@ func TestCrashRejoin(t *testing.T) {
 	}
 }
 
+// TestMultiCrash checks if a cluster can still make
+// progress committing commands in the face of multiple
+// crashes.
 func TestMultiCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -494,6 +534,7 @@ func TestMultiCrash(t *testing.T) {
 		t.Fatalf("error creating new cluster: %s", err.Error())
 	}
 
+	// A go routine to crash random servers every so often.
 	done := int32(0)
 	wg := sync.WaitGroup{}
 	crashRoutine := func() {
@@ -516,12 +557,17 @@ func TestMultiCrash(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 	cluster.checkLeaders(false)
-	commands := cluster.makeCommands(300)
+
+	// Start crashing servers.
 	wg.Add(1)
 	go crashRoutine()
+
+	// See if we can commit commands in the face of multiple crashes.
+	commands := cluster.makeCommands(300)
 	for _, command := range commands {
 		cluster.submit(command, true, false, 3)
 	}
+
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 }

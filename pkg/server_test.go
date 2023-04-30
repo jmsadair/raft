@@ -2,7 +2,6 @@ package raft
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"sync"
@@ -35,7 +34,7 @@ type TestCluster struct {
 	t                *testing.T
 	peers            [][]*Peer
 	servers          []*Server
-	connected        []bool
+	connected        [][]bool
 	logs             []Log
 	snapshotStores   []SnapshotStorage
 	stateMachines    []StateMachine
@@ -59,7 +58,7 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([]map[uint64]CommandResponse, numServers)
 	expected := make([]Command, 0)
-	connected := make([]bool, numServers)
+	connected := make([][]bool, numServers)
 	peers := makePeers(numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
@@ -70,8 +69,12 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		stateMachines[i] = NewStateMachineMock()
 		logs[i] = NewLogMock(0, 0)
 		stores[i] = NewStorageMock()
-		connected[i] = true
+		connected[i] = make([]bool, numServers)
 		responses[i] = make(map[uint64]CommandResponse)
+
+		for j := 0; j < numServers; j++ {
+			connected[i][j] = true
+		}
 
 		id := peers[0][i].Id()
 		address := peers[0][i].Address()
@@ -114,14 +117,11 @@ func (tc *TestCluster) startCluster() {
 }
 
 func (tc *TestCluster) stopCluster() {
-	for i, server := range tc.servers {
-		log.Printf("shutting down server %d...", i)
+	for _, server := range tc.servers {
 		server.Stop()
 	}
 	close(tc.shutdownCh)
-	log.Println("waiting on wg...")
 	tc.wg.Wait()
-	log.Println("done")
 }
 
 func (tc *TestCluster) makeCommands(numCommands int) []Command {
@@ -140,7 +140,7 @@ func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expe
 			server := tc.servers[j]
 			status := server.Status()
 
-			if status.State != Leader || !tc.connected[j] {
+			if status.State != Leader {
 				tc.mu.Unlock()
 				continue
 			}
@@ -192,7 +192,7 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 			// We need to check if the server is connected to the
 			// cluster since it is possible to have two leaders if
 			// one is disconnected.
-			if status.State == Leader && tc.connected[j] {
+			if status.State == Leader && tc.connected[j][j] {
 				leaders = append(leaders, status.Id)
 			}
 		}
@@ -255,10 +255,8 @@ func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
 }
 
 func (tc *TestCluster) applyLoop(index int) {
-	defer log.Printf("apply loop %d exited", index)
 	defer tc.wg.Done()
 
-	log.Printf("apply loop %d started", index)
 	for response := range tc.replicateCh[index] {
 		tc.checkLogs(index, response)
 	}
@@ -282,13 +280,14 @@ func (tc *TestCluster) restartServer(serverID string) {
 
 	tc.replicateCh[index] = make(chan CommandResponse)
 	tc.stateMachines[index] = NewStateMachineMock()
+
 	newServer, err := NewServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
 		tc.snapshotStores[index], tc.stateMachines[index], address, tc.replicateCh[index])
 	if err != nil {
 		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
 	}
+
 	tc.servers[index] = newServer
-	tc.connected[index] = true
 	tc.lastApplied[index] = 0
 	tc.commandResponses[index] = make(map[uint64]CommandResponse)
 
@@ -300,35 +299,60 @@ func (tc *TestCluster) restartServer(serverID string) {
 	newServer.Start(readyCh)
 
 	for i := 0; i < len(tc.servers); i++ {
-		if i == index {
-			continue
-		}
 		tc.peers[i][index].connect()
+		tc.connected[i][index] = true
 	}
 }
 
-func (tc *TestCluster) disconnectServerOneWay(serverID string) {
-	server, _ := strconv.Atoi(serverID)
-	tc.connected[server] = false
-	for i := 0; i < len(tc.peers); i++ {
-		if i == server {
-			continue
+func (tc *TestCluster) createPartition() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	partitionSize := len(tc.servers) / 2
+	partitionSet := make(map[int]bool)
+	index := util.RandomInt(0, len(tc.servers))
+	for i := 0; i < partitionSize; i++ {
+		partitionSet[index+1%len(tc.servers)] = true
+	}
+	for index := range partitionSet {
+		tc.connected[index][index] = false
+		for i := 0; i < len(tc.servers); i++ {
+			if _, ok := partitionSet[i]; ok {
+				continue
+			}
+			tc.connected[i][index] = false
+			tc.peers[i][index].disconnect()
 		}
-		tc.peers[i][server].disconnect()
+	}
+}
+
+func (tc *TestCluster) healPartition() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	for i := 0; i < len(tc.servers); i++ {
+		for j := 0; j < len(tc.servers); i++ {
+			if tc.connected[i][j] {
+				continue
+			}
+			tc.connected[i][j] = true
+			tc.peers[i][j].connect()
+		}
 	}
 }
 
 func (tc *TestCluster) disconnectServerTwoWay(serverID string) {
 	server, _ := strconv.Atoi(serverID)
-	tc.connected[server] = false
 	for i := 0; i < len(tc.peers); i++ {
 		if i == server {
 			for j := 0; j < len(tc.peers[i]); j++ {
 				tc.peers[i][j].disconnect()
+				tc.connected[i][j] = false
 			}
 			continue
 		}
 		tc.peers[i][server].disconnect()
+		tc.connected[i][server] = false
 	}
 }
 
@@ -548,7 +572,6 @@ func TestMultiCrash(t *testing.T) {
 			cluster.crashServer(id1)
 			cluster.crashServer(id2)
 			time.Sleep(300 * time.Millisecond)
-			log.Println("restarting servers...")
 			cluster.restartServer(id1)
 			cluster.restartServer(id2)
 		}
@@ -570,4 +593,42 @@ func TestMultiCrash(t *testing.T) {
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
+}
+
+// TestAllCrash checks that a cluster can still make
+// progress after all of the servers crash and come back online.
+func TestAllCrash(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader and commit some commands.
+	cluster.checkLeaders(false)
+	commands := cluster.makeCommands(50)
+	for i := 0; i < 25; i++ {
+		cluster.submit(commands[i], false, false, 5)
+	}
+
+	// Crash all servers.
+	for i := 0; i < 5; i++ {
+		cluster.crashServer(fmt.Sprint(i))
+	}
+
+	// Restart all the servers.
+	for i := 0; i < 5; i++ {
+		cluster.restartServer(fmt.Sprint(i))
+	}
+
+	// Allow the leader to rejoin and see if we can make progress
+	// committing commands.
+	cluster.checkLeaders(false)
+	for i := 25; i < len(commands); i++ {
+		cluster.submit(commands[i], true, false, 5)
+	}
 }

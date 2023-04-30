@@ -38,17 +38,20 @@ func (s *Server) Start(ready <-chan interface{}) error {
 	if err != nil {
 		return errors.WrapError(err, "failed to start server: %s", err.Error())
 	}
+
 	s.listener = listener
 	var opts []grpc.ServerOption
 	s.server = grpc.NewServer(opts...)
 	pb.RegisterRaftServer(s.server, s)
-	go s.server.Serve(listener)
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		<-ready
 		s.raft.Start()
+		go s.server.Serve(listener)
 	}()
+
 	return nil
 }
 
@@ -56,6 +59,7 @@ func (s *Server) Stop() {
 	if s.server == nil {
 		return
 	}
+
 	s.wg.Wait()
 	s.server.GracefulStop()
 	s.raft.Stop()

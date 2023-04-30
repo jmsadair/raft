@@ -197,9 +197,6 @@ func (r *Raft) Start() {
 	}
 
 	for _, peer := range r.peers {
-		if peer.Id() == r.id {
-			continue
-		}
 		if err := peer.connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
 		}
@@ -229,7 +226,6 @@ func (r *Raft) Stop() {
 	r.commitCond.Broadcast()
 	r.mu.Unlock()
 
-	r.options.logger.Debugf("server %s waiting on wg...", r.id)
 	r.wg.Wait()
 
 	close(r.commandResponseCh)
@@ -662,8 +658,6 @@ func (r *Raft) applyLoop() {
 			r.commandResponseCh <- response
 			r.mu.Lock()
 		}
-
-		r.options.logger.Debugf("server %s is killed: %v", r.id, r.state == Shutdown)
 	}
 }
 

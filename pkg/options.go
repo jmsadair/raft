@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	defaultElectionTimeout       = time.Duration(150 * time.Millisecond)
+	defaultElectionTimeout       = time.Duration(200 * time.Millisecond)
 	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
 	defaultSnapshotInterval      = time.Duration(200 * time.Millisecond)
 	defaultMaxEntriesPerSnapshot = 100

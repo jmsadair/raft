@@ -311,15 +311,29 @@ func (tc *TestCluster) createPartition() {
 	partitionSize := len(tc.servers) / 2
 	partitionSet := make(map[int]bool)
 	index := util.RandomInt(0, len(tc.servers))
+
 	for i := 0; i < partitionSize; i++ {
-		partitionSet[index+1%len(tc.servers)] = true
+		partitionSet[(index+i)%len(tc.servers)] = true
 	}
+
 	for index := range partitionSet {
-		tc.connected[index][index] = false
+		fmt.Printf("disconnecting %d...\n", index)
 		for i := 0; i < len(tc.servers); i++ {
+			// Disconnect the servers in partition set from
+			// those that are not.
 			if _, ok := partitionSet[i]; ok {
+				tc.connected[index][index] = false
+				for j := 0; j < len(tc.peers[i]); j++ {
+					if _, ok := partitionSet[j]; ok {
+						continue
+					}
+					tc.peers[i][j].disconnect()
+					tc.connected[i][j] = false
+				}
 				continue
 			}
+			// Disconnect the server not in the partition set from
+			// those that are.
 			tc.connected[i][index] = false
 			tc.peers[i][index].disconnect()
 		}
@@ -331,7 +345,7 @@ func (tc *TestCluster) healPartition() {
 	defer tc.mu.Unlock()
 
 	for i := 0; i < len(tc.servers); i++ {
-		for j := 0; j < len(tc.servers); i++ {
+		for j := 0; j < len(tc.servers); j++ {
 			if tc.connected[i][j] {
 				continue
 			}
@@ -470,7 +484,7 @@ func TestSubmitDisconnect(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Disconnect the leader and see if we can still commit commands.
+	// Disconnect the leader and see if commands are still committed.
 	leader := cluster.checkLeaders(false)
 	cluster.disconnectServerTwoWay(leader)
 	commands := cluster.makeCommands(20)
@@ -504,12 +518,41 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.disconnectServerTwoWay(disconnectServer2)
 	cluster.disconnectServerTwoWay(disconnectServer3)
 
-	// Try to commit some commands. This should be unsuccessful
+	// Try to submit some commands. This should be unsuccessful
 	// since only a minority of the cluster can communicate.
 	commands := cluster.makeCommands(20)
 	for _, command := range commands {
 		cluster.submit(command, false, true, 1)
 	}
+}
+
+func TestBasicPartition(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader.
+	cluster.checkLeaders(false)
+
+	// Partition the cluster.
+	cluster.createPartition()
+
+	// Wait for a leader.
+	cluster.checkLeaders(false)
+
+	commands := cluster.makeCommands(50)
+	for _, command := range commands {
+		cluster.submit(command, false, false, 3)
+	}
+
+	// Heal the partition.
+	cluster.healPartition()
 }
 
 // TestCrashRejoin checks that a cluster can still make
@@ -525,7 +568,7 @@ func TestCrashRejoin(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Wait for a leader and commit some commands.
+	// Wait for a leader and submit some commands.
 	leader := cluster.checkLeaders(false)
 	commands := cluster.makeCommands(50)
 	for i := 0; i < 25; i++ {
@@ -596,7 +639,8 @@ func TestMultiCrash(t *testing.T) {
 }
 
 // TestAllCrash checks that a cluster can still make
-// progress after all of the servers crash and come back online.
+// progress committing commands after all of the servers
+// crash and come back online.
 func TestAllCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -608,7 +652,7 @@ func TestAllCrash(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Wait for a leader and commit some commands.
+	// Wait for a leader and submit some commands.
 	cluster.checkLeaders(false)
 	commands := cluster.makeCommands(50)
 	for i := 0; i < 25; i++ {
@@ -625,8 +669,7 @@ func TestAllCrash(t *testing.T) {
 		cluster.restartServer(fmt.Sprint(i))
 	}
 
-	// Allow the leader to rejoin and see if we can make progress
-	// committing commands.
+	// Wait for another leader and submit more commands.
 	cluster.checkLeaders(false)
 	for i := 25; i < len(commands); i++ {
 		cluster.submit(commands[i], true, false, 5)

@@ -203,7 +203,7 @@ func (r *Raft) Start() {
 	}
 
 	r.lastContact = time.Now()
-	r.becomeFollower(r.currentTerm)
+	r.state = Follower
 
 	r.wg.Add(4)
 	go r.applyLoop()
@@ -450,9 +450,6 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 		return response
 	}
 
-	// Update this server's time of last contact.
-	r.lastContact = time.Now()
-
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
 	if request.GetTerm() > r.currentTerm {
@@ -476,6 +473,7 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 		return response
 	}
 
+	r.lastContact = time.Now()
 	r.votedFor = request.GetCandidateId()
 	response.VoteGranted = true
 
@@ -504,7 +502,11 @@ func (r *Raft) sendRequestVote(votes *int) {
 			response, err := peer.requestVote(request)
 			r.mu.Lock()
 
-			if err != nil {
+			// Ensure that this server is still holding an election.
+			// It is possible that this server has a legitimate leader
+			// and the election is no longer necessary. If this check
+			// is not done, split-brain is possible.
+			if err != nil || r.currentTerm > request.GetTerm() {
 				return
 			}
 

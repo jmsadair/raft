@@ -317,7 +317,6 @@ func (tc *TestCluster) createPartition() {
 	}
 
 	for index := range partitionSet {
-		fmt.Printf("disconnecting %d...\n", index)
 		for i := 0; i < len(tc.servers); i++ {
 			// Disconnect the servers in partition set from
 			// those that are not.
@@ -553,6 +552,46 @@ func TestBasicPartition(t *testing.T) {
 
 	// Heal the partition.
 	cluster.healPartition()
+}
+
+func TestMultiPartition(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	// A go routine to crash random servers every so often.
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	partitionRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			randomTime := util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+			cluster.createPartition()
+			time.Sleep(300 * time.Millisecond)
+			cluster.healPartition()
+		}
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// Start partitioning
+	wg.Add(1)
+	go partitionRoutine()
+
+	// See if we can commit commands in the face of recurring partitions.
+	commands := cluster.makeCommands(300)
+	for _, command := range commands {
+		cluster.submit(command, true, false, 3)
+	}
+
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
 }
 
 // TestCrashRejoin checks that a cluster can still make

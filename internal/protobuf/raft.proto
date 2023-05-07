@@ -3,10 +3,10 @@ syntax = "proto3";
 option go_package = "github.com/jmsadair/raft/internal/protobuf";
 
 message LogEntry {
-    uint64 index = 1;
-    uint64 term  = 2;
-    int64 offset = 3;
-    bytes  data  = 4;
+    uint64 index  = 1;
+    uint64 term   = 2;
+    int64  offset = 3;
+    bytes  data   = 4;
 }
 
 message AppendEntriesRequest {
@@ -50,7 +50,7 @@ message InstallSnapshotResponse {
 }
 
 message StorageState {
-    uint64 term = 1;
+    uint64 term     = 1;
     string votedFor = 2;
 }
 

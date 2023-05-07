@@ -14,16 +14,16 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-func makePeers(numServers int) [][]*Peer {
+func makePeers(numServers int) [][]Peer {
 	ipPrefix := "127.0.0."
 	port := 8080
-	clusterPeers := make([][]*Peer, numServers)
+	clusterPeers := make([][]Peer, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make([]*Peer, numServers)
+		clusterPeers[i] = make([]Peer, numServers)
 		for j := 0; j < numServers; j++ {
 			ip := ipPrefix + fmt.Sprint(j)
 			peerId := fmt.Sprint(j)
-			clusterPeers[i][j] = NewPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
+			clusterPeers[i][j] = NewProtobufPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
 		}
 	}
 
@@ -32,7 +32,7 @@ func makePeers(numServers int) [][]*Peer {
 
 type TestCluster struct {
 	t                *testing.T
-	peers            [][]*Peer
+	peers            [][]Peer
 	servers          []*Server
 	connected        [][]bool
 	logs             []Log
@@ -62,13 +62,14 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	peers := makePeers(numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
+	tmpDir := t.TempDir()
 
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
 		snapshotStores[i] = NewSnapshotStorageMock()
 		stateMachines[i] = NewStateMachineMock()
-		logs[i] = NewLogMock(0, 0)
-		stores[i] = NewStorageMock()
+		logs[i] = NewPersistentLog(tmpDir+fmt.Sprintf("/raft-log-%d", i), NewProtoLogEncoder(), NewProtoLogDecoder())
+		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), NewProtoStorageEncoder(), NewProtoStorageDecoder())
 		connected[i] = make([]bool, numServers)
 		responses[i] = make(map[uint64]CommandResponse)
 
@@ -191,7 +192,7 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 
 			// We need to check if the server is connected to the
 			// cluster since it is possible to have two leaders if
-			// one is disconnected.
+			// one is Disconnected.
 			if status.State == Leader && tc.connected[j][j] {
 				leaders = append(leaders, status.Id)
 			}
@@ -267,7 +268,7 @@ func (tc *TestCluster) crashServer(serverID string) {
 	defer tc.mu.Unlock()
 
 	index, _ := strconv.Atoi(serverID)
-	tc.disconnectServerTwoWay(serverID)
+	tc.DisconnectServerTwoWay(serverID)
 	tc.servers[index].Stop()
 }
 
@@ -299,7 +300,7 @@ func (tc *TestCluster) restartServer(serverID string) {
 	newServer.Start(readyCh)
 
 	for i := 0; i < len(tc.servers); i++ {
-		tc.peers[i][index].connect()
+		tc.peers[i][index].Connect()
 		tc.connected[i][index] = true
 	}
 }
@@ -326,7 +327,7 @@ func (tc *TestCluster) createPartition() {
 					if _, ok := partitionSet[j]; ok {
 						continue
 					}
-					tc.peers[i][j].disconnect()
+					tc.peers[i][j].Disconnect()
 					tc.connected[i][j] = false
 				}
 				continue
@@ -334,12 +335,12 @@ func (tc *TestCluster) createPartition() {
 			// Disconnect the server not in the partition set from
 			// those that are.
 			tc.connected[i][index] = false
-			tc.peers[i][index].disconnect()
+			tc.peers[i][index].Disconnect()
 		}
 	}
 }
 
-func (tc *TestCluster) healPartition() {
+func (tc *TestCluster) reconnectAllServers() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -349,22 +350,22 @@ func (tc *TestCluster) healPartition() {
 				continue
 			}
 			tc.connected[i][j] = true
-			tc.peers[i][j].connect()
+			tc.peers[i][j].Connect()
 		}
 	}
 }
 
-func (tc *TestCluster) disconnectServerTwoWay(serverID string) {
+func (tc *TestCluster) DisconnectServerTwoWay(serverID string) {
 	server, _ := strconv.Atoi(serverID)
 	for i := 0; i < len(tc.peers); i++ {
 		if i == server {
 			for j := 0; j < len(tc.peers[i]); j++ {
-				tc.peers[i][j].disconnect()
+				tc.peers[i][j].Disconnect()
 				tc.connected[i][j] = false
 			}
 			continue
 		}
-		tc.peers[i][server].disconnect()
+		tc.peers[i][server].Disconnect()
 		tc.connected[i][server] = false
 	}
 }
@@ -386,7 +387,7 @@ func TestBasicElection(t *testing.T) {
 }
 
 // TestElectLeaderDisconnect checks whether a cluster can
-// still elect a leader when a single server is disconnected.
+// still elect a leader when a single server is Disconnected.
 func TestElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -400,14 +401,14 @@ func TestElectLeaderDisconnect(t *testing.T) {
 
 	// Disconnect the leader.
 	leader := cluster.checkLeaders(false)
-	cluster.disconnectServerTwoWay(leader)
+	cluster.DisconnectServerTwoWay(leader)
 
 	// See if the cluster can still elect a new leader.
 	cluster.checkLeaders(false)
 }
 
 // TestFailElectLeaderDisconnect checks whether a leader is able
-// to be elected when a majority of the servers are disconnected.
+// to be elected when a majority of the servers are Disconnected.
 func TestFailElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -421,11 +422,11 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 
 	// Disconnect the leader and one other server, leaving
 	// only one server that is capable of communicating.
-	disconnectServer1 := cluster.checkLeaders(false)
-	serverID, _ := strconv.Atoi(disconnectServer1)
-	disconnectServer2 := fmt.Sprint((serverID + 1) % 3)
-	cluster.disconnectServerTwoWay(disconnectServer1)
-	cluster.disconnectServerTwoWay(disconnectServer2)
+	DisconnectServer1 := cluster.checkLeaders(false)
+	serverID, _ := strconv.Atoi(DisconnectServer1)
+	DisconnectServer2 := fmt.Sprint((serverID + 1) % 3)
+	cluster.DisconnectServerTwoWay(DisconnectServer1)
+	cluster.DisconnectServerTwoWay(DisconnectServer2)
 
 	// Check if the server can elect itself as the leader.
 	// This should not be successful.
@@ -471,7 +472,7 @@ func TestMultipleSubmit(t *testing.T) {
 }
 
 // TestSubmitDisconnect checks that a cluster can still
-// commit commands after a single server is disconnected.
+// commit commands after a single server is Disconnected.
 func TestSubmitDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -485,7 +486,7 @@ func TestSubmitDisconnect(t *testing.T) {
 
 	// Disconnect the leader and see if commands are still committed.
 	leader := cluster.checkLeaders(false)
-	cluster.disconnectServerTwoWay(leader)
+	cluster.DisconnectServerTwoWay(leader)
 	commands := cluster.makeCommands(20)
 	for _, command := range commands {
 		cluster.submit(command, true, false, 2)
@@ -510,12 +511,12 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	// only a minority of the server able to communicate.
 	leader := cluster.checkLeaders(false)
 	serverID, _ := strconv.Atoi(leader)
-	disconnectServer1 := fmt.Sprint((serverID + 1) % 5)
-	disconnectServer2 := fmt.Sprint((serverID + 2) % 5)
-	disconnectServer3 := fmt.Sprint((serverID + 3) % 5)
-	cluster.disconnectServerTwoWay(disconnectServer1)
-	cluster.disconnectServerTwoWay(disconnectServer2)
-	cluster.disconnectServerTwoWay(disconnectServer3)
+	DisconnectServer1 := fmt.Sprint((serverID + 1) % 5)
+	DisconnectServer2 := fmt.Sprint((serverID + 2) % 5)
+	DisconnectServer3 := fmt.Sprint((serverID + 3) % 5)
+	cluster.DisconnectServerTwoWay(DisconnectServer1)
+	cluster.DisconnectServerTwoWay(DisconnectServer2)
+	cluster.DisconnectServerTwoWay(DisconnectServer3)
 
 	// Try to submit some commands. This should be unsuccessful
 	// since only a minority of the cluster can communicate.
@@ -523,6 +524,50 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	for _, command := range commands {
 		cluster.submit(command, false, true, 1)
 	}
+}
+
+func TestUnreliableNetwork(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	unreliableNetRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			randomTime := util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+			Disconnect1 := util.RandomInt(0, 5)
+			Disconnect2 := (Disconnect1 + 1) % 5
+			id1 := fmt.Sprint(Disconnect1)
+			id2 := fmt.Sprint(Disconnect2)
+			cluster.DisconnectServerTwoWay(id1)
+			cluster.DisconnectServerTwoWay(id2)
+			time.Sleep(300 * time.Millisecond)
+			cluster.reconnectAllServers()
+		}
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// Start partitioning
+	wg.Add(1)
+	go unreliableNetRoutine()
+
+	// See if we can commit commands in the face of recurring partitions.
+	commands := cluster.makeCommands(300)
+	for _, command := range commands {
+		cluster.submit(command, true, false, 3)
+	}
+
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
 }
 
 func TestBasicPartition(t *testing.T) {
@@ -551,7 +596,7 @@ func TestBasicPartition(t *testing.T) {
 	}
 
 	// Heal the partition.
-	cluster.healPartition()
+	cluster.reconnectAllServers()
 }
 
 func TestMultiPartition(t *testing.T) {
@@ -572,7 +617,7 @@ func TestMultiPartition(t *testing.T) {
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.createPartition()
 			time.Sleep(300 * time.Millisecond)
-			cluster.healPartition()
+			cluster.reconnectAllServers()
 		}
 	}
 

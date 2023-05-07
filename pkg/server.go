@@ -19,7 +19,50 @@ type Server struct {
 	wg              sync.WaitGroup
 }
 
-func NewServer(id string, peers []*Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
+func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
+	entries := make([]*LogEntry, len(protoEntries))
+	for i, protoEntry := range protoEntries {
+		entry := &LogEntry{index: protoEntry.GetIndex(), term: protoEntry.GetTerm(), data: protoEntry.GetData()}
+		entries[i] = entry
+	}
+	return entries
+}
+
+func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
+	return RequestVoteRequest{
+		candidateID:  request.GetCandidateId(),
+		term:         request.GetTerm(),
+		lastLogIndex: request.GetLastLogIndex(),
+		lastLogTerm:  request.GetLastLogTerm(),
+	}
+}
+
+func makeProtoRequestVoteResponse(response RequestVoteResponse) *pb.RequestVoteResponse {
+	return &pb.RequestVoteResponse{
+		Term:        response.term,
+		VoteGranted: response.voteGranted,
+	}
+}
+
+func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesRequest {
+	return AppendEntriesRequest{
+		leaderID:     request.GetLeaderId(),
+		term:         request.GetTerm(),
+		leaderCommit: request.GetLeaderCommit(),
+		prevLogIndex: request.GetPrevLogIndex(),
+		prevLogTerm:  request.GetPrevLogTerm(),
+		entries:      makeEntries(request.GetEntries()),
+	}
+}
+
+func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEntriesResponse {
+	return &pb.AppendEntriesResponse{
+		Success: response.success,
+		Term:    response.term,
+	}
+}
+
+func NewServer(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
 	raft, err := NewRaft(id, peers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
@@ -80,11 +123,11 @@ func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
 }
 
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	return s.raft.appendEntries(request), nil
+	return makeProtoAppendEntriesResponse(s.raft.appendEntries(makeAppendEntriesRequest(request))), nil
 }
 
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-	return s.raft.requestVote(request), nil
+	return makeProtoRequestVoteResponse(s.raft.requestVote(makeRequestVoteRequest(request))), nil
 }
 
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {

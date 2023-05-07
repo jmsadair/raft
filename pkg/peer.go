@@ -16,7 +16,64 @@ const (
 	errNoConn          = "no connection established with peer %s"
 )
 
-type Peer struct {
+type Peer interface {
+	Id() string
+	Address() net.Addr
+	Clone() Peer
+	Connect() error
+	Disconnect() error
+	AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error)
+	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
+	SetNextIndex(nextIndex uint64)
+	NextIndex() uint64
+	SetMatchIndex(matchIndex uint64)
+	MatchIndex() uint64
+}
+
+func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
+	protoEntries := make([]*pb.LogEntry, len(entries))
+	for i, entry := range entries {
+		protoEntry := &pb.LogEntry{Index: entry.index, Term: entry.term, Data: entry.data}
+		protoEntries[i] = protoEntry
+	}
+	return protoEntries
+}
+
+func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequest {
+	return &pb.RequestVoteRequest{
+		CandidateId:  request.candidateID,
+		Term:         request.term,
+		LastLogIndex: request.lastLogIndex,
+		LastLogTerm:  request.lastLogTerm,
+	}
+}
+
+func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteResponse {
+	return RequestVoteResponse{
+		term:        response.GetTerm(),
+		voteGranted: response.GetVoteGranted(),
+	}
+}
+
+func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntriesRequest {
+	return &pb.AppendEntriesRequest{
+		LeaderId:     request.leaderID,
+		Term:         request.term,
+		LeaderCommit: request.leaderCommit,
+		PrevLogIndex: request.prevLogIndex,
+		PrevLogTerm:  request.prevLogTerm,
+		Entries:      makeProtoEntries(request.entries),
+	}
+}
+
+func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
+	return AppendEntriesResponse{
+		success: response.GetSuccess(),
+		term:    response.GetTerm(),
+	}
+}
+
+type ProtobufPeer struct {
 	id         string
 	address    net.Addr
 	nextIndex  uint64
@@ -26,23 +83,23 @@ type Peer struct {
 	mu         sync.Mutex
 }
 
-func NewPeer(id string, address net.Addr) *Peer {
-	return &Peer{id: id, address: address}
+func NewProtobufPeer(id string, address net.Addr) *ProtobufPeer {
+	return &ProtobufPeer{id: id, address: address}
 }
 
-func (p *Peer) Id() string {
+func (p *ProtobufPeer) Id() string {
 	return p.id
 }
 
-func (p *Peer) Address() net.Addr {
+func (p *ProtobufPeer) Address() net.Addr {
 	return p.address
 }
 
-func (p *Peer) Clone() *Peer {
-	return NewPeer(p.id, p.address)
+func (p *ProtobufPeer) Clone() Peer {
+	return NewProtobufPeer(p.id, p.address)
 }
 
-func (p *Peer) connect() error {
+func (p *ProtobufPeer) Connect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -62,7 +119,7 @@ func (p *Peer) connect() error {
 	return nil
 }
 
-func (p *Peer) disconnect() error {
+func (p *ProtobufPeer) Disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -80,64 +137,61 @@ func (p *Peer) disconnect() error {
 	return nil
 }
 
-func (p *Peer) isConnected() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.client != nil
-}
-
-func (p *Peer) appendEntries(request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.client == nil {
-		return nil, errors.WrapError(nil, errNoConn, p.id)
+		return AppendEntriesResponse{}, errors.WrapError(nil, errNoConn, p.id)
 	}
 
-	return p.client.AppendEntries(context.Background(), request, []grpc.CallOption{}...)
+	pbRequest := makeProtoAppendEntriesRequest(request)
+
+	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
+	if err != nil {
+		return AppendEntriesResponse{}, nil
+	}
+
+	return makeAppendEntriesResponse(pbResponse), nil
 }
 
-func (p *Peer) requestVote(request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.client == nil {
-		return nil, errors.WrapError(nil, errNoConn, p.id)
+		return RequestVoteResponse{}, errors.WrapError(nil, errNoConn, p.id)
 	}
 
-	return p.client.RequestVote(context.Background(), request, []grpc.CallOption{}...)
-}
+	pbRequest := makeProtoRequestVoteRequest(request)
 
-func (p *Peer) installSnapshot(request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.client == nil {
-		return nil, errors.WrapError(nil, errNoConn, p.id)
+	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
+	if err != nil {
+		return RequestVoteResponse{}, err
 	}
 
-	return p.client.InstallSnapshot(context.Background(), request, []grpc.CallOption{}...)
+	return makeRequestVoteResponse(pbResponse), err
 }
 
-func (p *Peer) setNextIndex(index uint64) {
+func (p *ProtobufPeer) SetNextIndex(index uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.nextIndex = index
 }
 
-func (p *Peer) getNextIndex() uint64 {
+func (p *ProtobufPeer) NextIndex() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.nextIndex
 }
 
-func (p *Peer) setMatchIndex(index uint64) {
+func (p *ProtobufPeer) SetMatchIndex(index uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.matchIndex = index
 }
 
-func (p *Peer) getMatchIndex() uint64 {
+func (p *ProtobufPeer) MatchIndex() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.matchIndex

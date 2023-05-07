@@ -42,6 +42,32 @@ type CommandResponse struct {
 	Response interface{}
 }
 
+type AppendEntriesRequest struct {
+	leaderID     string
+	term         uint64
+	leaderCommit uint64
+	prevLogIndex uint64
+	prevLogTerm  uint64
+	entries      []*LogEntry
+}
+
+type AppendEntriesResponse struct {
+	term    uint64
+	success bool
+}
+
+type RequestVoteRequest struct {
+	candidateID  string
+	term         uint64
+	lastLogIndex uint64
+	lastLogTerm  uint64
+}
+
+type RequestVoteResponse struct {
+	term        uint64
+	voteGranted bool
+}
+
 type Status struct {
 	Id          string
 	Term        uint64
@@ -61,7 +87,7 @@ type Raft struct {
 	options options
 
 	// The peers of this raft server, maps peer ID to peer.
-	peers map[string]*Peer
+	peers map[string]Peer
 
 	// Log is used to persist log entries.
 	log Log
@@ -108,7 +134,7 @@ type Raft struct {
 	mu sync.Mutex
 }
 
-func NewRaft(id string, peers []*Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*Raft, error) {
+func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*Raft, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
@@ -138,22 +164,25 @@ func NewRaft(id string, peers []*Peer, log Log, storage Storage, snapshotStorage
 		options.maxEntriesPerSnapshot = defaultMaxEntriesPerSnapshot
 	}
 
-	// Restore the current term if it has been persisted.
-	currentTermKey := []byte("currentTerm")
-	currentTerm, err := storage.GetUint64(currentTermKey)
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to restore current term from storage: %s", err.Error())
+	// Open the storage to recover persisted state.
+	if err := storage.Open(); err != nil {
+		return nil, errors.WrapError(err, "failed to open storage: %s", err.Error())
 	}
 
-	// Restore the prior vote if it has been persisted.
-	votedForKey := []byte("votedFor")
-	votedForBytes, err := storage.Get(votedForKey)
+	// Restore the current term and votedFor if it has been persisted.
+	persistentState, err := storage.GetState()
 	if err != nil {
-		return nil, errors.WrapError(err, "failed to restore vote from storage: %s", err.Error())
+		return nil, errors.WrapError(err, "failed to recover storage: %s", err.Error())
 	}
-	votedFor := string(votedForBytes)
+	currentTerm := persistentState.term
+	votedFor := persistentState.votedFor
 
-	peerLookup := make(map[string]*Peer)
+	// Open the log for new operations.
+	if err := log.Open(); err != nil {
+		return nil, errors.WrapError(err, "failed to open log: %s", err.Error())
+	}
+
+	peerLookup := make(map[string]Peer)
 	for _, peer := range peers {
 		peerLookup[peer.Id()] = peer
 	}
@@ -197,7 +226,7 @@ func (r *Raft) Start() {
 	}
 
 	for _, peer := range r.peers {
-		if err := peer.connect(); err != nil {
+		if err := peer.Connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
 		}
 	}
@@ -230,10 +259,13 @@ func (r *Raft) Stop() {
 
 	close(r.commandResponseCh)
 	for _, peer := range r.peers {
-		if err := peer.disconnect(); err != nil {
+		if err := peer.Disconnect(); err != nil {
 			r.options.logger.Errorf("error disconnecting from peer: %s", err.Error())
 		}
 	}
+
+	r.log.Close()
+	r.storage.Close()
 
 	r.options.logger.Infof("raft server with ID %s stopped", r.id)
 }
@@ -252,7 +284,7 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.log.AppendEntry(entry)
 	r.sendAppendEntries()
 	r.options.logger.Debugf("server %s submitted command: logEntry = %v", r.id, entry)
-	return entry.Index(), entry.Term(), nil
+	return entry.index, entry.term, nil
 }
 
 // Status returns the current status of this raft server.
@@ -270,21 +302,21 @@ func (r *Raft) Status() Status {
 }
 
 // appendEntries is used to append log entries to the log of this raft server.
-func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntriesResponse {
+func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
-		r.id, request.GetLeaderId(), request.GetLeaderCommit(), request.GetTerm(), request.GetPrevLogIndex(), request.GetPrevLogTerm())
+		r.id, request.leaderID, request.leaderCommit, request.term, request.prevLogIndex, request.prevLogTerm)
 
-	response := &pb.AppendEntriesResponse{
-		Term:    r.currentTerm,
-		Success: false,
+	response := AppendEntriesResponse{
+		term:    r.currentTerm,
+		success: false,
 	}
 
 	// Reject any requests with out-of-date term.
-	if request.GetTerm() < r.currentTerm {
-		r.options.logger.Debugf("server %s rejecting AppendEntries RPC: out of date term: %d > %d", r.id, r.currentTerm, request.GetTerm())
+	if request.term < r.currentTerm {
+		r.options.logger.Debugf("server %s rejecting AppendEntries RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
 		return response
 	}
 
@@ -294,61 +326,56 @@ func (r *Raft) appendEntries(request *pb.AppendEntriesRequest) *pb.AppendEntries
 
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
-	if request.GetTerm() > r.currentTerm {
-		r.becomeFollower(request.GetTerm())
-		response.Term = r.currentTerm
+	if request.term > r.currentTerm {
+		r.becomeFollower(request.term)
+		response.term = r.currentTerm
 	}
 
 	// TODO: change this after snapshots are added. Need to compare previous log index to last included index.
-	if request.GetPrevLogIndex() != 0 {
+	if request.prevLogIndex != 0 {
 		// Reject the request if this server does not have the previous log entry.
-		if r.log.NextIndex() <= request.GetPrevLogIndex() {
+		if r.log.NextIndex() <= request.prevLogIndex {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
-				r.id, request.GetPrevLogIndex())
+				r.id, request.prevLogIndex)
 			return response
 		}
 
-		prevLogEntry, err := r.log.GetEntry(request.GetPrevLogIndex())
+		prevLogEntry, err := r.log.GetEntry(request.prevLogIndex)
 		if err != nil {
 			r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
 		}
 
 		// Reject the request if the server has the previous log entry, but its term does not match.
-		if prevLogEntry.Term() != request.GetPrevLogTerm() {
+		if prevLogEntry.term != request.prevLogTerm {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
-				r.id, request.GetPrevLogIndex(), prevLogEntry.Term(), request.GetPrevLogTerm())
+				r.id, request.prevLogIndex, prevLogEntry.term, request.prevLogTerm)
 			return response
 		}
 	}
 
-	response.Success = true
-
-	entries := make([]*LogEntry, len(request.GetEntries()))
-	for i, entry := range request.GetEntries() {
-		entries[i] = NewLogEntry(entry.GetIndex(), entry.GetTerm(), entry.GetData())
-	}
+	response.success = true
 
 	var toAppend []*LogEntry
-	for i, entry := range entries {
-		if r.log.LastIndex() < entry.Index() {
-			toAppend = entries[i:]
+	for i, entry := range request.entries {
+		if r.log.LastIndex() < entry.index {
+			toAppend = request.entries[i:]
 			break
 		}
-		existing, _ := r.log.GetEntry(entry.Index())
+		existing, _ := r.log.GetEntry(entry.index)
 		if !existing.IsConflict(entry) {
 			continue
 		}
-		if err := r.log.Truncate(entry.Index()); err != nil {
+		if err := r.log.Truncate(entry.index); err != nil {
 			r.options.logger.Fatalf("error truncating log: %s", err.Error())
 		}
-		toAppend = entries[i:]
+		toAppend = request.entries[i:]
 		break
 	}
 
 	r.log.AppendEntries(toAppend)
 
-	if request.GetLeaderCommit() > r.commitIndex {
-		r.commitIndex = util.Min(request.GetLeaderCommit(), r.log.LastIndex())
+	if request.leaderCommit > r.commitIndex {
+		r.commitIndex = util.Min(request.leaderCommit, r.log.LastIndex())
 		r.applyCond.Broadcast()
 	}
 
@@ -362,7 +389,7 @@ func (r *Raft) sendAppendEntries() {
 			continue
 		}
 
-		go func(peer *Peer) {
+		go func(peer Peer) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 
@@ -370,7 +397,7 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 
-			nextIndex := peer.getNextIndex()
+			nextIndex := peer.NextIndex()
 			prevLogIndex := nextIndex - 1
 			prevLogTerm := uint64(0)
 
@@ -380,50 +407,50 @@ func (r *Raft) sendAppendEntries() {
 				if err != nil {
 					r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
 				}
-				prevLogTerm = prevEntry.Term()
+				prevLogTerm = prevEntry.term
 			}
 
-			entries := make([]*pb.LogEntry, 0, r.log.NextIndex()-nextIndex)
+			entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
 			for index := nextIndex; index < r.log.NextIndex(); index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
 					r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
 				}
-				entries = append(entries, &pb.LogEntry{Index: entry.Index(), Term: entry.Term(), Data: entry.Data()})
+				entries = append(entries, entry)
 			}
 
-			request := &pb.AppendEntriesRequest{
-				Term:         r.currentTerm,
-				LeaderId:     r.id,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      entries,
-				LeaderCommit: r.commitIndex,
+			request := AppendEntriesRequest{
+				term:         r.currentTerm,
+				leaderID:     r.id,
+				prevLogIndex: prevLogIndex,
+				prevLogTerm:  prevLogTerm,
+				entries:      entries,
+				leaderCommit: r.commitIndex,
 			}
 
 			r.mu.Unlock()
-			response, err := peer.appendEntries(request)
+			response, err := peer.AppendEntries(request)
 			r.mu.Lock()
 
 			if err != nil || r.state != Leader {
 				return
 			}
 			// Become a follower if a peer has a more up-to-date term.
-			if response.GetTerm() > r.currentTerm {
-				r.becomeFollower(response.GetTerm())
+			if response.term > r.currentTerm {
+				r.becomeFollower(response.term)
 				return
 			}
 			// If the AppendEntries RPC was not successful, decrement the next index associated with the peer.
-			if !response.GetSuccess() && peer.getNextIndex() > 1 {
-				peer.setNextIndex(peer.getNextIndex() - 1)
+			if !response.success && peer.NextIndex() > 1 {
+				peer.SetNextIndex(peer.NextIndex() - 1)
 				return
-			} else if !response.GetSuccess() {
+			} else if !response.success {
 				return
 			}
 
-			if request.GetPrevLogIndex()+uint64(len(entries)) >= peer.getNextIndex() {
-				peer.setNextIndex(request.GetPrevLogIndex() + uint64(len(entries)) + 1)
-				peer.setMatchIndex(peer.getNextIndex() - 1)
+			if request.prevLogIndex+uint64(len(entries)) >= peer.NextIndex() {
+				peer.SetNextIndex(request.prevLogIndex + uint64(len(entries)) + 1)
+				peer.SetMatchIndex(peer.NextIndex() - 1)
 				r.commitCond.Broadcast()
 				go r.sendAppendEntries()
 			}
@@ -432,33 +459,33 @@ func (r *Raft) sendAppendEntries() {
 }
 
 // requestVote is used to request a vote from this server.
-func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteResponse {
+func (r *Raft) requestVote(request RequestVoteRequest) RequestVoteResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
-		r.id, request.GetCandidateId(), request.GetTerm(), request.GetLastLogIndex(), request.GetLastLogTerm())
+		r.id, request.candidateID, request.term, request.lastLogIndex, request.lastLogTerm)
 
-	response := &pb.RequestVoteResponse{
-		Term:        r.currentTerm,
-		VoteGranted: false,
+	response := RequestVoteResponse{
+		term:        r.currentTerm,
+		voteGranted: false,
 	}
 
 	// Reject the request if the term is out-of-date.
-	if request.GetTerm() < r.currentTerm {
-		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.GetTerm())
+	if request.term < r.currentTerm {
+		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
 		return response
 	}
 
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
-	if request.GetTerm() > r.currentTerm {
-		r.becomeFollower(request.GetTerm())
-		response.Term = r.currentTerm
+	if request.term > r.currentTerm {
+		r.becomeFollower(request.term)
+		response.term = r.currentTerm
 	}
 
 	// Reject the request if this server has already voted.
-	if r.votedFor != "" && r.votedFor != request.GetCandidateId() {
+	if r.votedFor != "" && r.votedFor != request.candidateID {
 		r.options.logger.Debugf("server %s rejecting RequestVote RPC: already voted: votedFor = %s", r.id, r.votedFor)
 		return response
 	}
@@ -468,14 +495,18 @@ func (r *Raft) requestVote(request *pb.RequestVoteRequest) *pb.RequestVoteRespon
 	// 1. If the logs have last entries with different terms, than the log with the
 	//    greater term is more up-to-date.
 	// 2. If the logs end with the same term, the longer log is more up-to-date.
-	if request.GetLastLogTerm() < r.log.LastTerm() ||
-		(request.GetLastLogTerm() == r.log.LastTerm() && r.log.LastIndex() > request.GetLastLogIndex()) {
+	if request.lastLogTerm < r.log.LastTerm() ||
+		(request.lastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.lastLogIndex) {
 		return response
 	}
 
+	r.options.logger.Debugf("server %s granting vote for server %s: localLastIndex = %d, localLastTerm = %d",
+		r.id, request.candidateID, r.log.LastIndex(), r.log.LastTerm())
+
 	r.lastContact = time.Now()
-	r.votedFor = request.GetCandidateId()
-	response.VoteGranted = true
+	r.votedFor = request.candidateID
+	response.voteGranted = true
+	r.persistTermAndVote()
 
 	return response
 }
@@ -487,36 +518,36 @@ func (r *Raft) sendRequestVote(votes *int) {
 			continue
 		}
 
-		go func(peer *Peer) {
+		go func(peer Peer) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 
-			request := &pb.RequestVoteRequest{
-				CandidateId:  r.id,
-				Term:         r.currentTerm,
-				LastLogIndex: r.log.LastIndex(),
-				LastLogTerm:  r.log.LastTerm(),
+			request := RequestVoteRequest{
+				candidateID:  r.id,
+				term:         r.currentTerm,
+				lastLogIndex: r.log.LastIndex(),
+				lastLogTerm:  r.log.LastTerm(),
 			}
 
 			r.mu.Unlock()
-			response, err := peer.requestVote(request)
+			response, err := peer.RequestVote(request)
 			r.mu.Lock()
 
 			// Ensure that this server is still holding an election.
 			// It is possible that this server has a legitimate leader
 			// and the election is no longer necessary. If this check
 			// is not done, split-brain is possible.
-			if err != nil || r.currentTerm > request.GetTerm() {
+			if err != nil || r.currentTerm > request.term {
 				return
 			}
 
-			if response.GetVoteGranted() {
+			if response.voteGranted {
 				*votes += 1
 			}
 
 			// Become a follower if a peer has a more up-to-date term.
-			if response.GetTerm() > r.currentTerm {
-				r.becomeFollower(response.GetTerm())
+			if response.term > r.currentTerm {
+				r.becomeFollower(response.term)
 				return
 			}
 
@@ -537,7 +568,7 @@ func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSn
 }
 
 // sendInstallSnapshot is used to send a snapshot to a peer for installation.
-func (r *Raft) sendInstallSnapshot(peer *Peer) {
+func (r *Raft) sendInstallSnapshot(peer *ProtobufPeer) {
 	panic("sendInstallSnapshot not implemented")
 }
 
@@ -608,7 +639,7 @@ func (r *Raft) commitLoop() {
 		r.commitCond.Wait()
 		committed := false
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
-			if entry, _ := r.log.GetEntry(index); entry.Term() != r.currentTerm {
+			if entry, _ := r.log.GetEntry(index); entry.term != r.currentTerm {
 				continue
 			}
 			matches := 1
@@ -616,7 +647,7 @@ func (r *Raft) commitLoop() {
 				if peer.Id() == r.id {
 					continue
 				}
-				if peer.getMatchIndex() >= index {
+				if peer.MatchIndex() >= index {
 					matches += 1
 				}
 				if r.hasQuorum(matches) {
@@ -675,8 +706,8 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
-		peer.setNextIndex(r.log.LastIndex() + 1)
-		peer.setMatchIndex(0)
+		peer.SetNextIndex(r.log.LastIndex() + 1)
+		peer.SetMatchIndex(0)
 	}
 	r.sendAppendEntries()
 	r.options.logger.Infof("%s has entered the leader state", r.id)
@@ -699,9 +730,8 @@ func (r *Raft) hasQuorum(count int) bool {
 }
 
 func (r *Raft) persistTermAndVote() {
-	// TODO: Make atomic?
-	currentTermKey := []byte("currentTerm")
-	r.storage.SetUint64(currentTermKey, r.currentTerm)
-	votedForKey := []byte("votedFor")
-	r.storage.Set(votedForKey, []byte(r.votedFor))
+	persistentState := &PersistentState{term: r.currentTerm, votedFor: r.votedFor}
+	if err := r.storage.SetState(persistentState); err != nil {
+		r.options.logger.Fatalf("server %s: error persisting term and vote: %s", err.Error())
+	}
 }

@@ -8,16 +8,23 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// StorageEncoder is an interface representing a component responsible for encoding a PersistentState
+// instance into a binary format that can be stored in a file or transmitted over a network.
 type StorageEncoder interface {
 	Encode(w io.Writer, persistentState *PersistentState) error
 }
 
+// ProtoStorageEncoder is an implementation of StorageEncoder that encodes a PersistentState instance
+// into a binary format using Protocol Buffers.
 type ProtoStorageEncoder struct{}
 
+// NewProtoStorageEncoder returns a new instance of ProtoStorageEncoder.
 func NewProtoStorageEncoder() *ProtoStorageEncoder {
 	return &ProtoStorageEncoder{}
 }
 
+// Encode encodes a PersistentState instance into a binary format using Protocol Buffers and writes
+// the encoded data to the provided io.Writer.
 func (p *ProtoStorageEncoder) Encode(w io.Writer, persistentState *PersistentState) error {
 	pbState := &pb.StorageState{Term: persistentState.term, VotedFor: persistentState.votedFor}
 	buf, err := proto.Marshal(pbState)
@@ -34,16 +41,23 @@ func (p *ProtoStorageEncoder) Encode(w io.Writer, persistentState *PersistentSta
 	return nil
 }
 
+// StorageDecoder is an interface representing a component responsible for decoding a binary
+// representation of a PersistentState instance into an actual PersistentState instance.
 type StorageDecoder interface {
 	Decode(r io.Reader) (PersistentState, error)
 }
 
+// ProtoStorageDecoder is an implementation of StorageDecoder that decodes a binary representation
+// of a PersistentState instance encoded using Protocol Buffers into an actual PersistentState instance.
 type ProtoStorageDecoder struct{}
 
+// NewProtoStorageDecoder returns a new instance of ProtoStorageDecoder.
 func NewProtoStorageDecoder() *ProtoStorageDecoder {
 	return &ProtoStorageDecoder{}
 }
 
+// Decode reads a binary representation of a PersistentState instance from the provided io.Reader,
+// decodes it using Protocol Buffers, and returns the decoded PersistentState instance.
 func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
@@ -68,23 +82,23 @@ func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
 	return persistentState, nil
 }
 
-// LogEncoder supports the encoding of log entries.
+// LogEncoder is an interface representing a component responsible for encoding a LogEntry
+// instance into a binary format that can be stored in a file or transmitted over a network.
 type LogEncoder interface {
-	// Encode encodes the given log entry using the provided io.Writer.
-	// The encoded data is written to the writer in a format that is
-	// specific to the implementation of the LogEncoder.
 	Encode(w io.Writer, entry *LogEntry) error
 }
 
-// ProtoLogEncoder implements the LogEncoder interface and supports
-// encoding log entries with protobuf.
+// ProtoLogEncoder is an implementation of StorageEncoder that encodes a LogEntry instance
+// into a binary format using Protocol Buffers.
 type ProtoLogEncoder struct{}
 
-// NewProtoLogEncoder returns a new ProtoLogEncoder.
+// NewProtoLogEncoder returns a new instance of ProtoLogEncoder.
 func NewProtoLogEncoder() *ProtoLogEncoder {
 	return &ProtoLogEncoder{}
 }
 
+// Encode encodes a LogEntry instance into a binary format using Protocol Buffers and writes
+// the encoded data to the provided io.Writer.
 func (p *ProtoLogEncoder) Encode(w io.Writer, entry *LogEntry) error {
 	pbEntry := &pb.LogEntry{
 		Index:  entry.index,
@@ -110,23 +124,23 @@ func (p *ProtoLogEncoder) Encode(w io.Writer, entry *LogEntry) error {
 	return nil
 }
 
-// LogDecoder supports the decoding of log entries.
+// LogDecoder is an interface representing a component responsible for decoding a binary
+// representation of a LogEntry instance into an actual LogEntry instance.
 type LogDecoder interface {
-	// Decode decodes the given data into a LogEntry object using the provided io.Reader.
-	// The format of the data that is expected by the decoder is specific to the implementation
-	// of the LogDecoder.
 	Decode(r io.Reader) (LogEntry, error)
 }
 
-// ProtoLogDecoder implements the LogDecoder interface and supports
-// decoding log entries with protobuf.
+// ProtoLogDecoder is an implementation of LogDecoder that decodes a binary representation
+// of a LogEntry instance encoded using Protocol Buffers into an actual LogEntry instance.
 type ProtoLogDecoder struct{}
 
-// NewProtoLogDecoder returns a new ProtoLogDecoder.
+// NewProtoLogDecoder returns a new instance of ProtoLogDecoder.
 func NewProtoLogDecoder() *ProtoLogDecoder {
 	return &ProtoLogDecoder{}
 }
 
+// Decode reads a binary representation of a LogEntry instance from the provided io.Reader,
+// decodes it using Protocol Buffers, and returns the decoded LogEntry instance.
 func (p *ProtoLogDecoder) Decode(r io.Reader) (LogEntry, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {

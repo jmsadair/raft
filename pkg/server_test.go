@@ -118,7 +118,9 @@ func (tc *TestCluster) startCluster() {
 }
 
 func (tc *TestCluster) stopCluster() {
-	for _, server := range tc.servers {
+	fmt.Println("stopping cluster...")
+	for i, server := range tc.servers {
+		fmt.Printf("stopping server %d\n", i)
 		server.Stop()
 	}
 	close(tc.shutdownCh)
@@ -696,10 +698,14 @@ func TestMultiCrash(t *testing.T) {
 			crash2 := (crash1 + 1) % 5
 			id1 := fmt.Sprint(crash1)
 			id2 := fmt.Sprint(crash2)
+			fmt.Printf("crashing server %s\n", id1)
 			cluster.crashServer(id1)
+			fmt.Printf("crashing server %s\n", id2)
 			cluster.crashServer(id2)
 			time.Sleep(300 * time.Millisecond)
+			fmt.Printf("restarting server %s\n", id1)
 			cluster.restartServer(id1)
+			fmt.Printf("restarting server %s\n", id2)
 			cluster.restartServer(id2)
 		}
 	}

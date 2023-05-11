@@ -17,19 +17,43 @@ const (
 )
 
 type Peer interface {
+	// Id returns the ID of the peer.
 	Id() string
+
+	// Address returns the network address of the peer.
 	Address() net.Addr
+
+	// Clone creates a new instance of Peer with the same ID and network address.
 	Clone() Peer
+
+	// Connect establishes a connection with the peer.
 	Connect() error
+
+	// Disconnect terminates the connection with the peer.
 	Disconnect() error
+
+	// AppendEntries sends an AppendEntriesRequest to the peer and returns an AppendEntriesResponse and an error
+	// if the request was unsuccessful.
 	AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error)
+
+	// RequestVote sends a RequestVoteRequest to the peer and returns a RequestVoteResponse and an error
+	// if the request was unsuccessful.
 	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
+
+	// SetNextIndex sets the next log index associated with the peer.
 	SetNextIndex(nextIndex uint64)
+
+	// NextIndex gets the next log index associated with the peer.
 	NextIndex() uint64
+
+	// SetMatchIndex sets the log match index associated with the peer.
 	SetMatchIndex(matchIndex uint64)
+
+	// MatchIndex gets the log match index associated with the peer.
 	MatchIndex() uint64
 }
 
+// makeProtoEntries converts an array of LogEntry objects to an array of pb.LogEntry objects.
 func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 	protoEntries := make([]*pb.LogEntry, len(entries))
 	for i, entry := range entries {
@@ -39,6 +63,7 @@ func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 	return protoEntries
 }
 
+// makeProtoRequestVoteRequest converts a RequestVoteRequest object to a pb.RequestVoteRequest object.
 func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequest {
 	return &pb.RequestVoteRequest{
 		CandidateId:  request.candidateID,
@@ -48,6 +73,7 @@ func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequ
 	}
 }
 
+// makeRequestVoteResponse converts a pb.RequestVoteResponse object to a RequestVoteResponse object.
 func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteResponse {
 	return RequestVoteResponse{
 		term:        response.GetTerm(),
@@ -55,6 +81,7 @@ func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteRespon
 	}
 }
 
+// makeProtoAppendEntriesRequest converts an AppendEntriesRequest object to a pb.AppendEntriesRequest object.
 func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntriesRequest {
 	return &pb.AppendEntriesRequest{
 		LeaderId:     request.leaderID,
@@ -66,6 +93,7 @@ func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntri
 	}
 }
 
+// makeAppendEntriesResponse converts a pb.AppendEntriesResponse object to an AppendEntriesResponse object.
 func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
 	return AppendEntriesResponse{
 		success: response.GetSuccess(),
@@ -83,6 +111,7 @@ type ProtobufPeer struct {
 	mu         sync.Mutex
 }
 
+// NewProtobufPeer creates a new instance of ProtobufPeer with the specified ID and network address.
 func NewProtobufPeer(id string, address net.Addr) *ProtobufPeer {
 	return &ProtobufPeer{id: id, address: address}
 }

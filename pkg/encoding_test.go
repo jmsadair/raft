@@ -11,12 +11,12 @@ func TestProtoLogEncoderDecoder(t *testing.T) {
 	entry := NewLogEntry(1, 1, []byte("test"))
 	buf := new(bytes.Buffer)
 
-	encoder := NewProtoLogEncoder()
+	encoder := new(ProtoLogEncoder)
 	if err := encoder.Encode(buf, entry); err != nil {
 		t.Fatalf("failed to encode log entry: %s", err.Error())
 	}
 
-	decoder := NewProtoLogDecoder()
+	decoder := new(ProtoLogDecoder)
 	decodedEntry, err := decoder.Decode(buf)
 	if err != nil {
 		t.Fatalf("failed to decode log entry: %s", err.Error())
@@ -31,12 +31,12 @@ func TestProtoStorageEncoderDecoder(t *testing.T) {
 	persistentState := PersistentState{term: 1, votedFor: "test"}
 	buf := new(bytes.Buffer)
 
-	encoder := NewProtoStorageEncoder()
+	encoder := new(ProtoStorageEncoder)
 	if err := encoder.Encode(buf, &persistentState); err != nil {
 		t.Fatalf("failed to encode persistent state : %s", err.Error())
 	}
 
-	decoder := NewProtoStorageDecoder()
+	decoder := new(ProtoStorageDecoder)
 	decodedState, err := decoder.Decode(buf)
 	if err != nil {
 		t.Fatalf("failed to decode persistent state: %s", err.Error())

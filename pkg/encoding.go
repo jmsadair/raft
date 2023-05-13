@@ -2,8 +2,10 @@ package raft
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 
+	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/protobuf/proto"
 )
@@ -17,11 +19,6 @@ type StorageEncoder interface {
 // ProtoStorageEncoder is an implementation of StorageEncoder that encodes a PersistentState instance
 // into a binary format using Protocol Buffers.
 type ProtoStorageEncoder struct{}
-
-// NewProtoStorageEncoder returns a new instance of ProtoStorageEncoder.
-func NewProtoStorageEncoder() *ProtoStorageEncoder {
-	return &ProtoStorageEncoder{}
-}
 
 // Encode encodes a PersistentState instance into a binary format using Protocol Buffers and writes
 // the encoded data to the provided io.Writer.
@@ -51,11 +48,6 @@ type StorageDecoder interface {
 // of a PersistentState instance encoded using Protocol Buffers into an actual PersistentState instance.
 type ProtoStorageDecoder struct{}
 
-// NewProtoStorageDecoder returns a new instance of ProtoStorageDecoder.
-func NewProtoStorageDecoder() *ProtoStorageDecoder {
-	return &ProtoStorageDecoder{}
-}
-
 // Decode reads a binary representation of a PersistentState instance from the provided io.Reader,
 // decodes it using Protocol Buffers, and returns the decoded PersistentState instance.
 func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
@@ -66,12 +58,13 @@ func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
 
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(r, buf); err != nil {
+		fmt.Printf("error decoding log entry: %s", err.Error())
 		return PersistentState{}, err
 	}
 
 	pbPersistentState := &pb.StorageState{}
 	if err := proto.Unmarshal(buf, pbPersistentState); err != nil {
-		return PersistentState{}, err
+		return PersistentState{}, errors.WrapError(err, "error decoding log entry: %s", err.Error())
 	}
 
 	persistentState := PersistentState{
@@ -91,11 +84,6 @@ type LogEncoder interface {
 // ProtoLogEncoder is an implementation of StorageEncoder that encodes a LogEntry instance
 // into a binary format using Protocol Buffers.
 type ProtoLogEncoder struct{}
-
-// NewProtoLogEncoder returns a new instance of ProtoLogEncoder.
-func NewProtoLogEncoder() *ProtoLogEncoder {
-	return &ProtoLogEncoder{}
-}
 
 // Encode encodes a LogEntry instance into a binary format using Protocol Buffers and writes
 // the encoded data to the provided io.Writer.
@@ -133,11 +121,6 @@ type LogDecoder interface {
 // ProtoLogDecoder is an implementation of LogDecoder that decodes a binary representation
 // of a LogEntry instance encoded using Protocol Buffers into an actual LogEntry instance.
 type ProtoLogDecoder struct{}
-
-// NewProtoLogDecoder returns a new instance of ProtoLogDecoder.
-func NewProtoLogDecoder() *ProtoLogDecoder {
-	return &ProtoLogDecoder{}
-}
 
 // Decode reads a binary representation of a LogEntry instance from the provided io.Reader,
 // decodes it using Protocol Buffers, and returns the decoded LogEntry instance.

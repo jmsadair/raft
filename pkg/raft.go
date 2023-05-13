@@ -246,17 +246,17 @@ func (r *Raft) Start() {
 // Stop stops the raft server if it is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.state == Shutdown {
-		r.mu.Unlock()
 		return
 	}
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
 	r.mu.Unlock()
-
 	r.wg.Wait()
-
+	r.mu.Lock()
 	close(r.commandResponseCh)
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
@@ -365,6 +365,7 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 		if !existing.IsConflict(entry) {
 			continue
 		}
+		r.options.logger.Debugf("server %s truncating log", r.id)
 		if err := r.log.Truncate(entry.index); err != nil {
 			r.options.logger.Fatalf("error truncating log: %s", err.Error())
 		}

@@ -68,8 +68,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		replicateCh[i] = make(chan CommandResponse)
 		snapshotStores[i] = NewSnapshotStorageMock()
 		stateMachines[i] = NewStateMachineMock()
-		logs[i] = NewPersistentLog(tmpDir+fmt.Sprintf("/raft-log-%d", i), NewProtoLogEncoder(), NewProtoLogDecoder())
-		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), NewProtoStorageEncoder(), NewProtoStorageDecoder())
+		logs[i] = NewPersistentLog(tmpDir+fmt.Sprintf("/raft-log-%d", i), new(ProtoLogEncoder), new(ProtoLogDecoder))
+		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), new(ProtoStorageEncoder), new(ProtoStorageDecoder))
 		connected[i] = make([]bool, numServers)
 		responses[i] = make(map[uint64]CommandResponse)
 
@@ -141,19 +141,18 @@ func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expe
 		for j := 0; j < len(tc.servers); j++ {
 			tc.mu.Lock()
 			server := tc.servers[j]
+			tc.mu.Unlock()
+
 			status := server.Status()
 
 			if status.State != Leader {
-				tc.mu.Unlock()
 				continue
 			}
 
 			index, term, err := server.SubmitCommand(command)
 			if err != nil {
-				tc.mu.Unlock()
 				continue
 			}
-			tc.mu.Unlock()
 
 			for k := 0; k < 10; k++ {
 				time.Sleep(25 * time.Millisecond)
@@ -189,15 +188,21 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 	// A maximum of 3 seconds is given to successfully elect a leader.
 	electionTimeout := 300 * time.Millisecond
 	for i := 0; i < 10; i++ {
-		for j, server := range tc.servers {
+		for j := 0; j < len(tc.servers); j++ {
+			tc.mu.Lock()
+			server := tc.servers[j]
+			tc.mu.Unlock()
+
 			status := server.Status()
 
 			// We need to check if the server is connected to the
 			// cluster since it is possible to have two leaders if
 			// one is Disconnected.
+			tc.mu.Lock()
 			if status.State == Leader && tc.connected[j][j] {
 				leaders = append(leaders, status.Id)
 			}
+			tc.mu.Unlock()
 		}
 		if len(leaders) > 1 {
 			tc.t.Fatal("cluster has more than one leader")
@@ -266,9 +271,6 @@ func (tc *TestCluster) applyLoop(index int) {
 }
 
 func (tc *TestCluster) crashServer(serverID string) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
 	index, _ := strconv.Atoi(serverID)
 	tc.DisconnectServerTwoWay(serverID)
 	tc.servers[index].Stop()
@@ -358,6 +360,9 @@ func (tc *TestCluster) reconnectAllServers() {
 }
 
 func (tc *TestCluster) DisconnectServerTwoWay(serverID string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
 	server, _ := strconv.Atoi(serverID)
 	for i := 0; i < len(tc.peers); i++ {
 		if i == server {

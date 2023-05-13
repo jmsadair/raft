@@ -15,7 +15,7 @@ func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expec
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, NewProtoLogEncoder(), NewProtoLogDecoder())
+	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
@@ -78,7 +78,7 @@ func TestAppendEntries(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, NewProtoLogEncoder(), NewProtoLogDecoder())
+	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
@@ -137,7 +137,7 @@ func TestTruncate(t *testing.T) {
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, NewProtoLogEncoder(), NewProtoLogDecoder())
+	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}

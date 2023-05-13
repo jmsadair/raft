@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 
 	"github.com/jmsadair/raft/internal/errors"
@@ -110,6 +109,7 @@ func (l *PersistentLog) Open() error {
 		if err := writer.Flush(); err != nil {
 			return err
 		}
+		l.file.Sync()
 		entries = append(entries, entry)
 	}
 
@@ -121,13 +121,17 @@ func (l *PersistentLog) Close() error {
 	if l.file == nil {
 		return nil
 	}
-	return l.file.Close()
+	l.file.Close()
+	l.entries = nil
+	l.file = nil
+	return nil
 }
 
 func (l *PersistentLog) GetEntry(index uint64) (*LogEntry, error) {
 	if l.file == nil {
 		return nil, fmt.Errorf("log is not open")
 	}
+
 	logIndex := index - l.entries[0].index
 	lastIndex := l.entries[len(l.entries)-1].index
 	if logIndex <= 0 || logIndex > lastIndex {
@@ -177,6 +181,10 @@ func (l *PersistentLog) AppendEntries(entries []*LogEntry) error {
 }
 
 func (l *PersistentLog) Truncate(index uint64) error {
+	if l.file == nil {
+		return fmt.Errorf("log is not open")
+	}
+
 	logIndex := index - l.entries[0].index
 	lastIndex := l.entries[len(l.entries)-1].index
 	if logIndex <= 0 || logIndex > lastIndex {
@@ -186,12 +194,18 @@ func (l *PersistentLog) Truncate(index uint64) error {
 	if err := l.file.Truncate(size); err != nil {
 		return err
 	}
+	if _, err := l.file.Seek(size, io.SeekStart); err != nil {
+		return err
+	}
 	l.entries = l.entries[:logIndex]
-	l.file.Sync()
 	return nil
 }
 
 func (l *PersistentLog) Compact(index uint64) error {
+	if l.file == nil {
+		return fmt.Errorf("log is not open")
+	}
+
 	logIndex := index - l.entries[0].index
 	lastIndex := l.entries[len(l.entries)-1].index
 	if logIndex <= 0 || logIndex > lastIndex {
@@ -201,14 +215,14 @@ func (l *PersistentLog) Compact(index uint64) error {
 	newEntries := make([]*LogEntry, len(l.entries)-int(logIndex))
 	copy(newEntries[:], l.entries[logIndex:])
 
-	compactedFile, err := ioutil.TempFile(".", "raft-log")
+	compactedFile, err := os.CreateTemp("", "raft-log")
 	if err != nil {
 		return err
 	}
 
 	writer := bufio.NewWriter(compactedFile)
 	for _, entry := range newEntries {
-		offset, err := l.file.Seek(0, io.SeekCurrent)
+		offset, err := compactedFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return err
 		}
@@ -216,12 +230,14 @@ func (l *PersistentLog) Compact(index uint64) error {
 		if err := l.logEncoder.Encode(writer, entry); err != nil {
 			return err
 		}
-		if err := writer.Flush(); err != nil {
-			return err
-		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return err
 	}
 
 	compactedFile.Sync()
+
 	if err := os.Rename(compactedFile.Name(), l.path); err != nil {
 		return err
 	}

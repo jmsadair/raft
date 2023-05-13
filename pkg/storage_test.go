@@ -9,8 +9,8 @@ import (
 func TestPersistentStorageSetGet(t *testing.T) {
 	tmpDir := t.TempDir()
 	storageFile := tmpDir + "/test-storage.bin"
-	encoder := NewProtoStorageEncoder()
-	decoder := NewProtoStorageDecoder()
+	encoder := new(ProtoStorageEncoder)
+	decoder := new(ProtoStorageDecoder)
 	storage := NewPersistentStorage(storageFile, encoder, decoder)
 
 	if err := storage.Open(); err != nil {

@@ -3,7 +3,6 @@ package raft
 import (
 	"errors"
 	"io"
-	"io/ioutil"
 	"os"
 )
 
@@ -68,7 +67,7 @@ func (p *PersistentStorage) Close() error {
 
 func (p *PersistentStorage) SetState(persistentState *PersistentState) error {
 	// Create a temporary file that will replace the file currently associated with storage.
-	tmpFile, err := ioutil.TempFile("", "persistent-storage")
+	tmpFile, err := os.CreateTemp("", "persistent-storage")
 	if err != nil {
 		return err
 	}

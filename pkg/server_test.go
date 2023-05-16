@@ -188,7 +188,7 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 	electionTimeout := 300 * time.Millisecond
 
 	// A maximum of 3 seconds is given to successfully elect a leader.
-	for time.Since(start).Milliseconds() < 3 {
+	for time.Since(start).Seconds() < 3 {
 		for i := 0; i < len(tc.servers); i++ {
 			tc.mu.Lock()
 			server := tc.servers[i]

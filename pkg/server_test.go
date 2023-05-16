@@ -118,9 +118,7 @@ func (tc *TestCluster) startCluster() {
 }
 
 func (tc *TestCluster) stopCluster() {
-	fmt.Println("stopping cluster...")
-	for i, server := range tc.servers {
-		fmt.Printf("stopping server %d\n", i)
+	for _, server := range tc.servers {
 		server.Stop()
 	}
 	close(tc.shutdownCh)
@@ -137,14 +135,16 @@ func (tc *TestCluster) makeCommands(numCommands int) []Command {
 }
 
 func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
-	for i := 0; i < 10; i++ {
+	start := time.Now()
+
+	// Allow for a maximum of five seconds if retry is enabled.
+	for time.Since(start).Seconds() < 5 {
 		for j := 0; j < len(tc.servers); j++ {
 			tc.mu.Lock()
 			server := tc.servers[j]
 			tc.mu.Unlock()
 
 			status := server.Status()
-
 			if status.State != Leader {
 				continue
 			}
@@ -184,22 +184,20 @@ func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expe
 
 func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 	leaders := make([]string, 0)
+	start := time.Now()
+	electionTimeout := 300 * time.Millisecond
 
 	// A maximum of 3 seconds is given to successfully elect a leader.
-	electionTimeout := 300 * time.Millisecond
-	for i := 0; i < 10; i++ {
-		for j := 0; j < len(tc.servers); j++ {
+	for time.Since(start).Milliseconds() < 3 {
+		for i := 0; i < len(tc.servers); i++ {
 			tc.mu.Lock()
-			server := tc.servers[j]
+			server := tc.servers[i]
 			tc.mu.Unlock()
 
 			status := server.Status()
 
-			// We need to check if the server is connected to the
-			// cluster since it is possible to have two leaders if
-			// one is Disconnected.
 			tc.mu.Lock()
-			if status.State == Leader && tc.connected[j][j] {
+			if status.State == Leader && tc.connected[i][i] {
 				leaders = append(leaders, status.Id)
 			}
 			tc.mu.Unlock()
@@ -216,9 +214,11 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 	if len(leaders) == 0 && !expectNoLeader {
 		tc.t.Fatal("cluster failed to elect a leader")
 	}
+
 	if len(leaders) != 0 && expectNoLeader {
 		tc.t.Fatal("cluster elected a leader when it should not have")
 	}
+
 	if expectNoLeader {
 		return ""
 	}
@@ -232,8 +232,10 @@ func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
 
 	expectedIndex := tc.lastApplied[index] + 1
 	if response.Index != expectedIndex {
-		tc.serverErrors[index] = fmt.Sprintf("command applied out of order: expected index %d, got index %d", expectedIndex, response.Index)
+		tc.serverErrors[index] = fmt.Sprintf("command applied out of order: expected index %d, got index %d",
+			expectedIndex, response.Index)
 	}
+
 	tc.commandResponses[index][response.Index] = response
 	tc.lastApplied[index]++
 }
@@ -323,8 +325,6 @@ func (tc *TestCluster) createPartition() {
 
 	for index := range partitionSet {
 		for i := 0; i < len(tc.servers); i++ {
-			// Disconnect the servers in partition set from
-			// those that are not.
 			if _, ok := partitionSet[i]; ok {
 				tc.connected[index][index] = false
 				for j := 0; j < len(tc.peers[i]); j++ {
@@ -336,8 +336,6 @@ func (tc *TestCluster) createPartition() {
 				}
 				continue
 			}
-			// Disconnect the server not in the partition set from
-			// those that are.
 			tc.connected[i][index] = false
 			tc.peers[i][index].Disconnect()
 		}
@@ -546,7 +544,7 @@ func TestUnreliableNetwork(t *testing.T) {
 	unreliableNetRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			randomTime := util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			Disconnect1 := util.RandomInt(0, 5)
 			Disconnect2 := (Disconnect1 + 1) % 5
@@ -554,7 +552,8 @@ func TestUnreliableNetwork(t *testing.T) {
 			id2 := fmt.Sprint(Disconnect2)
 			cluster.DisconnectServerTwoWay(id1)
 			cluster.DisconnectServerTwoWay(id2)
-			time.Sleep(300 * time.Millisecond)
+			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
 			cluster.reconnectAllServers()
 		}
 	}
@@ -620,10 +619,11 @@ func TestMultiPartition(t *testing.T) {
 	partitionRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			randomTime := util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.createPartition()
-			time.Sleep(300 * time.Millisecond)
+			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
 			cluster.reconnectAllServers()
 		}
 	}
@@ -698,19 +698,17 @@ func TestMultiCrash(t *testing.T) {
 	crashRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			time.Sleep(400 * time.Millisecond)
+			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
 			crash1 := util.RandomInt(0, 5)
 			crash2 := (crash1 + 1) % 5
 			id1 := fmt.Sprint(crash1)
 			id2 := fmt.Sprint(crash2)
-			fmt.Printf("crashing server %s\n", id1)
 			cluster.crashServer(id1)
-			fmt.Printf("crashing server %s\n", id2)
 			cluster.crashServer(id2)
-			time.Sleep(300 * time.Millisecond)
-			fmt.Printf("restarting server %s\n", id1)
+			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
 			cluster.restartServer(id1)
-			fmt.Printf("restarting server %s\n", id2)
 			cluster.restartServer(id2)
 		}
 	}

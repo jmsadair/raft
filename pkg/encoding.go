@@ -2,10 +2,8 @@ package raft
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 
-	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/protobuf/proto"
 )
@@ -58,13 +56,12 @@ func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
 
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		fmt.Printf("error decoding log entry: %s", err.Error())
 		return PersistentState{}, err
 	}
 
 	pbPersistentState := &pb.StorageState{}
 	if err := proto.Unmarshal(buf, pbPersistentState); err != nil {
-		return PersistentState{}, errors.WrapError(err, "error decoding log entry: %s", err.Error())
+		return PersistentState{}, err
 	}
 
 	persistentState := PersistentState{

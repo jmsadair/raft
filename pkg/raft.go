@@ -210,6 +210,7 @@ func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage 
 		return raft, nil
 	}
 
+	// Restore the state machine from the snapshot.
 	if err := raft.restoreFromSnapshot(); err != nil {
 		return nil, errors.WrapError(err, "failed to restore raft from snapshot: %s", err.Error())
 	}
@@ -255,7 +256,9 @@ func (r *Raft) Stop() {
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
 	r.mu.Unlock()
+
 	r.wg.Wait()
+
 	r.mu.Lock()
 	close(r.commandResponseCh)
 	for _, peer := range r.peers {
@@ -361,14 +364,17 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 			toAppend = request.entries[i:]
 			break
 		}
+
 		existing, _ := r.log.GetEntry(entry.index)
 		if !existing.IsConflict(entry) {
 			continue
 		}
-		r.options.logger.Debugf("server %s truncating log", r.id)
+
+		r.options.logger.Infof("server %s truncating log: index = %d", r.id, entry.index)
 		if err := r.log.Truncate(entry.index); err != nil {
-			r.options.logger.Fatalf("error truncating log: %s", err.Error())
+			r.options.logger.Fatalf("server %s: error truncating log: %s", err.Error())
 		}
+
 		toAppend = request.entries[i:]
 		break
 	}
@@ -406,7 +412,7 @@ func (r *Raft) sendAppendEntries() {
 			if prevLogIndex != 0 && prevLogIndex < r.log.NextIndex() {
 				prevEntry, err := r.log.GetEntry(prevLogIndex)
 				if err != nil {
-					r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
+					r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
 				}
 				prevLogTerm = prevEntry.term
 			}
@@ -415,7 +421,7 @@ func (r *Raft) sendAppendEntries() {
 			for index := nextIndex; index < r.log.NextIndex(); index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
-					r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
+					r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
 				}
 				entries = append(entries, entry)
 			}
@@ -501,9 +507,6 @@ func (r *Raft) requestVote(request RequestVoteRequest) RequestVoteResponse {
 		return response
 	}
 
-	r.options.logger.Debugf("server %s granting vote for server %s: localLastIndex = %d, localLastTerm = %d",
-		r.id, request.candidateID, r.log.LastIndex(), r.log.LastTerm())
-
 	r.lastContact = time.Now()
 	r.votedFor = request.candidateID
 	response.voteGranted = true
@@ -534,11 +537,13 @@ func (r *Raft) sendRequestVote(votes *int) {
 			response, err := peer.RequestVote(request)
 			r.mu.Lock()
 
-			// Ensure that this server is still holding an election.
-			// It is possible that this server has a legitimate leader
-			// and the election is no longer necessary. If this check
-			// is not done, split-brain is possible.
-			if err != nil || r.currentTerm > request.term {
+			if err != nil {
+				return
+			}
+
+			// Ensure this response is not stale. It is possible that this
+			// server has started another election.
+			if r.currentTerm != request.term {
 				return
 			}
 
@@ -587,18 +592,24 @@ func (r *Raft) restoreFromSnapshot() error {
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
+	// If this server is the leader, broadcast heartbeat messages to peers
+	// once every heartbeat interval (the default heartbeat interval is 50ms).
 	for {
 		time.Sleep(r.options.heartbeatInterval)
+
 		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
 			return
 		}
-		if r.state == Leader {
+
+		// Only the leader sends heartbeats.
+		if r.state == Follower {
 			r.mu.Unlock()
-			r.sendAppendEntries()
-			r.mu.Lock()
+			continue
 		}
+
+		r.sendAppendEntries()
 		r.mu.Unlock()
 	}
 }
@@ -607,14 +618,19 @@ func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
 	for {
-		electionTimer := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
-		time.Sleep(electionTimer * time.Millisecond)
+		// A random timeout between the specified election timeout (by default 200 ms) and twice the
+		// election timeout is chosen to sleep for in order to prevent multiple servers from becoming
+		// candidates at the same time.
+		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
+		time.Sleep(timeout * time.Millisecond)
+
 		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
 			return
 		}
 		r.mu.Unlock()
+
 		r.election()
 	}
 }
@@ -622,10 +638,14 @@ func (r *Raft) electionLoop() {
 func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// If we have already been elected the leaser or we have been contacted by the leader
+	// since the last election timeout, an election is not needed.
 	if r.state != Follower || time.Since(r.lastContact) < r.options.electionTimeout {
 		return
 	}
 
+	// This server votes for itself and then requests votes from all of its peers.
 	votesReceived := 1
 	r.becomeCandidate()
 	r.sendRequestVote(&votesReceived)
@@ -638,11 +658,26 @@ func (r *Raft) commitLoop() {
 
 	for r.state != Shutdown {
 		r.commitCond.Wait()
+
+		// Followers may not commit log entries.
+		if r.state != Leader {
+			continue
+		}
+
+		// Indicates whether log entries have been committed and are ready to be applied.
 		committed := false
+
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
+			// It is NOT safe for the leader to commit an entry with a term
+			// different than the current term. It is possible for a log entry
+			// to be agreed upon by the majority of servers in the cluster, but
+			// be overwritten by a future leader.
 			if entry, _ := r.log.GetEntry(index); entry.term != r.currentTerm {
 				continue
 			}
+
+			// Check whether the majority of servers in the cluster agree on the entry.
+			// If they do, it is safe to commit.
 			matches := 1
 			for _, peer := range r.peers {
 				if peer.Id() == r.id {
@@ -661,6 +696,7 @@ func (r *Raft) commitLoop() {
 
 		if committed {
 			r.applyCond.Broadcast()
+			r.sendAppendEntries()
 		}
 	}
 }
@@ -675,35 +711,44 @@ func (r *Raft) applyLoop() {
 
 	for r.state != Shutdown {
 		r.applyCond.Wait()
+
+		// Scan the log starting at the entry following the last applied entry
+		// and apply any entries that have been committed.
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {
-				r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
+				r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
 			}
+
 			response := CommandResponse{
 				Index:    entry.index,
 				Term:     entry.term,
 				Command:  entry.data,
 				Response: r.fsm.Apply(entry.data),
 			}
+
 			r.lastApplied++
+
+			// Warning: do not hold locks when sending on the response channel. May deadlock
+			// if the client is not listening on the response channel.
 			r.mu.Unlock()
-			r.options.logger.Debugf("server %s applied command: response = %v", r.id, response)
 			r.commandResponseCh <- response
 			r.mu.Lock()
+
+			r.options.logger.Debugf("server %s applied command: response = %v", r.id, response)
 		}
 	}
 }
 
-// becomeCandidate transitions this server into the candidate state.
+// becomeCandidate transitions this server into the candidate state. Expects lock to be held.
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
 	r.persistTermAndVote()
-	r.options.logger.Infof("%s has entered the candidate state: term = %d", r.id, r.currentTerm)
+	r.options.logger.Infof("server %s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeLeader transitions this server into the leader state.
+// becomeLeader transitions this server into the leader state. Expects lock to be held.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
@@ -711,21 +756,21 @@ func (r *Raft) becomeLeader() {
 		peer.SetMatchIndex(0)
 	}
 	r.sendAppendEntries()
-	r.options.logger.Infof("%s has entered the leader state", r.id)
+	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeFollower transitions this server into the follower state.
+// becomeFollower transitions this server into the follower state. Expects lock to be held.
 func (r *Raft) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
 	r.votedFor = ""
 	r.persistTermAndVote()
-	r.options.logger.Infof("%s has entered the follower state", r.id)
+	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
 }
 
 // hasQuorum returns true if count meets or exceeds
 // the number that is the majority of peers and false
-// otherwise.
+// otherwise. Expects lock to be held.
 func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }

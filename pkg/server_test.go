@@ -15,13 +15,12 @@ import (
 )
 
 func makePeers(numServers int) [][]Peer {
-	ipPrefix := "127.0.0."
 	port := 8080
 	clusterPeers := make([][]Peer, numServers)
 	for i := 0; i < numServers; i++ {
 		clusterPeers[i] = make([]Peer, numServers)
 		for j := 0; j < numServers; j++ {
-			ip := ipPrefix + fmt.Sprint(j)
+			ip := fmt.Sprintf("127.0.0.%d", j)
 			peerId := fmt.Sprint(j)
 			clusterPeers[i][j] = NewProtobufPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
 		}
@@ -427,11 +426,11 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 
 	// Disconnect the leader and one other server, leaving
 	// only one server that is capable of communicating.
-	DisconnectServer1 := cluster.checkLeaders(false)
-	serverID, _ := strconv.Atoi(DisconnectServer1)
-	DisconnectServer2 := fmt.Sprint((serverID + 1) % 3)
-	cluster.DisconnectServerTwoWay(DisconnectServer1)
-	cluster.DisconnectServerTwoWay(DisconnectServer2)
+	disconnectServer1 := cluster.checkLeaders(false)
+	serverID, _ := strconv.Atoi(disconnectServer1)
+	disconnectServer2 := fmt.Sprint((serverID + 1) % 3)
+	cluster.DisconnectServerTwoWay(disconnectServer1)
+	cluster.DisconnectServerTwoWay(disconnectServer2)
 
 	// Check if the server can elect itself as the leader.
 	// This should not be successful.
@@ -546,10 +545,10 @@ func TestUnreliableNetwork(t *testing.T) {
 		for atomic.LoadInt32(&done) == 0 {
 			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
-			Disconnect1 := util.RandomInt(0, 5)
-			Disconnect2 := (Disconnect1 + 1) % 5
-			id1 := fmt.Sprint(Disconnect1)
-			id2 := fmt.Sprint(Disconnect2)
+			disconnect1 := util.RandomInt(0, 5)
+			disconnect2 := (disconnect1 + 1) % 5
+			id1 := fmt.Sprint(disconnect1)
+			id2 := fmt.Sprint(disconnect2)
 			cluster.DisconnectServerTwoWay(id1)
 			cluster.DisconnectServerTwoWay(id2)
 			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)

@@ -515,12 +515,12 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	// only a minority of the server able to communicate.
 	leader := cluster.checkLeaders(false)
 	serverID, _ := strconv.Atoi(leader)
-	DisconnectServer1 := fmt.Sprint((serverID + 1) % 5)
-	DisconnectServer2 := fmt.Sprint((serverID + 2) % 5)
-	DisconnectServer3 := fmt.Sprint((serverID + 3) % 5)
-	cluster.DisconnectServerTwoWay(DisconnectServer1)
-	cluster.DisconnectServerTwoWay(DisconnectServer2)
-	cluster.DisconnectServerTwoWay(DisconnectServer3)
+	disconnectServer1 := fmt.Sprint((serverID + 1) % 5)
+	disconnectServer2 := fmt.Sprint((serverID + 2) % 5)
+	disconnectServer3 := fmt.Sprint((serverID + 3) % 5)
+	cluster.DisconnectServerTwoWay(disconnectServer1)
+	cluster.DisconnectServerTwoWay(disconnectServer2)
+	cluster.DisconnectServerTwoWay(disconnectServer3)
 
 	// Try to submit some commands. This should be unsuccessful
 	// since only a minority of the cluster can communicate.

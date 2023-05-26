@@ -197,7 +197,7 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 
 			tc.mu.Lock()
 			if status.State == Leader && tc.connected[i][i] {
-				leaders = append(leaders, status.Id)
+				leaders = append(leaders, status.ID)
 			}
 			tc.mu.Unlock()
 		}

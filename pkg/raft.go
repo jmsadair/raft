@@ -10,6 +10,7 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
+// The state of a Raft instance.
 type State uint32
 
 const (
@@ -31,75 +32,125 @@ func (s State) String() string {
 	}
 }
 
+// Command is an operation that will be applied to the state machine.
 type Command struct {
+	// The bytes of the operation.
 	Bytes []byte
 }
 
+// CommandResponse is the response that is generated after applying
+// a command to the state machine.
 type CommandResponse struct {
-	Term     uint64
-	Index    uint64
-	Command  []byte
+	// The term of the log entry containing the applied command.
+	Term uint64
+
+	// The index of the log entry containing the applied command.
+	Index uint64
+
+	// The bytes of the operation applied to the state machine.
+	Command []byte
+
+	// The response returned by the state machine after applying the command.
 	Response interface{}
 }
 
+// AppendEntriesRequest is a request invoked by the leader to replicate
+// log entries and also serves as a heartbeat.
 type AppendEntriesRequest struct {
-	leaderID     string
-	term         uint64
+	// The leader's ID. Allows followers to redirect clients.
+	leaderID string
+
+	// The leader's term.
+	term uint64
+
+	// The leader's commit index.
 	leaderCommit uint64
+
+	// The index of the log entry immediately preceding the new ones.
 	prevLogIndex uint64
-	prevLogTerm  uint64
-	entries      []*LogEntry
+
+	// The term of the log entry immediately preceding the new ones.
+	prevLogTerm uint64
+
+	// Contains the log entries to store (may be empty for heartbeat).
+	entries []*LogEntry
 }
 
+// AppendEntriesResponse is a response to a request to to replicate log
+// entries.
 type AppendEntriesResponse struct {
-	term    uint64
+	// The term of the server that received the request.
+	term uint64
+
+	// Indicates whether the request to append entries was successful.
+	// True if the request was successful and false otherwise.
 	success bool
 }
 
+// RequestVoteRequest is a request invoked by candidates to gather votes.
 type RequestVoteRequest struct {
-	candidateID  string
-	term         uint64
+	// The ID of the candidate requesting the vote.
+	candidateID string
+
+	// The candidate's term.
+	term uint64
+
+	// The index of the candidate's last log entry.
 	lastLogIndex uint64
-	lastLogTerm  uint64
+
+	// The term of the candidate's last log entry.
+	lastLogTerm uint64
 }
 
+// RequestVoteResponse is a response to a request for a vote.
 type RequestVoteResponse struct {
-	term        uint64
+	// The term of the server that received the request.
+	term uint64
+
+	// Indicates whether the vote request was successful. True if
+	// the vote has been granted and false otherwise.
 	voteGranted bool
 }
 
+// Status is the status of a Raft instance.
 type Status struct {
-	Id          string
-	Term        uint64
+	// The ID of the Raft instance.
+	ID string
+
+	// The current term.
+	Term uint64
+
+	// The current commit index.
 	CommitIndex uint64
+
+	// The index of the last log entry applied to the state machine.
 	LastApplied uint64
-	State       State
+
+	// The current state of Raft instance.
+	State State
 }
 
-// TODO: Add wait group to ensure that all go routines have exited.
-
+// Raft is the consensus module in the replicated state machine architecture.
 type Raft struct {
-	// The ID of this raft server, must be a unique, non-empty string.
+	// The ID of this Raft instance.
 	id string
 
-	// The configuration options for this raft server: heartbeat interval,
-	// election timeout, logger, and others.
+	// The configuration options for this Raft instance.
 	options options
 
-	// The peers of this raft server, maps peer ID to peer.
+	// The peers of this Raft instance.
 	peers map[string]Peer
 
-	// Log is used to persist log entries.
+	// A durable log for storing log entries.
 	log Log
 
-	// Storage is used to persist the votedFor and currentTerm
-	// fields of RaftState.
+	// Durable storage for persistent state (outside of the log).
 	storage Storage
 
-	// SnapshotStorage is used to store and retrieve snapshots.
+	// Stores and retrieves snapshots.
 	snapshotStorage SnapshotStorage
 
-	// The state machine provided by the client that commands will be applied to.
+	// State machine provided by the client that commands will be applied to.
 	fsm StateMachine
 
 	// Notifies applier that the commit index has been updated.
@@ -111,22 +162,22 @@ type Raft struct {
 	// Notifies receivers that command has been applied.
 	commandResponseCh chan<- CommandResponse
 
-	// Indicates the current state of this raft instance: leader, follower, or shutdown.
+	// The current state of this raft instance: leader, follower, or shutdown.
 	state State
 
-	// The index of the last log entry that was committed.
+	// Index of the last log entry that was committed.
 	commitIndex uint64
 
-	// The index of the last log entry that was applied.
+	// Index of the last log entry that was applied.
 	lastApplied uint64
 
-	// The current term of this raft instance. Must be persisted.
+	// The current term of this Raft instance. Must be persisted.
 	currentTerm uint64
 
-	// The ID of the candidate that this raft instance voted for. Must be persisted.
+	// ID of the candidate that this Raft instance voted for. Must be persisted.
 	votedFor string
 
-	// The last time this raft instance was contacted by the leader.
+	// Time of last contact by the leader.
 	lastContact time.Time
 
 	wg sync.WaitGroup
@@ -169,7 +220,7 @@ func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage 
 		return nil, errors.WrapError(err, "failed to open storage: %s", err.Error())
 	}
 
-	// Restore the current term and votedFor if it has been persisted.
+	// Restore the current term and vote if they have been persisted.
 	persistentState, err := storage.GetState()
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to recover storage: %s", err.Error())
@@ -218,10 +269,11 @@ func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage 
 	return raft, nil
 }
 
-// Start starts the raft server if it is not already started.
+// Start starts this Raft instance if it is not already started.
 func (r *Raft) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if r.state != Shutdown {
 		return
 	}
@@ -244,7 +296,7 @@ func (r *Raft) Start() {
 	r.options.logger.Infof("raft server with ID %s started", r.id)
 }
 
-// Stop stops the raft server if it is not already stopped.
+// Stop stops this Raft instance if it is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -252,15 +304,19 @@ func (r *Raft) Stop() {
 	if r.state == Shutdown {
 		return
 	}
+
+	// Indicate shutdown state and notify commit loop and apply loop
+	// so that they can return.
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
+
 	r.mu.Unlock()
-
 	r.wg.Wait()
-
 	r.mu.Lock()
+
 	close(r.commandResponseCh)
+
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
 			r.options.logger.Errorf("error disconnecting from peer: %s", err.Error())
@@ -274,29 +330,32 @@ func (r *Raft) Stop() {
 }
 
 // SubmitCommand accepts a command from a client for replication and
-// returns the log index and term assigned to the command. If this raft server
-// is not the leader, the command will be rejected and an error will
-// be returned.
+// returns the log index assigned to the command, the term assigned to the
+// command, and an error if this Raft instance is not the leader.
 func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	if r.state != Leader {
 		return 0, 0, errors.WrapError(nil, "%s is not the leader", r.id)
 	}
+
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, command.Bytes)
 	r.log.AppendEntry(entry)
 	r.sendAppendEntries()
+
 	r.options.logger.Debugf("server %s submitted command: logEntry = %v", r.id, entry)
+
 	return entry.index, entry.term, nil
 }
 
-// Status returns the current status of this raft server.
+// Status returns the current status of this Raft instance.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	return Status{
-		Id:          r.id,
+		ID:          r.id,
 		Term:        r.currentTerm,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,
@@ -304,7 +363,6 @@ func (r *Raft) Status() Status {
 	}
 }
 
-// appendEntries is used to append log entries to the log of this raft server.
 func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -317,14 +375,14 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 		success: false,
 	}
 
-	// Reject any requests with out-of-date term.
+	// Reject any requests with an out-of-date term.
 	if request.term < r.currentTerm {
 		r.options.logger.Debugf("server %s rejecting AppendEntries RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
 		return response
 	}
 
-	// Update the time of last contact for this server - note that this should be done
-	// even if the request is rejected due to having a non-matching previous log entry.
+	// Update the time of last contact - note that this should be done even
+	// if the request is rejected due to having a non-matching previous log entry.
 	r.lastContact = time.Now()
 
 	// If the request has a more up-to-date term, update current term and
@@ -336,7 +394,7 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 
 	// TODO: change this after snapshots are added. Need to compare previous log index to last included index.
 	if request.prevLogIndex != 0 {
-		// Reject the request if this server does not have the previous log entry.
+		// Reject the request if the log does not have the previous log entry.
 		if r.log.NextIndex() <= request.prevLogIndex {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
 				r.id, request.prevLogIndex)
@@ -345,10 +403,10 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 
 		prevLogEntry, err := r.log.GetEntry(request.prevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf("server %s: error getting entry from log: %s", r.id, err.Error())
+			r.options.logger.Fatalf("server %s failed to get entry from log: %s", r.id, err.Error())
 		}
 
-		// Reject the request if the server has the previous log entry, but its term does not match.
+		// Reject the request if the log has the previous log entry, but its term does not match.
 		if prevLogEntry.term != request.prevLogTerm {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
 				r.id, request.prevLogIndex, prevLogEntry.term, request.prevLogTerm)
@@ -372,7 +430,7 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 
 		r.options.logger.Infof("server %s truncating log: index = %d", r.id, entry.index)
 		if err := r.log.Truncate(entry.index); err != nil {
-			r.options.logger.Fatalf("server %s: error truncating log: %s", err.Error())
+			r.options.logger.Fatalf("server %s failed truncating log: %s", err.Error())
 		}
 
 		toAppend = request.entries[i:]
@@ -389,7 +447,6 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 	return response
 }
 
-// sendAppendEntries will send appendEntries RPCs to the peers of this server concurrently.
 func (r *Raft) sendAppendEntries() {
 	for _, peer := range r.peers {
 		if peer.Id() == r.id {
@@ -412,7 +469,7 @@ func (r *Raft) sendAppendEntries() {
 			if prevLogIndex != 0 && prevLogIndex < r.log.NextIndex() {
 				prevEntry, err := r.log.GetEntry(prevLogIndex)
 				if err != nil {
-					r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
+					r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 				}
 				prevLogTerm = prevEntry.term
 			}
@@ -421,7 +478,7 @@ func (r *Raft) sendAppendEntries() {
 			for index := nextIndex; index < r.log.NextIndex(); index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
-					r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
+					r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 				}
 				entries = append(entries, entry)
 			}
@@ -439,15 +496,18 @@ func (r *Raft) sendAppendEntries() {
 			response, err := peer.AppendEntries(request)
 			r.mu.Lock()
 
+			// Ensure that we have not transitioned out of the leader state.
 			if err != nil || r.state != Leader {
 				return
 			}
+
 			// Become a follower if a peer has a more up-to-date term.
 			if response.term > r.currentTerm {
 				r.becomeFollower(response.term)
 				return
 			}
-			// If the AppendEntries RPC was not successful, decrement the next index associated with the peer.
+
+			// If the peer rejected the request, decrement the next index associated with the peer.
 			if !response.success && peer.NextIndex() > 1 {
 				peer.SetNextIndex(peer.NextIndex() - 1)
 				return
@@ -465,7 +525,6 @@ func (r *Raft) sendAppendEntries() {
 	}
 }
 
-// requestVote is used to request a vote from this server.
 func (r *Raft) requestVote(request RequestVoteRequest) RequestVoteResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -515,7 +574,6 @@ func (r *Raft) requestVote(request RequestVoteRequest) RequestVoteResponse {
 	return response
 }
 
-// sendRequestVote will send vote requests to the peers of this server concurrently.
 func (r *Raft) sendRequestVote(votes *int) {
 	for _, peer := range r.peers {
 		if peer.Id() == r.id {
@@ -547,6 +605,7 @@ func (r *Raft) sendRequestVote(votes *int) {
 				return
 			}
 
+			// Increment vote count if vote is granted.
 			if response.voteGranted {
 				*votes += 1
 			}
@@ -566,25 +625,18 @@ func (r *Raft) sendRequestVote(votes *int) {
 	}
 }
 
-// installSnapshot is used to install a snapshot sent by another server on this server.
 func (r *Raft) installSnapshot(request *pb.InstallSnapshotRequest) *pb.InstallSnapshotResponse {
-	// TODO: this probably needs to get moved to the apply loop to prevent synchronization issues.
-	// TODO: the log compaction should be fixed (e.g. the indexing is not correct).
 	panic("installSnapshot not implemented")
 }
 
-// sendInstallSnapshot is used to send a snapshot to a peer for installation.
 func (r *Raft) sendInstallSnapshot(peer *ProtobufPeer) {
 	panic("sendInstallSnapshot not implemented")
 }
 
-// takeSnapshot is used to take a snapshot of this raft server.
 func (r *Raft) takeSnapshot() {
 	panic("takeSnapshot not implemented")
 }
 
-// restoreFromSnapshot is used to restore this raft server from a snapshot.
-// This should only be called during initialization.
 func (r *Raft) restoreFromSnapshot() error {
 	panic("restoreFromSnapshot not implemented")
 }
@@ -672,7 +724,9 @@ func (r *Raft) commitLoop() {
 			// different than the current term. It is possible for a log entry
 			// to be agreed upon by the majority of servers in the cluster, but
 			// be overwritten by a future leader.
-			if entry, _ := r.log.GetEntry(index); entry.term != r.currentTerm {
+			if entry, err := r.log.GetEntry(index); err != nil {
+				r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
+			} else if entry.term != r.currentTerm {
 				continue
 			}
 
@@ -701,9 +755,6 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-// applyLoop is used to apply newly committed log entries to the client state machine
-// and send responses to the client. Must be called in a separate go-routine because it
-// will block.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -717,7 +768,7 @@ func (r *Raft) applyLoop() {
 		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {
-				r.options.logger.Fatalf("server %s experienced error getting entry from log: %s", r.id, err.Error())
+				r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 			}
 
 			response := CommandResponse{
@@ -730,7 +781,7 @@ func (r *Raft) applyLoop() {
 			r.lastApplied++
 
 			// Warning: do not hold locks when sending on the response channel. May deadlock
-			// if the client is not listening on the response channel.
+			// if the client is not listening.
 			r.mu.Unlock()
 			r.commandResponseCh <- response
 			r.mu.Lock()
@@ -740,7 +791,6 @@ func (r *Raft) applyLoop() {
 	}
 }
 
-// becomeCandidate transitions this server into the candidate state. Expects lock to be held.
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
@@ -748,7 +798,6 @@ func (r *Raft) becomeCandidate() {
 	r.options.logger.Infof("server %s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeLeader transitions this server into the leader state. Expects lock to be held.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
@@ -759,7 +808,6 @@ func (r *Raft) becomeLeader() {
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeFollower transitions this server into the follower state. Expects lock to be held.
 func (r *Raft) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
@@ -768,9 +816,6 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
 }
 
-// hasQuorum returns true if count meets or exceeds
-// the number that is the majority of peers and false
-// otherwise. Expects lock to be held.
 func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }
@@ -778,6 +823,6 @@ func (r *Raft) hasQuorum(count int) bool {
 func (r *Raft) persistTermAndVote() {
 	persistentState := &PersistentState{term: r.currentTerm, votedFor: r.votedFor}
 	if err := r.storage.SetState(persistentState); err != nil {
-		r.options.logger.Fatalf("server %s: error persisting term and vote: %s", err.Error())
+		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", err.Error())
 	}
 }

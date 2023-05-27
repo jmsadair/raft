@@ -14,11 +14,11 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-func makePeers(numServers int) [][]Peer {
+func makeProtobufPeers(numServers int) [][]*ProtobufPeer {
 	port := 8080
-	clusterPeers := make([][]Peer, numServers)
+	clusterPeers := make([][]*ProtobufPeer, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make([]Peer, numServers)
+		clusterPeers[i] = make([]*ProtobufPeer, numServers)
 		for j := 0; j < numServers; j++ {
 			ip := fmt.Sprintf("127.0.0.%d", j)
 			peerId := fmt.Sprint(j)
@@ -31,9 +31,8 @@ func makePeers(numServers int) [][]Peer {
 
 type TestCluster struct {
 	t                *testing.T
-	peers            [][]Peer
-	servers          []*Server
-	connected        [][]bool
+	peers            [][]*ProtobufPeer
+	servers          []*ProtobufServer
 	logs             []Log
 	snapshotStores   []SnapshotStorage
 	stateMachines    []StateMachine
@@ -49,7 +48,7 @@ type TestCluster struct {
 }
 
 func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
-	servers := make([]*Server, numServers)
+	servers := make([]*ProtobufServer, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stateMachines := make([]StateMachine, numServers)
 	logs := make([]Log, numServers)
@@ -57,8 +56,7 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([]map[uint64]CommandResponse, numServers)
 	expected := make([]Command, 0)
-	connected := make([][]bool, numServers)
-	peers := makePeers(numServers)
+	peers := makeProtobufPeers(numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
 	tmpDir := t.TempDir()
@@ -69,17 +67,12 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		stateMachines[i] = NewStateMachineMock()
 		logs[i] = NewPersistentLog(tmpDir+fmt.Sprintf("/raft-log-%d", i), new(ProtoLogEncoder), new(ProtoLogDecoder))
 		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), new(ProtoStorageEncoder), new(ProtoStorageDecoder))
-		connected[i] = make([]bool, numServers)
 		responses[i] = make(map[uint64]CommandResponse)
-
-		for j := 0; j < numServers; j++ {
-			connected[i][j] = true
-		}
 
 		id := peers[0][i].Id()
 		address := peers[0][i].Address()
 
-		server, err := NewServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i])
+		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i])
 		if err != nil {
 			return nil, errors.WrapError(err, "error creating cluster server: %s", err.Error())
 		}
@@ -90,7 +83,6 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		t:                t,
 		peers:            peers,
 		servers:          servers,
-		connected:        connected,
 		snapshotStores:   snapshotStores,
 		stateMachines:    stateMachines,
 		stores:           stores,
@@ -196,7 +188,7 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 			status := server.Status()
 
 			tc.mu.Lock()
-			if status.State == Leader && tc.connected[i][i] {
+			if status.State == Leader && tc.peers[i][i].Connected() {
 				leaders = append(leaders, status.ID)
 			}
 			tc.mu.Unlock()
@@ -287,7 +279,7 @@ func (tc *TestCluster) restartServer(serverID string) {
 	tc.replicateCh[index] = make(chan CommandResponse)
 	tc.stateMachines[index] = NewStateMachineMock()
 
-	newServer, err := NewServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
+	newServer, err := NewProtobufServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
 		tc.snapshotStores[index], tc.stateMachines[index], address, tc.replicateCh[index])
 	if err != nil {
 		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
@@ -302,11 +294,14 @@ func (tc *TestCluster) restartServer(serverID string) {
 
 	readyCh := make(chan interface{})
 	defer close(readyCh)
-	newServer.Start(readyCh)
+	if err := newServer.Start(readyCh); err != nil {
+		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
+	}
 
 	for i := 0; i < len(tc.servers); i++ {
-		tc.peers[i][index].Connect()
-		tc.connected[i][index] = true
+		if err := tc.peers[i][index].Connect(); err != nil {
+			tc.t.Fatalf("error reconnecting peer: %s", err.Error())
+		}
 	}
 }
 
@@ -317,26 +312,27 @@ func (tc *TestCluster) createPartition() {
 	partitionSize := len(tc.servers) / 2
 	partitionSet := make(map[int]bool)
 	index := util.RandomInt(0, len(tc.servers))
-
 	for i := 0; i < partitionSize; i++ {
 		partitionSet[(index+i)%len(tc.servers)] = true
 	}
 
-	for index := range partitionSet {
-		for i := 0; i < len(tc.servers); i++ {
-			if _, ok := partitionSet[i]; ok {
-				tc.connected[index][index] = false
-				for j := 0; j < len(tc.peers[i]); j++ {
-					if _, ok := partitionSet[j]; ok {
-						continue
-					}
-					tc.peers[i][j].Disconnect()
-					tc.connected[i][j] = false
+	for i := 0; i < len(tc.servers); i++ {
+		if _, ok := partitionSet[i]; ok {
+			for j := 0; j < len(tc.servers); j++ {
+				if _, ok := partitionSet[j]; ok {
+					continue
 				}
-				continue
+				if err := tc.peers[i][j].Disconnect(); err != nil {
+					tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+				}
+				if err := tc.peers[j][i].Disconnect(); err != nil {
+					tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+				}
 			}
-			tc.connected[i][index] = false
-			tc.peers[i][index].Disconnect()
+
+			if err := tc.peers[i][i].Disconnect(); err != nil {
+				tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+			}
 		}
 	}
 }
@@ -347,11 +343,12 @@ func (tc *TestCluster) reconnectAllServers() {
 
 	for i := 0; i < len(tc.servers); i++ {
 		for j := 0; j < len(tc.servers); j++ {
-			if tc.connected[i][j] {
+			if tc.peers[i][j].Connected() {
 				continue
 			}
-			tc.connected[i][j] = true
-			tc.peers[i][j].Connect()
+			if err := tc.peers[i][j].Connect(); err != nil {
+				tc.t.Fatalf("error reconnecting peer: %s", err.Error())
+			}
 		}
 	}
 }
@@ -361,16 +358,19 @@ func (tc *TestCluster) DisconnectServerTwoWay(serverID string) {
 	defer tc.mu.Unlock()
 
 	server, _ := strconv.Atoi(serverID)
+	if err := tc.peers[server][server].Disconnect(); err != nil {
+		tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+	}
 	for i := 0; i < len(tc.peers); i++ {
 		if i == server {
-			for j := 0; j < len(tc.peers[i]); j++ {
-				tc.peers[i][j].Disconnect()
-				tc.connected[i][j] = false
-			}
 			continue
 		}
-		tc.peers[i][server].Disconnect()
-		tc.connected[i][server] = false
+		if err := tc.peers[i][server].Disconnect(); err != nil {
+			tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+		}
+		if err := tc.peers[server][i].Disconnect(); err != nil {
+			tc.t.Fatalf("error disconnecting peer: %s", err.Error())
+		}
 	}
 }
 
@@ -411,8 +411,8 @@ func TestElectLeaderDisconnect(t *testing.T) {
 	cluster.checkLeaders(false)
 }
 
-// TestFailElectLeaderDisconnect checks whether a leader is able
-// to be elected when a majority of the servers are Disconnected.
+// TestFailElectLeaderDisconnect checks whether a leader is
+// elected when a majority of the servers are Disconnected.
 func TestFailElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -530,6 +530,9 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	}
 }
 
+// TestUnreliableNetwork tests whether a cluster can still make
+// progress submitting multiple commands when multiple servers
+// become disconnected from the rest of the clutster.
 func TestUnreliableNetwork(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -561,7 +564,7 @@ func TestUnreliableNetwork(t *testing.T) {
 	defer cluster.stopCluster()
 	cluster.checkLeaders(false)
 
-	// Start partitioning
+	// Start disconnecting random servers.
 	wg.Add(1)
 	go unreliableNetRoutine()
 
@@ -575,6 +578,9 @@ func TestUnreliableNetwork(t *testing.T) {
 	wg.Wait()
 }
 
+// TestBasicPartition checks that a cluster can still make
+// progress submitting multiple commands when there is a single
+// partition.
 func TestBasicPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -604,6 +610,9 @@ func TestBasicPartition(t *testing.T) {
 	cluster.reconnectAllServers()
 }
 
+// TestMultiPartition checks whether a cluster can still make
+// progress submitting multiple commands in the prescence of
+// multiple and changing partitions.
 func TestMultiPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -731,7 +740,7 @@ func TestMultiCrash(t *testing.T) {
 }
 
 // TestAllCrash checks that a cluster can still make
-// progress committing commands after all of the servers
+// progress committing commands after all the servers
 // crash and come back online.
 func TestAllCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)

@@ -54,83 +54,55 @@ type CommandResponse struct {
 	Response interface{}
 }
 
-// AppendEntriesRequest is a request invoked by the leader to replicate
-// log entries and also serves as a heartbeat.
-type AppendEntriesRequest struct {
-	// The leader's ID. Allows followers to redirect clients.
-	leaderID string
+// RaftServer represents the consensus module in the replicated state machine architecture.
+type RaftServer interface {
+	// Start starts server.
+	// Returns:
+	//     - error: An error if starting the server fails.
+	Start() error
 
-	// The leader's term.
-	term uint64
+	// Stop stops the server.
+	// Returns:
+	//     - error: An error if stopping the server  fails.
+	Stop() error
 
-	// The leader's commit index.
-	leaderCommit uint64
+	// SubmitCommand accepts a command from a client for replication and
+	// returns the log index assigned to the command, the term assigned to the
+	// command, and an error if this server is not the leader. Note that submitting
+	// a command for replication does not guarantee replication if there are failures.
+	// Parameters:
+	//     - command: The command to be submitted for replication.
+	// Returns:
+	//     - uint64: The log index assigned to the command.
+	//     - uint64: The term assigned to the command.
+	//     - error: An error if this server is not the leader.
+	SubmitCommand(command Command) (uint64, uint64, error)
 
-	// The index of the log entry immediately preceding the new ones.
-	prevLogIndex uint64
+	// Status returns the current status of the server.
+	// Returns:
+	//     - Status: The current status of this server.
+	Status() Status
 
-	// The term of the log entry immediately preceding the new ones.
-	prevLogTerm uint64
+	// AppendEntries is invoked by the leader to replicate log entries.
+	// Parameters:
+	//     - request: The AppendEntriesRequest containing log entries to replicate.
+	//     - response: The AppendEntriesResponse to be filled with the result.
+	// Returns:
+	//     - error: An error if replicating log entries fails.
+	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
 
-	// Contains the log entries to store (may be empty for heartbeat).
-	entries []*LogEntry
+	// RequestVote is invoked by the candidate server to gather a vote from this server.
+	// Parameters:
+	//     - request: The RequestVoteRequest containing the candidate's information.
+	//     - response: The RequestVoteResponse to be filled with the vote result.
+	// Returns:
+	//     - error: An error if the voting process fails.
+	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
 }
 
-// AppendEntriesResponse is a response to a request to to replicate log
-// entries.
-type AppendEntriesResponse struct {
-	// The term of the server that received the request.
-	term uint64
-
-	// Indicates whether the request to append entries was successful.
-	// True if the request was successful and false otherwise.
-	success bool
-}
-
-// RequestVoteRequest is a request invoked by candidates to gather votes.
-type RequestVoteRequest struct {
-	// The ID of the candidate requesting the vote.
-	candidateID string
-
-	// The candidate's term.
-	term uint64
-
-	// The index of the candidate's last log entry.
-	lastLogIndex uint64
-
-	// The term of the candidate's last log entry.
-	lastLogTerm uint64
-}
-
-// RequestVoteResponse is a response to a request for a vote.
-type RequestVoteResponse struct {
-	// The term of the server that received the request.
-	term uint64
-
-	// Indicates whether the vote request was successful. True if
-	// the vote has been granted and false otherwise.
-	voteGranted bool
-}
-
-// Status is the status of a Raft instance.
-type Status struct {
-	// The ID of the Raft instance.
-	ID string
-
-	// The current term.
-	Term uint64
-
-	// The current commit index.
-	CommitIndex uint64
-
-	// The index of the last log entry applied to the state machine.
-	LastApplied uint64
-
-	// The current state of Raft instance.
-	State State
-}
-
-// Raft is the consensus module in the replicated state machine architecture.
+// Raft implements the RaftServer interface.
+// This implementation should be used as the underlying logic for an actual server
+// and cannot act as a complete server alone (see ProtobufServer for usage).
 type Raft struct {
 	// The ID of this Raft instance.
 	id string
@@ -141,10 +113,10 @@ type Raft struct {
 	// The peers of this Raft instance.
 	peers map[string]Peer
 
-	// A durable log for storing log entries.
+	// Durable storage for log entries.
 	log Log
 
-	// Durable storage for persistent state (outside of the log).
+	// Durable storage for persistent state that is not a part of the log.
 	storage Storage
 
 	// Stores and retrieves snapshots.
@@ -153,10 +125,10 @@ type Raft struct {
 	// State machine provided by the client that commands will be applied to.
 	fsm StateMachine
 
-	// Notifies applier that the commit index has been updated.
+	// Notifies the apply loop that the commit index has been updated.
 	applyCond *sync.Cond
 
-	// Notifies committer that new log entries may be ready to be committed.
+	// Notifies the commit loop that new log entries may be ready to be committed.
 	commitCond *sync.Cond
 
 	// Notifies receivers that command has been applied.
@@ -185,7 +157,29 @@ type Raft struct {
 	mu sync.Mutex
 }
 
-func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*Raft, error) {
+// NewRaft creates a new instance of Raft.
+// Parameters:
+//   - id: The ID of the Raft server.
+//   - peers: The list of peers participating in the Raft consensus.
+//   - log: The log implementation for storing and retrieving log entries.
+//   - storage: The storage implementation for persisting Raft state.
+//   - snapshotStorage: The storage implementation for persisting snapshots.
+//   - fsm: The state machine implementation for applying commands.
+//   - responseCh: The channel for receiving command responses.
+//   - opts: Optional configuration options for customizing Raft behavior.
+//
+// Returns:
+//   - *Raft: A new instance of the Raft consensus.
+//   - error: An error if creating the Raft instance fails.
+func NewRaft(
+	id string,
+	peers []Peer,
+	log Log,
+	storage Storage,
+	snapshotStorage SnapshotStorage,
+	fsm StateMachine,
+	responseCh chan<- CommandResponse,
+	opts ...Option) (*Raft, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
@@ -269,15 +263,16 @@ func NewRaft(id string, peers []Peer, log Log, storage Storage, snapshotStorage 
 	return raft, nil
 }
 
-// Start starts this Raft instance if it is not already started.
-func (r *Raft) Start() {
+func (r *Raft) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state != Shutdown {
-		return
+		return nil
 	}
 
+	// Do not return an error for failed connections. Connection to peers is not
+	// required to start.
 	for _, peer := range r.peers {
 		if err := peer.Connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
@@ -294,15 +289,16 @@ func (r *Raft) Start() {
 	go r.commitLoop()
 
 	r.options.logger.Infof("raft server with ID %s started", r.id)
+
+	return nil
 }
 
-// Stop stops this Raft instance if it is not already stopped.
-func (r *Raft) Stop() {
+func (r *Raft) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return
+		return nil
 	}
 
 	// Indicate shutdown state and notify commit loop and apply loop
@@ -317,6 +313,8 @@ func (r *Raft) Stop() {
 
 	close(r.commandResponseCh)
 
+	// Do not return an error for failed disconnections. Disconnection from peers
+	// is not required to stop.
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
 			r.options.logger.Errorf("error disconnecting from peer: %s", err.Error())
@@ -327,11 +325,10 @@ func (r *Raft) Stop() {
 	r.storage.Close()
 
 	r.options.logger.Infof("raft server with ID %s stopped", r.id)
+
+	return nil
 }
 
-// SubmitCommand accepts a command from a client for replication and
-// returns the log index assigned to the command, the term assigned to the
-// command, and an error if this Raft instance is not the leader.
 func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -363,22 +360,20 @@ func (r *Raft) Status() Status {
 	}
 }
 
-func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse {
+func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
 		r.id, request.leaderID, request.leaderCommit, request.term, request.prevLogIndex, request.prevLogTerm)
 
-	response := AppendEntriesResponse{
-		term:    r.currentTerm,
-		success: false,
-	}
+	response.term = r.currentTerm
+	response.success = false
 
 	// Reject any requests with an out-of-date term.
 	if request.term < r.currentTerm {
 		r.options.logger.Debugf("server %s rejecting AppendEntries RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
-		return response
+		return nil
 	}
 
 	// Update the time of last contact - note that this should be done even
@@ -398,7 +393,7 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 		if r.log.NextIndex() <= request.prevLogIndex {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
 				r.id, request.prevLogIndex)
-			return response
+			return nil
 		}
 
 		prevLogEntry, err := r.log.GetEntry(request.prevLogIndex)
@@ -410,7 +405,7 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 		if prevLogEntry.term != request.prevLogTerm {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
 				r.id, request.prevLogIndex, prevLogEntry.term, request.prevLogTerm)
-			return response
+			return nil
 		}
 	}
 
@@ -444,7 +439,54 @@ func (r *Raft) appendEntries(request AppendEntriesRequest) AppendEntriesResponse
 		r.applyCond.Broadcast()
 	}
 
-	return response
+	return nil
+}
+
+func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
+		r.id, request.candidateID, request.term, request.lastLogIndex, request.lastLogTerm)
+
+	response.term = r.currentTerm
+	response.voteGranted = false
+
+	// Reject the request if the term is out-of-date.
+	if request.term < r.currentTerm {
+		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
+		return nil
+	}
+
+	// If the request has a more up-to-date term, update current term and
+	// become a follower.
+	if request.term > r.currentTerm {
+		r.becomeFollower(request.term)
+		response.term = r.currentTerm
+	}
+
+	// Reject the request if this server has already voted.
+	if r.votedFor != "" && r.votedFor != request.candidateID {
+		r.options.logger.Debugf("server %s rejecting RequestVote RPC: already voted: votedFor = %s", r.id, r.votedFor)
+		return nil
+	}
+
+	// Reject any requests with out-date-log.
+	// To determine which log is more up-to-date:
+	// 1. If the logs have last entries with different terms, than the log with the
+	//    greater term is more up-to-date.
+	// 2. If the logs end with the same term, the longer log is more up-to-date.
+	if request.lastLogTerm < r.log.LastTerm() ||
+		(request.lastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.lastLogIndex) {
+		return nil
+	}
+
+	r.lastContact = time.Now()
+	r.votedFor = request.candidateID
+	response.voteGranted = true
+	r.persistTermAndVote()
+
+	return nil
 }
 
 func (r *Raft) sendAppendEntries() {
@@ -523,55 +565,6 @@ func (r *Raft) sendAppendEntries() {
 			}
 		}(peer)
 	}
-}
-
-func (r *Raft) requestVote(request RequestVoteRequest) RequestVoteResponse {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
-		r.id, request.candidateID, request.term, request.lastLogIndex, request.lastLogTerm)
-
-	response := RequestVoteResponse{
-		term:        r.currentTerm,
-		voteGranted: false,
-	}
-
-	// Reject the request if the term is out-of-date.
-	if request.term < r.currentTerm {
-		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.term)
-		return response
-	}
-
-	// If the request has a more up-to-date term, update current term and
-	// become a follower.
-	if request.term > r.currentTerm {
-		r.becomeFollower(request.term)
-		response.term = r.currentTerm
-	}
-
-	// Reject the request if this server has already voted.
-	if r.votedFor != "" && r.votedFor != request.candidateID {
-		r.options.logger.Debugf("server %s rejecting RequestVote RPC: already voted: votedFor = %s", r.id, r.votedFor)
-		return response
-	}
-
-	// Reject any requests with out-date-log.
-	// To determine which log is more up-to-date:
-	// 1. If the logs have last entries with different terms, than the log with the
-	//    greater term is more up-to-date.
-	// 2. If the logs end with the same term, the longer log is more up-to-date.
-	if request.lastLogTerm < r.log.LastTerm() ||
-		(request.lastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.lastLogIndex) {
-		return response
-	}
-
-	r.lastContact = time.Now()
-	r.votedFor = request.candidateID
-	response.voteGranted = true
-	r.persistTermAndVote()
-
-	return response
 }
 
 func (r *Raft) sendRequestVote(votes *int) {

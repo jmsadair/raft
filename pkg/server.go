@@ -176,11 +176,11 @@ func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEn
 //   - error: An error if handling the request fails.
 func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
-	requestVoteRespose := &RequestVoteResponse{}
-	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteRespose); err != nil {
+	requestVoteResponse := &RequestVoteResponse{}
+	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
 		return nil, err
 	}
-	return makeProtoRequestVoteResponse(*requestVoteRespose), nil
+	return makeProtoRequestVoteResponse(*requestVoteResponse), nil
 }
 
 // InstallSnapshot handles the InstallSnapshot gRPC request.

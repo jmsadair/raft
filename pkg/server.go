@@ -23,6 +23,7 @@ type ProtobufServer struct {
 
 // NewProtobufServer creates a new instance of ProtobufServer.
 // It initializes the ProtobufServer with the given parameters and returns a pointer to the created instance.
+//
 // Parameters:
 //   - id: The unique identifier for the server.
 //   - peers: An array of ProtobufPeer instances representing the peers in the Raft cluster.
@@ -68,6 +69,7 @@ func NewProtobufServer(
 // Start starts the ProtobufServer.
 // It listens for incoming connections on the configured network address and starts the Raft instance.
 // It also starts serving gRPC requests on the listener.
+//
 // Parameters:
 //   - ready: A channel that signals when the server is ready to start serving requests.
 //
@@ -111,6 +113,7 @@ func (s *ProtobufServer) Stop() {
 
 // Status returns the status of the ProtobufServer.
 // It retrieves the status from the underlying Raft instance.
+//
 // Returns:
 //   - Status: The status of the server.
 func (s *ProtobufServer) Status() Status {
@@ -119,6 +122,7 @@ func (s *ProtobufServer) Status() Status {
 
 // IsStarted checks if the ProtobufServer is started.
 // It returns true if the server is started, false otherwise.
+//
 // Returns:
 //   - bool: True if the server is started, false otherwise.
 func (s *ProtobufServer) IsStarted() bool {
@@ -127,6 +131,7 @@ func (s *ProtobufServer) IsStarted() bool {
 
 // SubmitCommand submits a command to the ProtobufServer for processing.
 // It forwards the command to the underlying Raft instance for handling.
+//
 // Parameters:
 //   - command: The command to be submitted.
 //
@@ -141,6 +146,7 @@ func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) 
 // AppendEntries handles the AppendEntries gRPC request.
 // It converts the request to the internal representation, invokes the AppendEntries method on the Raft instance,
 // and returns the response.
+//
 // Parameters:
 //   - ctx: The context of the gRPC request.
 //   - request: The AppendEntriesRequest received from the client.
@@ -160,6 +166,7 @@ func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEn
 // RequestVote handles the RequestVote gRPC request.
 // It converts the request to the internal representation, invokes the RequestVote method on the Raft instance,
 // and returns the response.
+//
 // Parameters:
 //   - ctx: The context of the gRPC request.
 //   - request: The RequestVoteRequest received from the client.
@@ -178,6 +185,7 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 
 // InstallSnapshot handles the InstallSnapshot gRPC request.
 // This method is not implemented and always returns a nil response.
+//
 // Parameters:
 //   - ctx: The context of the gRPC request.
 //   - request: The InstallSnapshotRequest received from the client.

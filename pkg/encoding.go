@@ -12,9 +12,11 @@ import (
 // instance into a binary format that can be stored in a file or transmitted over a network.
 type StorageEncoder interface {
 	// Encode encodes a PersistentState instance into a binary format and writes it to the provided io.Writer.
+	//
 	// Parameters:
 	//     - w: The io.Writer to write the encoded data to.
 	//     - persistentState: The PersistentState instance to encode.
+	//
 	// Returns:
 	//     - error: An error if encoding fails, or nil otherwise.
 	Encode(w io.Writer, persistentState *PersistentState) error
@@ -45,8 +47,10 @@ func (p *ProtoStorageEncoder) Encode(w io.Writer, persistentState *PersistentSta
 type StorageDecoder interface {
 	// Decode reads a binary representation of a PersistentState instance from the provided io.Reader,
 	// decodes it, and returns the decoded PersistentState instance.
+	//
 	// Parameters:
 	//     - r: The io.Reader to read the binary representation from.
+	//
 	// Returns:
 	//     - PersistentState: The decoded PersistentState instance.
 	//     - error: An error if decoding fails, or nil otherwise.
@@ -85,9 +89,11 @@ func (p *ProtoStorageDecoder) Decode(r io.Reader) (PersistentState, error) {
 // instance into a binary format that can be stored in a file or transmitted over a network.
 type LogEncoder interface {
 	// Encode encodes a LogEntry instance into a binary format and writes it to the provided io.Writer.
+	//
 	// Parameters:
 	//     - w: The io.Writer to write the encoded data to.
 	//     - entry: The LogEntry instance to encode.
+	//
 	// Returns:
 	//     - error: An error if encoding fails, or nil otherwise.
 	Encode(w io.Writer, entry *LogEntry) error
@@ -127,8 +133,10 @@ func (p *ProtoLogEncoder) Encode(w io.Writer, entry *LogEntry) error {
 type LogDecoder interface {
 	// Decode reads a binary representation of a LogEntry instance from the provided io.Reader,
 	// decodes it, and returns the decoded LogEntry instance.
+	//
 	// Parameters:
 	//     - r: The io.Reader to read the binary representation from.
+	//
 	// Returns:
 	//     - LogEntry: The decoded LogEntry instance.
 	//     - error: An error if decoding fails, or nil otherwise.

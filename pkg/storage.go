@@ -9,23 +9,28 @@ import (
 // Storage is an interface representing a storage object that can persist state.
 type Storage interface {
 	// Open opens the storage for persisting state. Open must be called before calling SetState or GetState.
+	//
 	// Returns:
 	//     - error: An error if opening the storage fails, or nil otherwise.
 	Open() error
 
 	// Close closes the storage. After Close is called, SetState and GetState should not be called.
+	//
 	// Returns:
 	//     - error: An error if closing the storage fails, or nil otherwise.
 	Close() error
 
 	// SetState persists the provided state in the storage.
+	//
 	// Parameters:
 	//     - persistentState: The state to be persisted.
+	//
 	// Returns:
 	//     - error: An error if persisting the state fails, or nil otherwise.
 	SetState(persistentState *PersistentState) error
 
 	// GetState recovers the state from the storage.
+	//
 	// Returns:
 	//     - PersistentState: The recovered state.
 	//     - error: An error if recovering the state fails, or nil otherwise.
@@ -56,6 +61,7 @@ type PersistentState struct {
 
 // NewPersistentStorage creates a new instance of PersistentStorage with the provided path, storage encoder,
 // and storage decoder.
+//
 // Parameters:
 //   - path: The path where the persistent storage is located.
 //   - storageEncoder: The storage encoder responsible for encoding PersistentState instances into a binary format.

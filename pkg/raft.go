@@ -57,11 +57,13 @@ type CommandResponse struct {
 // RaftServer represents the consensus module in the replicated state machine architecture.
 type RaftServer interface {
 	// Start starts server.
+	//
 	// Returns:
 	//     - error: An error if starting the server fails.
 	Start() error
 
 	// Stop stops the server.
+	//
 	// Returns:
 	//     - error: An error if stopping the server  fails.
 	Stop() error
@@ -70,8 +72,10 @@ type RaftServer interface {
 	// returns the log index assigned to the command, the term assigned to the
 	// command, and an error if this server is not the leader. Note that submitting
 	// a command for replication does not guarantee replication if there are failures.
+	//
 	// Parameters:
 	//     - command: The command to be submitted for replication.
+	//
 	// Returns:
 	//     - uint64: The log index assigned to the command.
 	//     - uint64: The term assigned to the command.
@@ -79,22 +83,27 @@ type RaftServer interface {
 	SubmitCommand(command Command) (uint64, uint64, error)
 
 	// Status returns the current status of the server.
+	//
 	// Returns:
 	//     - Status: The current status of this server.
 	Status() Status
 
 	// AppendEntries is invoked by the leader to replicate log entries.
+	//
 	// Parameters:
 	//     - request: The AppendEntriesRequest containing log entries to replicate.
 	//     - response: The AppendEntriesResponse to be filled with the result.
+	//
 	// Returns:
 	//     - error: An error if replicating log entries fails.
 	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
 
 	// RequestVote is invoked by the candidate server to gather a vote from this server.
+	//
 	// Parameters:
 	//     - request: The RequestVoteRequest containing the candidate's information.
 	//     - response: The RequestVoteResponse to be filled with the vote result.
+	//
 	// Returns:
 	//     - error: An error if the voting process fails.
 	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
@@ -158,6 +167,7 @@ type Raft struct {
 }
 
 // NewRaft creates a new instance of Raft.
+//
 // Parameters:
 //   - id: The ID of the Raft server.
 //   - peers: The list of peers participating in the Raft consensus.
@@ -346,7 +356,6 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	return entry.index, entry.term, nil
 }
 
-// Status returns the current status of this Raft instance.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()

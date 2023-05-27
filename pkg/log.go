@@ -13,77 +13,93 @@ const (
 	errIndexDoesNotExist = "index %d does not exist"
 )
 
-// Log supports appending and retrieving log entries in
-// a durable manner.
+// Log supports appending and retrieving log entries in a durable manner.
 type Log interface {
 	// Open opens the log for reading and writing.
+	//
 	// Returns:
 	//     - error: An error if opening the log fails.
 	Open() error
 
 	// Close closes the log.
+	//
 	// Returns:
 	//     - error: An error if closing the log fails.
 	Close() error
 
 	// GetEntry returns the log entry located at the specified index.
+	//
 	// Parameters:
 	//     - index: The index of the log entry to retrieve.
+	//
 	// Returns:
 	//     - *LogEntry: The log entry located at the index.
 	//     - error: An error if retrieving the log entry fails.
 	GetEntry(index uint64) (*LogEntry, error)
 
 	// AppendEntry appends a log entry to the log.
+	//
 	// Parameters:
 	//     - entry: The log entry to append.
+	//
 	// Returns:
 	//     - error: An error if appending the log entry fails.
 	AppendEntry(entry *LogEntry) error
 
 	// AppendEntries appends multiple log entries to the log.
+	//
 	// Parameters:
 	//     - entries: The log entries to append.
+	//
 	// Returns:
 	//     - error: An error if appending the log entries fails.
 	AppendEntries(entries []*LogEntry) error
 
 	// Truncate deletes all log entries with index greater than
 	// or equal to the provided index.
+	//
 	// Parameters:
 	//     - index: The index from which to truncate the log.
+	//
 	// Returns:
 	//     - error: An error if truncating the log fails.
 	Truncate(index uint64) error
 
 	// Compact deletes all log entries with index less than
 	// or equal to the provided index.
+	//
 	// Parameters:
 	//     - index: The index to which the log should be compacted.
+	//
 	// Returns:
 	//     - error: An error if compacting the log fails.
 	Compact(index uint64) error
 
 	// Contains checks if the log contains an entry at the specified index.
+	//
 	// Parameters:
 	//     - index: The index to check.
+	//
 	// Returns:
 	//     - bool: True if the index exists in the log, false otherwise.
 	Contains(index uint64) bool
 
 	// LastIndex returns the largest index that exists in the log and zero
 	// if the log is empty.
+	//
 	// Returns:
 	//     - uint64: The largest index in the log.
 	LastIndex() uint64
 
 	// LastTerm returns the largest term in the log and zero if the log
 	// is empty.
+	//
 	// Returns:
 	//     - uint64: The largest term in the log.
 	LastTerm() uint64
 
 	// NextIndex returns the next index to append to the log.
+	//
 	// Returns:
 	//     - uint64: The next index to append to the log.
 	NextIndex() uint64
@@ -105,6 +121,7 @@ type LogEntry struct {
 }
 
 // NewLogEntry creates a new instance of LogEntry.
+//
 // Parameters:
 //   - index: The index of the log entry.
 //   - term: The term of the log entry.
@@ -118,6 +135,7 @@ func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
 
 // IsConflict checks whether the current log entry conflicts with another log entry.
 // Two log entries are considered conflicting if they have the same index but different terms.
+//
 // Parameters:
 //   - other: The other LogEntry to compare against.
 //
@@ -146,6 +164,7 @@ type PersistentLog struct {
 }
 
 // NewPersistentLog creates a new instance of PersistentLog.
+//
 // Parameters:
 //   - path: The path to the persistent log file.
 //   - logEncoder: The log encoder used to encode log entries.

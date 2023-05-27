@@ -12,95 +12,83 @@ import (
 )
 
 const (
-	errConnEstablished = "connection already established with peer %s"
-	errNoConn          = "no connection established with peer %s"
+	errNoConn = "no connection established with peer %s"
 )
 
+// Peer is an interface representing a component responsible for establishing a connection
+// with and making RPCs to a Raft server.
 type Peer interface {
 	// Id returns the ID of the peer.
+	// Returns:
+	//     - string: The ID of the peer.
 	Id() string
 
 	// Address returns the network address of the peer.
+	// Returns:
+	//     - net.Addr: The network address of the peer.
 	Address() net.Addr
 
 	// Clone creates a new instance of Peer with the same ID and network address.
+	// Returns:
+	//     - Peer: A new instance of Peer with the same ID and network address.
 	Clone() Peer
 
 	// Connect establishes a connection with the peer.
+	// Returns:
+	//     - error: An error if the connection establishment fails.
 	Connect() error
 
 	// Disconnect terminates the connection with the peer.
+	// Returns:
+	//     - error: An error if the disconnection fails.
 	Disconnect() error
+
+	// Connected indicates whether a connection has been established with the peer.
+	// Returns:
+	//     - bool: True if a connection is established, false otherwise.
+	Connected() bool
 
 	// AppendEntries sends an AppendEntriesRequest to the peer and returns an AppendEntriesResponse and an error
 	// if the request was unsuccessful.
+	// Parameters:
+	//     - request: The AppendEntriesRequest to be sent.
+	// Returns:
+	//     - AppendEntriesResponse: The response received from the peer.
+	//     - error: An error if sending the request fails.
 	AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error)
 
 	// RequestVote sends a RequestVoteRequest to the peer and returns a RequestVoteResponse and an error
 	// if the request was unsuccessful.
+	// Parameters:
+	//     - request: The RequestVoteRequest to be sent.
+	// Returns:
+	//     - RequestVoteResponse: The response received from the peer.
+	//     - error: An error if sending the request fails.
 	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
 
 	// SetNextIndex sets the next log index associated with the peer.
+	// Parameters:
+	//     - nextIndex: The next log index to be set.
 	SetNextIndex(nextIndex uint64)
 
 	// NextIndex gets the next log index associated with the peer.
+	// Returns:
+	//     - uint64: The next log index associated with the peer.
 	NextIndex() uint64
 
 	// SetMatchIndex sets the log match index associated with the peer.
+	// Parameters:
+	//     - matchIndex: The log match index to be set.
 	SetMatchIndex(matchIndex uint64)
 
 	// MatchIndex gets the log match index associated with the peer.
+	// Returns:
+	//     - uint64: The log match index associated with the peer.
 	MatchIndex() uint64
 }
 
-// makeProtoEntries converts an array of LogEntry objects to an array of pb.LogEntry objects.
-func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
-	protoEntries := make([]*pb.LogEntry, len(entries))
-	for i, entry := range entries {
-		protoEntry := &pb.LogEntry{Index: entry.index, Term: entry.term, Data: entry.data}
-		protoEntries[i] = protoEntry
-	}
-	return protoEntries
-}
-
-// makeProtoRequestVoteRequest converts a RequestVoteRequest object to a pb.RequestVoteRequest object.
-func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequest {
-	return &pb.RequestVoteRequest{
-		CandidateId:  request.candidateID,
-		Term:         request.term,
-		LastLogIndex: request.lastLogIndex,
-		LastLogTerm:  request.lastLogTerm,
-	}
-}
-
-// makeRequestVoteResponse converts a pb.RequestVoteResponse object to a RequestVoteResponse object.
-func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteResponse {
-	return RequestVoteResponse{
-		term:        response.GetTerm(),
-		voteGranted: response.GetVoteGranted(),
-	}
-}
-
-// makeProtoAppendEntriesRequest converts an AppendEntriesRequest object to a pb.AppendEntriesRequest object.
-func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntriesRequest {
-	return &pb.AppendEntriesRequest{
-		LeaderId:     request.leaderID,
-		Term:         request.term,
-		LeaderCommit: request.leaderCommit,
-		PrevLogIndex: request.prevLogIndex,
-		PrevLogTerm:  request.prevLogTerm,
-		Entries:      makeProtoEntries(request.entries),
-	}
-}
-
-// makeAppendEntriesResponse converts a pb.AppendEntriesResponse object to an AppendEntriesResponse object.
-func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
-	return AppendEntriesResponse{
-		success: response.GetSuccess(),
-		term:    response.GetTerm(),
-	}
-}
-
+// ProtobufPeer is an implementation of Peer that is responsible for establishing
+// a connection with a server using protobuf.
 type ProtobufPeer struct {
 	id         string
 	address    net.Addr
@@ -111,7 +99,9 @@ type ProtobufPeer struct {
 	mu         sync.Mutex
 }
 
-// NewProtobufPeer creates a new instance of ProtobufPeer with the specified ID and network address.
+// NewProtobufPeer creates a new instance of a ProtobufPeer.
+// Returns:
+//   - *ProtobufPeer: a pointer to the created ProtobufPeer instance.
 func NewProtobufPeer(id string, address net.Addr) *ProtobufPeer {
 	return &ProtobufPeer{id: id, address: address}
 }
@@ -133,10 +123,9 @@ func (p *ProtobufPeer) Connect() error {
 	defer p.mu.Unlock()
 
 	if p.client != nil {
-		return errors.WrapError(nil, errConnEstablished, p.id)
+		return nil
 	}
 
-	// TODO: Fix grpc dial options.
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
 		return errors.WrapError(err, "failed to connect to peer: %s", err.Error())
@@ -166,6 +155,12 @@ func (p *ProtobufPeer) Disconnect() error {
 	return nil
 }
 
+func (p *ProtobufPeer) Connected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.client != nil
+}
+
 func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -175,7 +170,6 @@ func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntrie
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
-
 	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
 		return AppendEntriesResponse{}, nil
@@ -193,7 +187,6 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 	}
 
 	pbRequest := makeProtoRequestVoteRequest(request)
-
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
 		return RequestVoteResponse{}, err

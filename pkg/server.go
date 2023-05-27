@@ -10,65 +10,54 @@ import (
 	"google.golang.org/grpc"
 )
 
-type Server struct {
+// ProtobufServer is a wrapper for a Raft instance. It serves requests
+// for Raft using protobuf and gRPC.
+type ProtobufServer struct {
 	pb.UnimplementedRaftServer
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            *Raft
+	raft            RaftServer
 	wg              sync.WaitGroup
 }
 
-func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
-	entries := make([]*LogEntry, len(protoEntries))
-	for i, protoEntry := range protoEntries {
-		entry := &LogEntry{index: protoEntry.GetIndex(), term: protoEntry.GetTerm(), data: protoEntry.GetData()}
-		entries[i] = entry
+// NewProtobufServer creates a new instance of ProtobufServer.
+// It initializes the ProtobufServer with the given parameters and returns a pointer to the created instance.
+// Parameters:
+//   - id: The unique identifier for the server.
+//   - peers: An array of ProtobufPeer instances representing the peers in the Raft cluster.
+//   - log: The log implementation for storing Raft log entries.
+//   - storage: The storage implementation for persistent storage of Raft state.
+//   - snapshotStorage: The storage implementation for persistent storage of Raft snapshots.
+//   - fsm: The state machine implementation for applying commands to the application's state.
+//   - listenInterface: The network address on which the server listens for incoming connections.
+//   - responseCh: The channel for receiving command response notifications.
+//   - opts: Optional additional configuration options for the server.
+//
+// Returns:
+//   - *ProtobufServer: A pointer to the created ProtobufServer instance.
+//   - error: An error if the creation of the server fails.
+func NewProtobufServer(
+	id string,
+	peers []*ProtobufPeer,
+	log Log, storage Storage,
+	snapshotStorage SnapshotStorage,
+	fsm StateMachine,
+	listenInterface net.Addr,
+	responseCh chan<- CommandResponse,
+	opts ...Option) (*ProtobufServer, error) {
+	// Convert the array of ProtobufPeer instances to an array abstract Peer instances.
+	raftPeers := make([]Peer, len(peers))
+	for i := 0; i < len(peers); i++ {
+		raftPeers[i] = peers[i]
 	}
-	return entries
-}
 
-func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
-	return RequestVoteRequest{
-		candidateID:  request.GetCandidateId(),
-		term:         request.GetTerm(),
-		lastLogIndex: request.GetLastLogIndex(),
-		lastLogTerm:  request.GetLastLogTerm(),
-	}
-}
-
-func makeProtoRequestVoteResponse(response RequestVoteResponse) *pb.RequestVoteResponse {
-	return &pb.RequestVoteResponse{
-		Term:        response.term,
-		VoteGranted: response.voteGranted,
-	}
-}
-
-func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesRequest {
-	return AppendEntriesRequest{
-		leaderID:     request.GetLeaderId(),
-		term:         request.GetTerm(),
-		leaderCommit: request.GetLeaderCommit(),
-		prevLogIndex: request.GetPrevLogIndex(),
-		prevLogTerm:  request.GetPrevLogTerm(),
-		entries:      makeEntries(request.GetEntries()),
-	}
-}
-
-func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEntriesResponse {
-	return &pb.AppendEntriesResponse{
-		Success: response.success,
-		Term:    response.term,
-	}
-}
-
-func NewServer(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage, fsm StateMachine, listenInterface net.Addr, responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
-	raft, err := NewRaft(id, peers, log, storage, snapshotStorage, fsm, responseCh, opts...)
+	raft, err := NewRaft(id, raftPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}
 
-	server := &Server{
+	server := &ProtobufServer{
 		listenInterface: listenInterface,
 		raft:            raft,
 	}
@@ -76,7 +65,15 @@ func NewServer(id string, peers []Peer, log Log, storage Storage, snapshotStorag
 	return server, nil
 }
 
-func (s *Server) Start(ready <-chan interface{}) error {
+// Start starts the ProtobufServer.
+// It listens for incoming connections on the configured network address and starts the Raft instance.
+// It also starts serving gRPC requests on the listener.
+// Parameters:
+//   - ready: A channel that signals when the server is ready to start serving requests.
+//
+// Returns:
+//   - error: An error if starting the server fails.
+func (s *ProtobufServer) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
 		return errors.WrapError(err, "failed to start server: %s", err.Error())
@@ -98,7 +95,9 @@ func (s *Server) Start(ready <-chan interface{}) error {
 	return nil
 }
 
-func (s *Server) Stop() {
+// Stop stops the ProtobufServer.
+// It gracefully stops the gRPC server, stops the Raft instance, and closes the listener.
+func (s *ProtobufServer) Stop() {
 	if s.server == nil {
 		return
 	}
@@ -110,26 +109,82 @@ func (s *Server) Stop() {
 	s.server = nil
 }
 
-func (s *Server) Status() Status {
+// Status returns the status of the ProtobufServer.
+// It retrieves the status from the underlying Raft instance.
+// Returns:
+//   - Status: The status of the server.
+func (s *ProtobufServer) Status() Status {
 	return s.raft.Status()
 }
 
-func (s *Server) IsStarted() bool {
+// IsStarted checks if the ProtobufServer is started.
+// It returns true if the server is started, false otherwise.
+// Returns:
+//   - bool: True if the server is started, false otherwise.
+func (s *ProtobufServer) IsStarted() bool {
 	return s.server != nil
 }
 
-func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
+// SubmitCommand submits a command to the ProtobufServer for processing.
+// It forwards the command to the underlying Raft instance for handling.
+// Parameters:
+//   - command: The command to be submitted.
+//
+// Returns:
+//   - uint64: The index of the appended entry in the Raft log.
+//   - uint64: The term of the Raft leader after the command is applied.
+//   - error: An error if submitting the command fails.
+func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) {
 	return s.raft.SubmitCommand(command)
 }
 
-func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-	return makeProtoAppendEntriesResponse(s.raft.appendEntries(makeAppendEntriesRequest(request))), nil
+// AppendEntries handles the AppendEntries gRPC request.
+// It converts the request to the internal representation, invokes the AppendEntries method on the Raft instance,
+// and returns the response.
+// Parameters:
+//   - ctx: The context of the gRPC request.
+//   - request: The AppendEntriesRequest received from the client.
+//
+// Returns:
+//   - *pb.AppendEntriesResponse: The AppendEntriesResponse to be sent back to the client.
+//   - error: An error if handling the request fails.
+func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+	appendEntriesRequest := makeAppendEntriesRequest(request)
+	appendEntriesResponse := &AppendEntriesResponse{}
+	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
+		return nil, err
+	}
+	return makeProtoAppendEntriesResponse(*appendEntriesResponse), nil
 }
 
-func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-	return makeProtoRequestVoteResponse(s.raft.requestVote(makeRequestVoteRequest(request))), nil
+// RequestVote handles the RequestVote gRPC request.
+// It converts the request to the internal representation, invokes the RequestVote method on the Raft instance,
+// and returns the response.
+// Parameters:
+//   - ctx: The context of the gRPC request.
+//   - request: The RequestVoteRequest received from the client.
+//
+// Returns:
+//   - *pb.RequestVoteResponse: The RequestVoteResponse to be sent back to the client.
+//   - error: An error if handling the request fails.
+func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+	requestVoteRequest := makeRequestVoteRequest(request)
+	requestVoteRespose := &RequestVoteResponse{}
+	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteRespose); err != nil {
+		return nil, err
+	}
+	return makeProtoRequestVoteResponse(*requestVoteRespose), nil
 }
 
-func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+// InstallSnapshot handles the InstallSnapshot gRPC request.
+// This method is not implemented and always returns a nil response.
+// Parameters:
+//   - ctx: The context of the gRPC request.
+//   - request: The InstallSnapshotRequest received from the client.
+//
+// Returns:
+//   - *pb.InstallSnapshotResponse: The InstallSnapshotResponse to be sent back to the client.
+//   - error: An error if handling the request fails.
+func (s *ProtobufServer) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	return nil, nil
 }

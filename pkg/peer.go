@@ -187,7 +187,7 @@ func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntrie
 	pbRequest := makeProtoAppendEntriesRequest(request)
 	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, nil
+		return AppendEntriesResponse{}, err
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -207,7 +207,7 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 		return RequestVoteResponse{}, err
 	}
 
-	return makeRequestVoteResponse(pbResponse), err
+	return makeRequestVoteResponse(pbResponse), nil
 }
 
 func (p *ProtobufPeer) SetNextIndex(index uint64) {

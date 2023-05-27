@@ -546,7 +546,7 @@ func TestUnreliableNetwork(t *testing.T) {
 	unreliableNetRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			disconnect1 := util.RandomInt(0, 5)
 			disconnect2 := (disconnect1 + 1) % 5
@@ -554,7 +554,7 @@ func TestUnreliableNetwork(t *testing.T) {
 			id2 := fmt.Sprint(disconnect2)
 			cluster.DisconnectServerTwoWay(id1)
 			cluster.DisconnectServerTwoWay(id2)
-			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.reconnectAllServers()
 		}
@@ -627,10 +627,10 @@ func TestMultiPartition(t *testing.T) {
 	partitionRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.createPartition()
-			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.reconnectAllServers()
 		}
@@ -706,7 +706,7 @@ func TestMultiCrash(t *testing.T) {
 	crashRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
-			randomTime := util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			crash1 := util.RandomInt(0, 5)
 			crash2 := (crash1 + 1) % 5
@@ -714,7 +714,7 @@ func TestMultiCrash(t *testing.T) {
 			id2 := fmt.Sprint(crash2)
 			cluster.crashServer(id1)
 			cluster.crashServer(id2)
-			randomTime = util.RandomTimeout(400*time.Millisecond, 800*time.Millisecond)
+			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 			cluster.restartServer(id1)
 			cluster.restartServer(id2)

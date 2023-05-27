@@ -31,6 +31,15 @@ type AppendEntriesResponse struct {
 	// Indicates whether the request to append entries was successful.
 	// True if the request was successful and false otherwise.
 	success bool
+
+	// The conflicting index if there is one.
+	conflictIndex uint64
+
+	// The conflicting term is there is one.
+	conflictTerm uint64
+
+	// The length of the log in case the reciever's log is too short.
+	conflictLen uint64
 }
 
 // RequestVoteRequest is a request invoked by candidates to gather votes.
@@ -149,8 +158,11 @@ func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntri
 //   - AppendEntriesResponse: The converted AppendEntriesResponse instance.
 func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
 	return AppendEntriesResponse{
-		success: response.GetSuccess(),
-		term:    response.GetTerm(),
+		success:       response.GetSuccess(),
+		term:          response.GetTerm(),
+		conflictLen:   response.GetConflictLen(),
+		conflictIndex: response.GetConflictIndex(),
+		conflictTerm:  response.GetConflictTerm(),
 	}
 }
 
@@ -227,7 +239,10 @@ func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesReq
 //   - *pb.AppendEntriesResponse: The converted protobuf AppendEntriesResponse instance.
 func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEntriesResponse {
 	return &pb.AppendEntriesResponse{
-		Success: response.success,
-		Term:    response.term,
+		Success:       response.success,
+		Term:          response.term,
+		ConflictLen:   response.conflictLen,
+		ConflictTerm:  response.conflictTerm,
+		ConflictIndex: response.conflictIndex,
 	}
 }

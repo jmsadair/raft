@@ -20,7 +20,10 @@ message AppendEntriesRequest {
 
 message AppendEntriesResponse {
     uint64 term    = 1;
-    bool   success = 2;
+    uint64 conflictLen = 2;
+    uint64 conflictIndex = 3;
+    uint64 conflictTerm = 4;
+    bool   success = 5;
 }
 
 message RequestVoteRequest {

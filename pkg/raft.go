@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -402,6 +403,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		if r.log.NextIndex() <= request.prevLogIndex {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
 				r.id, request.prevLogIndex)
+			response.conflictLen = r.log.NextIndex()
 			return nil
 		}
 
@@ -414,6 +416,21 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		if prevLogEntry.term != request.prevLogTerm {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
 				r.id, request.prevLogIndex, prevLogEntry.term, request.prevLogTerm)
+
+			// Find the first index of the conflicting term.
+			response.conflictTerm = prevLogEntry.term
+			var index uint64
+			for index = request.prevLogIndex - 1; index > 0; index-- {
+				entry, err := r.log.GetEntry(index)
+				if err != nil {
+					r.options.logger.Fatalf("server %s failed to get entry from log: %s", r.id, err.Error())
+				}
+				if entry.term != response.conflictTerm {
+					break
+				}
+			}
+
+			response.conflictIndex = index + 1
 			return nil
 		}
 	}
@@ -558,11 +575,35 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 
-			// If the peer rejected the request, decrement the next index associated with the peer.
-			if !response.success && peer.NextIndex() > 1 {
-				peer.SetNextIndex(peer.NextIndex() - 1)
-				return
-			} else if !response.success {
+			if !response.success {
+				// The follower's does not contain the entry because it is too short.
+				if response.conflictLen != 0 {
+					peer.SetNextIndex(response.conflictLen)
+					return
+				}
+
+				lastTermIndex := uint64(0)
+				for i := r.log.LastIndex(); i > 0; i-- {
+					fmt.Println(i)
+					entry, err := r.log.GetEntry(i)
+					if err != nil {
+						r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
+					}
+					if entry.term == response.conflictTerm {
+						lastTermIndex = entry.index
+						break
+					}
+					if entry.term < response.conflictTerm {
+						break
+					}
+				}
+
+				if lastTermIndex > 0 {
+					peer.SetNextIndex(lastTermIndex + 1)
+				} else {
+					peer.SetNextIndex(response.conflictIndex)
+				}
+
 				return
 			}
 

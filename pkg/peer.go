@@ -76,6 +76,17 @@ type Peer interface {
 	//     - error: An error if sending the request fails.
 	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
 
+	// InstallSnapshot sends a InstallSnapshotRequest to the peer and returns a InstallSnapshotResponse and an error
+	// if the request was unsuccessful.
+	//
+	// Parameters:
+	//	   - request: The InstallSnapshotRequest to be sent.
+	//
+	// Returns:
+	//     - InstallSnapshotResponse: The response recieved from the peer.
+	//     - error: An error if sending the request fails.
+	InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error)
+
 	// SetNextIndex sets the next log index associated with the peer.
 	//
 	// Parameters:
@@ -208,6 +219,23 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
+}
+
+func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.client == nil {
+		return InstallSnapshotResponse{}, errors.WrapError(nil, errNoConn, p.id)
+	}
+
+	pbRequest := makeProtoInstallSnapshotRequest(request)
+	pbResponse, err := p.client.InstallSnapshot(context.Background(), pbRequest, []grpc.CallOption{}...)
+	if err != nil {
+		return InstallSnapshotResponse{}, err
+	}
+
+	return makeInstallSnapshotResponse(pbResponse), nil
 }
 
 func (p *ProtobufPeer) SetNextIndex(index uint64) {

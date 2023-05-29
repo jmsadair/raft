@@ -194,5 +194,10 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 //   - *pb.InstallSnapshotResponse: The InstallSnapshotResponse to be sent back to the client.
 //   - error: An error if handling the request fails.
 func (s *ProtobufServer) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
-	return nil, nil
+	installSnapshotRequest := makeInstallSnapshotRequest(request)
+	installSnapshotResponse := &InstallSnapshotResponse{}
+	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
+		return nil, err
+	}
+	return makeProtoInstallSnapshotResponse(*installSnapshotResponse), nil
 }

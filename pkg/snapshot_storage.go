@@ -33,8 +33,16 @@ func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte)
 
 // SnapshotStorage is an interface representing a component responsible for managing snapshots.
 type SnapshotStorage interface {
+	// Open opens the snapshot storage for reading and writing snapshots.
+	//
+	// Returns:
+	//     - error: An error if opening the snapshot storage fails.
 	Open() error
 
+	// Close closes the snapshot storage.
+	//
+	// Returns:
+	// 	   - error: An error if the closing the snapshot storage fails.
 	Close() error
 
 	// LastSnapshot gets the most recently saved snapshot, if it exists.
@@ -60,6 +68,8 @@ type SnapshotStorage interface {
 	ListSnapshots() []Snapshot
 }
 
+// PersistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
+// and persists them to durable storage.
 type PersistentSnapshotStorage struct {
 	snapshots []Snapshot
 	path      string
@@ -68,6 +78,15 @@ type PersistentSnapshotStorage struct {
 	decoder   SnapshotDecoder
 }
 
+// NewPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage.
+//
+// Parameters:
+//   - path: The path to the file where snapshots will be stored.
+//   - encoder: The SnapshotEncoder implementation for encoding snapshots.
+//   - decoder: The SnapshotDecoder implementation for decoding snapshots.
+//
+// Returns:
+//   - *PersistentSnapshotStorage: A new instance of PersistentSnapshotStorage.
 func NewPersistentSnapshotStorage(path string, encoder SnapshotEncoder, decoder SnapshotDecoder) *PersistentSnapshotStorage {
 	return &PersistentSnapshotStorage{path: path, encoder: encoder, decoder: decoder}
 }

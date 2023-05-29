@@ -56,7 +56,7 @@ type CommandResponse struct {
 	// If true, then the snapshot attached to this response is valid.
 	IsSnapshot bool
 
-	// The snapshot that was applied to the state machine.
+	// The snapshot that was applied to the state machine if applicable.
 	Snapshot Snapshot
 }
 
@@ -177,8 +177,8 @@ type Raft struct {
 	// The last included term of the most recent snapshot.
 	lastIncludedTerm uint64
 
-	// A flag to indicate whether a snapshot must be sent over the response channel
-	// before any other responses are sent.
+	// A flag to indicate whether a response for a snapshot must be sent over the
+	// response channel before any other responses are sent.
 	needSnapshotResponse bool
 
 	// ID of the candidate that this Raft instance voted for. Must be persisted.
@@ -284,8 +284,8 @@ func NewRaft(
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 
-	// Open the snapshot storage for operations and restore the state machine from the last
-	// snapshot if there is one.
+	// Open the snapshot storage for operations and restore the
+	// state machine from the last snapshot if there is one.
 	if options.snapshottingEnabled {
 		if err := snapshotStorage.Open(); err != nil {
 			return nil, errors.WrapError(err, "failed to open snapshot storage: %s", err.Error())
@@ -333,7 +333,8 @@ func (r *Raft) Start() error {
 	go r.heartbeatLoop()
 	go r.commitLoop()
 
-	r.options.logger.Infof("server %s started", r.id)
+	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v snapshotsEnabled = %v, snapshotSize = %v",
+		r.id, r.options.electionTimeout, r.options.heartbeatInterval, r.options.snapshottingEnabled, r.options.maxEntriesPerSnapshot)
 
 	return nil
 }
@@ -509,7 +510,8 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			continue
 		}
 
-		r.options.logger.Infof("server %s truncating log: index = %d", r.id, entry.index)
+		r.options.logger.Warnf("server %s truncating log: index = %d", r.id, entry.index)
+
 		if err := r.log.Truncate(entry.index); err != nil {
 			r.options.logger.Fatalf("server %s failed truncating log: %s", err.Error())
 		}
@@ -596,19 +598,19 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 		response.term = request.term
 	}
 
+	r.lastContact = time.Now()
+
 	// The snapshot does not contain any new information.
 	if r.lastIncludedIndex >= request.lastIncludedIndex || r.commitIndex >= request.lastIncludedIndex {
 		return nil
 	}
-
-	r.needSnapshotResponse = true
-	r.lastContact = time.Now()
 
 	var entry *LogEntry
 	if r.log.Contains(request.lastIncludedIndex) {
 		entry, _ = r.log.GetEntry(r.lastIncludedIndex)
 	}
 
+	// Persist the snapshot.
 	snapshot := NewSnapshot(request.lastIncludedIndex, request.lastIncludedTerm, request.bytes)
 	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
 		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
@@ -667,7 +669,6 @@ func (r *Raft) sendAppendEntries() {
 			nextIndex := peer.NextIndex()
 			prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
 			prevLogTerm := r.lastIncludedTerm
-			entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
 
 			if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
 				prevEntry, err := r.log.GetEntry(prevLogIndex)
@@ -679,6 +680,7 @@ func (r *Raft) sendAppendEntries() {
 
 			// Retrieve the log entries that need to be replicated to the peer. Ensure that next index
 			// for the peer is contained in the log - the log may have been compacted due to a snapshot.
+			entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
 			for index := nextIndex; index < r.log.NextIndex() && index > r.lastIncludedIndex; index++ {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
@@ -700,7 +702,8 @@ func (r *Raft) sendAppendEntries() {
 			response, err := peer.AppendEntries(request)
 			r.mu.Lock()
 
-			// Ensure that we have not transitioned out of the leader state.
+			// Ensure that we did not transition out of the leader state after
+			// releasing the lock.
 			if err != nil || r.state != Leader {
 				return
 			}
@@ -713,9 +716,13 @@ func (r *Raft) sendAppendEntries() {
 
 			if !response.success {
 				peer.SetNextIndex(util.Max(1, util.Min(r.log.NextIndex(), response.index)))
+
+				// The log has been compacted and no longer contains the entries the peer needs.
+				// Send the peer a snapshot to catch them up.
 				if r.options.snapshottingEnabled && peer.NextIndex() <= r.lastIncludedIndex {
 					go r.sendInstallSnapshot(peer)
 				}
+
 				return
 			}
 
@@ -784,6 +791,8 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Only leaders may send snapshots. If the leader has the log entry corresponding to the next
+	// index of a peer, a snapshot is not necessary.
 	if !r.options.snapshottingEnabled || r.state != Leader || peer.NextIndex() > r.lastIncludedIndex {
 		return
 	}
@@ -809,6 +818,7 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 		return
 	}
 
+	// If the peer has a more up-to-date term, transition to the follower state.
 	if response.term > r.currentTerm {
 		r.becomeFollower(response.term)
 		return
@@ -823,6 +833,7 @@ func (r *Raft) takeSnapshot() {
 		return
 	}
 
+	// Retrieve current state of state machine.
 	bytes, err := r.fsm.Snapshot()
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", err.Error())
@@ -836,11 +847,15 @@ func (r *Raft) takeSnapshot() {
 	r.options.logger.Infof("server %s taking snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
 		r.id, lastAppliedEntry.index, lastAppliedEntry.term)
 
+	// Persist the snapshot.
 	snapshot := NewSnapshot(lastAppliedEntry.index, lastAppliedEntry.term, bytes)
 	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
 		r.options.logger.Fatalf("server %s failed to save snapshot; %s", r.id, err.Error())
 	}
 
+	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, lastAppliedEntry.index)
+
+	// Compact the log up to the last log entry that was applied to the state machine.
 	if err := r.log.Compact(lastAppliedEntry.index); err != nil {
 		r.options.logger.Fatalf("server %s failed compacting log: %s", err.Error())
 	}
@@ -1012,7 +1027,7 @@ func (r *Raft) applyLoop() {
 			r.lastApplied++
 
 			// Take a snapshot if enough log entries have been committed.
-			if r.lastApplied%r.options.maxEntriesPerSnapshot == 0 {
+			if r.lastApplied%uint64(r.options.maxEntriesPerSnapshot) == 0 {
 				r.takeSnapshot()
 			}
 

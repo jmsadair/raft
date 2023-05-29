@@ -7,7 +7,7 @@ import (
 const (
 	defaultElectionTimeout       = time.Duration(200 * time.Millisecond)
 	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
-	defaultMaxEntriesPerSnapshot = 50
+	defaultMaxEntriesPerSnapshot = 100
 )
 
 // Logger supports logging messages at the debug, info, warn, error, and fatal level.
@@ -81,7 +81,7 @@ type options struct {
 	// The maximum number of log entries before a snapshot is triggered.
 	// If the number of log entries since the last snapshot meets or
 	// exceeds maxEntriesPerSnapshot, a snapshot will be taken.
-	maxEntriesPerSnapshot uint64
+	maxEntriesPerSnapshot int
 
 	// Indicates whether raft should use snapshots.
 	snapshottingEnabled bool
@@ -95,12 +95,10 @@ type Option func(options *options) error
 // WithElectionTimeout sets the election timeout for the Raft server.
 //
 // Parameters:
-//
-//	time: A duration representing the election timeout value.
+//   - time: A duration representing the election timeout value.
 //
 // Returns:
-//
-//	An Option function that sets the election timeout in the options.
+//   - Option: An Option function that sets the election timeout in the options.
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
 		options.electionTimeout = time
@@ -111,12 +109,10 @@ func WithElectionTimeout(time time.Duration) Option {
 // WithHeartbeatInterval sets the heartbeat interval for the Raft server.
 //
 // Parameters:
-//
-//	time: A duration representing the heartbeat interval value.
+//   - time: A duration representing the heartbeat interval value.
 //
 // Returns:
-//
-//	An Option function that sets the heartbeat interval in the options.
+//   - Option: An Option function that sets the heartbeat interval in the options.
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		options.heartbeatInterval = time
@@ -124,16 +120,14 @@ func WithHeartbeatInterval(time time.Duration) Option {
 	}
 }
 
-// WithMaxLogEntries sets the maximum log entries for the Raft server.
+// WithMaxLogEntriesPerSnapshot sets the maximum log entries per snapshot for the Raft server.
 //
 // Parameters:
-//
-//	maxEntriesPerSnapshot: An unsigned integer representing the maximum log entries value.
+//   - maxEntriesPerSnapshot: An unsigned integer representing the maximum log entries value.
 //
 // Returns:
-//
-//	An Option function that sets the maximum log entries in the options.
-func WithMaxLogEntries(maxEntriesPerSnapshot uint64) Option {
+//   - Option: An Option function that sets the maximum log entries in the options.
+func WithMaxLogEntriesPerSnapshot(maxEntriesPerSnapshot int) Option {
 	return func(options *options) error {
 		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
 		return nil
@@ -144,12 +138,10 @@ func WithMaxLogEntries(maxEntriesPerSnapshot uint64) Option {
 // snapshotting
 //
 // Parameters:
-//
-//	restoreFromSnapshot: A boolean indicating whether to restore from a snapshot.
+//   - snapshottingEnabled: A boolean indicating whether to restore from a snapshot.
 //
 // Returns:
-//
-//	An Option function that sets the snapshottingEnabled flag in the options.
+//   - Option: An Option function that sets the snapshottingEnabled flag in the options.
 func WithSnapshotting(snaphottingEnabled bool) Option {
 	return func(options *options) error {
 		options.snapshottingEnabled = snaphottingEnabled
@@ -160,12 +152,10 @@ func WithSnapshotting(snaphottingEnabled bool) Option {
 // WithLogger sets the logger used by the Raft server.
 //
 // Parameters:
-//
-//	logger: A Logger implementation for logging messages.
+//   - logger: A Logger implementation for logging messages.
 //
 // Returns:
-//
-//	An Option function that sets the logger in the options.
+//   - Option: An Option function that sets the logger in the options.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
 		options.logger = logger

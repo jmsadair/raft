@@ -19,9 +19,9 @@ message AppendEntriesRequest {
 }
 
 message AppendEntriesResponse {
-    uint64 term          = 1;
+    uint64 term    = 1;
     uint64 index   = 2;
-    bool   success       = 3;
+    bool   success = 3;
 }
 
 message RequestVoteRequest {
@@ -57,8 +57,8 @@ message StorageState {
 
 message Snapshot {
     uint64 lastIncludedIndex = 1;
-    uint64 lastIncludedTerm = 2;
-    bytes data = 3;
+    uint64 lastIncludedTerm  = 2;
+    bytes  data              = 3;
 }
 
 service Raft {

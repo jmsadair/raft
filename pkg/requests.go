@@ -33,13 +33,7 @@ type AppendEntriesResponse struct {
 	success bool
 
 	// The conflicting index if there is one.
-	conflictIndex uint64
-
-	// The conflicting term is there is one.
-	conflictTerm uint64
-
-	// The length of the log in case the reciever's log is too short.
-	conflictLen uint64
+	index uint64
 }
 
 // RequestVoteRequest is a request invoked by candidates to gather votes.
@@ -65,6 +59,30 @@ type RequestVoteResponse struct {
 	// Indicates whether the vote request was successful. True if
 	// the vote has been granted and false otherwise.
 	voteGranted bool
+}
+
+// InstallSnapshotRequest is invoked by the leader to send a snapshot to a follower.
+type InstallSnapshotRequest struct {
+	// The leader's ID.
+	leaderID string
+
+	// The leader's term.
+	term uint64
+
+	// The last index incuded in the snapshot.
+	lastIncludedIndex uint64
+
+	// The last term included in the snapshot.
+	lastIncludedTerm uint64
+
+	// The state of the state machine in bytes.
+	bytes []byte
+}
+
+// InstallSnapshotResponse is a response to a snapshot installation.
+type InstallSnapshotResponse struct {
+	// The term of the server that recieved the request.
+	term uint64
 }
 
 // Status is the status of a Raft instance.
@@ -158,11 +176,39 @@ func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntri
 //   - AppendEntriesResponse: The converted AppendEntriesResponse instance.
 func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
 	return AppendEntriesResponse{
-		success:       response.GetSuccess(),
-		term:          response.GetTerm(),
-		conflictLen:   response.GetConflictLen(),
-		conflictIndex: response.GetConflictIndex(),
-		conflictTerm:  response.GetConflictTerm(),
+		success: response.GetSuccess(),
+		term:    response.GetTerm(),
+		index:   response.GetIndex(),
+	}
+}
+
+// makeProtoInstallSnapshotRequest converts an InstallSnapshotRequest instance to a protobuf InstallSnapshotRequest instance.
+//
+// Parameters:
+//   - request: The InstallSnapshotRequest instance to convert.
+//
+// Returns:
+//   - *pb.InstallSnapshotRequest: The converted protobuf InstallSnapshotRequest instance.
+func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.InstallSnapshotRequest {
+	return &pb.InstallSnapshotRequest{
+		Leader:            request.leaderID,
+		Term:              request.term,
+		LastIncludedIndex: request.lastIncludedIndex,
+		LastIncludedTerm:  request.lastIncludedTerm,
+		Data:              request.bytes,
+	}
+}
+
+// makeInstallSnapshotResponse converts an protobuf InstallSnapshotResponse instance to a InstallSnapshotResponse instance.
+//
+// Parameters:
+//   - response: The protobuf InstallSnapshotResponse instance to convert.
+//
+// Returns:
+//   - InstallSnapshotResponse: The converted InstallSnapshotResponse instance.
+func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSnapshotResponse {
+	return InstallSnapshotResponse{
+		term: response.GetTerm(),
 	}
 }
 
@@ -239,10 +285,38 @@ func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesReq
 //   - *pb.AppendEntriesResponse: The converted protobuf AppendEntriesResponse instance.
 func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEntriesResponse {
 	return &pb.AppendEntriesResponse{
-		Success:       response.success,
-		Term:          response.term,
-		ConflictLen:   response.conflictLen,
-		ConflictTerm:  response.conflictTerm,
-		ConflictIndex: response.conflictIndex,
+		Success: response.success,
+		Term:    response.term,
+		Index:   response.index,
+	}
+}
+
+// makeInstallSnapshotRequest converts a protobuf InstallSnapshotRequest instance to a InstallSnapshotRequest instance.
+//
+// Parameters:
+//   - request: The protobuf InstallSnapshotRequest instance to convert.
+//
+// Returns:
+//   - InstallSnapshotRequest: The converted InstallSnapshotRequest instance.
+func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnapshotRequest {
+	return InstallSnapshotRequest{
+		leaderID:          request.GetLeader(),
+		term:              request.GetTerm(),
+		lastIncludedIndex: request.GetLastIncludedIndex(),
+		lastIncludedTerm:  request.GetLastIncludedTerm(),
+		bytes:             request.GetData(),
+	}
+}
+
+// makeProtoInstallSnapshotResponse converts an InstallSnapshotResponse instance to a protobuf InstallSnapshotResponse instance.
+//
+// Parameters:
+//   - response: The InstallSnapshotResponse instance to convert.
+//
+// Returns:
+//   - *pb.InstallSnapshotResponse: The converted protobuf InstallSnapshotResponse instance.
+func makeProtoInstallSnapshotResponse(response InstallSnapshotResponse) *pb.InstallSnapshotResponse {
+	return &pb.InstallSnapshotResponse{
+		Term: response.term,
 	}
 }

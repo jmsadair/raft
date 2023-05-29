@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,8 @@ type TestCluster struct {
 	serverErrors     []string
 	commands         []Command
 	lastApplied      []uint64
+	snapshotting     bool
+	snapshotSize     int
 	mu               sync.Mutex
 	wg               sync.WaitGroup
 }
@@ -62,6 +65,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
 	tmpDir := t.TempDir()
+	snapshotting := os.Getenv("SNAPSHOTS") == "true"
+	snapshotSize, _ := strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
 
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
@@ -74,10 +79,12 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		id := peers[0][i].Id()
 		address := peers[0][i].Address()
 
-		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i], WithSnapshotting(true))
+		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i],
+			WithSnapshotting(snapshotting), WithMaxLogEntriesPerSnapshot(snapshotSize))
 		if err != nil {
 			return nil, errors.WrapError(err, "error creating cluster server: %s", err.Error())
 		}
+
 		servers[i] = server
 	}
 
@@ -95,6 +102,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		serverErrors:     serverErrors,
 		lastApplied:      lastApplied,
 		shutdownCh:       make(chan interface{}),
+		snapshotting:     snapshotting,
+		snapshotSize:     snapshotSize,
 	}, nil
 }
 
@@ -310,16 +319,20 @@ func (tc *TestCluster) restartServer(serverID string) {
 	tc.replicateCh[index] = make(chan CommandResponse)
 	tc.stateMachines[index] = NewStateMachineMock()
 
-	newServer, err := NewProtobufServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
-		tc.snapshotStores[index], tc.stateMachines[index], address, tc.replicateCh[index], WithSnapshotting(true))
+	newServer, err := NewProtobufServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index], tc.snapshotStores[index],
+		tc.stateMachines[index], address, tc.replicateCh[index], WithSnapshotting(tc.snapshotting), WithMaxLogEntriesPerSnapshot(tc.snapshotSize))
 	if err != nil {
 		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
 	}
 
-	snapshot, _ := tc.snapshotStores[index].LastSnapshot()
+	if tc.snapshotting {
+		snapshot, _ := tc.snapshotStores[index].LastSnapshot()
+		tc.lastApplied[index] = snapshot.LastIncludedIndex
+	} else {
+		tc.lastApplied[index] = 0
+	}
 
 	tc.servers[index] = newServer
-	tc.lastApplied[index] = snapshot.LastIncludedIndex
 	tc.commandResponses[index] = make(map[uint64]CommandResponse)
 
 	tc.wg.Add(1)

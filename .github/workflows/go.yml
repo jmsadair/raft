@@ -5,9 +5,7 @@ name: Go
 
 on:
   push:
-    branches: [ "dev" ]
   pull_request:
-    branches: [ "dev" ]
 
 jobs:
 
@@ -24,5 +22,17 @@ jobs:
     - name: Build
       run: go build -v ./...
 
-    - name: Test
-      run: go test -v -timeout 5m ./...
+    - name: Test Raft with Snapshotting
+      run: make test-raft-snapshotting
+      continue-on-error: true
+
+    - name: Test Raft without Snapshotting
+      run: make test-raft
+      continue-on-error: true
+
+    - name: Check Test Results
+      run: |
+        if [ ${{ job.status }} == 'failure' ]; then
+          echo "Tests failed. Exiting with a non-zero status code."
+          exit 1
+        fi

@@ -1,38 +1,72 @@
 package raft
 
 import (
-	"sync"
+	"testing"
 
-	"github.com/jmsadair/raft/internal/errors"
+	"github.com/stretchr/testify/assert"
 )
 
-type SnapshotStorageMock struct {
-	snapshots []Snapshot
-	mu        sync.Mutex
+func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
+	assert.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex, "last included index does not match")
+	assert.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm, "last included term does not match")
+	assert.Equal(t, expected.Data, actual.Data, "data does not match")
 }
 
-func NewSnapshotStorageMock() *SnapshotStorageMock {
-	return &SnapshotStorageMock{snapshots: make([]Snapshot, 0)}
-}
+func TestSnapshotStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	storageFile := tmpDir + "/test-snap-storage.bin"
+	encoder := new(ProtoSnapshotEncoder)
+	decoder := new(ProtoSnapshotDecoder)
+	snapshotStore := NewPersistentSnapshotStorage(storageFile, encoder, decoder)
 
-func (s *SnapshotStorageMock) LastSnapshot() (Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.snapshots) == 0 {
-		return Snapshot{}, errors.WrapError(nil, "failed to get last snapshot: no snapshots exist")
+	if err := snapshotStore.Open(); err != nil {
+		t.Fatalf("error opening snapshot store: %s", err.Error())
 	}
-	return s.snapshots[len(s.snapshots)-1], nil
-}
 
-func (s *SnapshotStorageMock) SaveSnapshot(snapshot *Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.snapshots = append(s.snapshots, *snapshot)
-	return nil
-}
+	snapshot1 := NewSnapshot(1, 1, []byte("test1"))
+	if err := snapshotStore.SaveSnapshot(snapshot1); err != nil {
+		t.Fatalf("error saving snapshot: %s", err.Error())
+	}
 
-func (s *SnapshotStorageMock) ListSnapshots() ([]Snapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.snapshots, nil
+	last1, ok := snapshotStore.LastSnapshot()
+	if !ok {
+		t.Fatalf("expected last snapshot to be valid")
+	}
+
+	validateSnapshot(t, snapshot1, &last1)
+
+	snapshot2 := NewSnapshot(2, 2, []byte("test2"))
+	if err := snapshotStore.SaveSnapshot(snapshot2); err != nil {
+		t.Fatalf("error saving snapshot: %s", err.Error())
+	}
+
+	last2, ok := snapshotStore.LastSnapshot()
+	if !ok {
+		t.Fatalf("expected last snapshot to be valid")
+	}
+
+	validateSnapshot(t, snapshot2, &last2)
+
+	snapshots := snapshotStore.ListSnapshots()
+
+	assert.Len(t, snapshots, 2, "incorrect number of snapshots")
+
+	if err := snapshotStore.Close(); err != nil {
+		t.Fatalf("error closing snapshot store: %s", err.Error())
+	}
+
+	if err := snapshotStore.Open(); err != nil {
+		t.Fatalf("error opening snapshot store: %s", err.Error())
+	}
+
+	last2, ok = snapshotStore.LastSnapshot()
+	if !ok {
+		t.Fatalf("expected last snapshot to be valid")
+	}
+
+	validateSnapshot(t, snapshot2, &last2)
+
+	snapshots = snapshotStore.ListSnapshots()
+
+	assert.Len(t, snapshots, 2, "incorrect number of snapshots")
 }

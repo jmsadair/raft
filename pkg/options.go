@@ -7,7 +7,6 @@ import (
 const (
 	defaultElectionTimeout       = time.Duration(200 * time.Millisecond)
 	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
-	defaultSnapshotInterval      = time.Duration(200 * time.Millisecond)
 	defaultMaxEntriesPerSnapshot = 100
 )
 
@@ -79,20 +78,13 @@ type options struct {
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
 
-	// Minimum snapshot interval in milliseconds. A random time
-	// between snapshotInterval and 2 * snapshotInterval will
-	// be chosen to determine the interval between the servers checks
-	// to see if it needs to snapshot.
-	snapshotInterval time.Duration
-
 	// The maximum number of log entries before a snapshot is triggered.
 	// If the number of log entries since the last snapshot meets or
 	// exceeds maxEntriesPerSnapshot, a snapshot will be taken.
-	maxEntriesPerSnapshot uint64
+	maxEntriesPerSnapshot int
 
-	// Indicates whether raft should attempt to restore from the most recent
-	// snapshot upon initialization.
-	restoreFromSnapshot bool
+	// Indicates whether raft should use snapshots.
+	snapshottingEnabled bool
 
 	// A logger for debugging and important events.
 	logger Logger
@@ -103,12 +95,10 @@ type Option func(options *options) error
 // WithElectionTimeout sets the election timeout for the Raft server.
 //
 // Parameters:
-//
-//	time: A duration representing the election timeout value.
+//   - time: A duration representing the election timeout value.
 //
 // Returns:
-//
-//	An Option function that sets the election timeout in the options.
+//   - Option: An Option function that sets the election timeout in the options.
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
 		options.electionTimeout = time
@@ -119,12 +109,10 @@ func WithElectionTimeout(time time.Duration) Option {
 // WithHeartbeatInterval sets the heartbeat interval for the Raft server.
 //
 // Parameters:
-//
-//	time: A duration representing the heartbeat interval value.
+//   - time: A duration representing the heartbeat interval value.
 //
 // Returns:
-//
-//	An Option function that sets the heartbeat interval in the options.
+//   - Option: An Option function that sets the heartbeat interval in the options.
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		options.heartbeatInterval = time
@@ -132,51 +120,31 @@ func WithHeartbeatInterval(time time.Duration) Option {
 	}
 }
 
-// WithSnapshotInterval sets the snapshot interval for the Raft server.
+// WithMaxLogEntriesPerSnapshot sets the maximum log entries per snapshot for the Raft server.
 //
 // Parameters:
-//
-//	time: A duration representing the snapshot interval value.
-//
-// Returns:
-//
-//	An Option function that sets the snapshot interval in the options.
-func WithSnapshotInterval(time time.Duration) Option {
-	return func(options *options) error {
-		options.snapshotInterval = time
-		return nil
-	}
-}
-
-// WithMaxLogEntries sets the maximum log entries for the Raft server.
-//
-// Parameters:
-//
-//	maxEntriesPerSnapshot: An unsigned integer representing the maximum log entries value.
+//   - maxEntriesPerSnapshot: An unsigned integer representing the maximum log entries value.
 //
 // Returns:
-//
-//	An Option function that sets the maximum log entries in the options.
-func WithMaxLogEntries(maxEntriesPerSnapshot uint64) Option {
+//   - Option: An Option function that sets the maximum log entries in the options.
+func WithMaxLogEntriesPerSnapshot(maxEntriesPerSnapshot int) Option {
 	return func(options *options) error {
 		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
 		return nil
 	}
 }
 
-// WithRestoreFromSnapshot is used to indicate whether the Raft server should attempt to restore
-// from a snapshot upon initialization.
+// WithSnapshotting is used to indicate whether the Raft server should use
+// snapshotting
 //
 // Parameters:
-//
-//	restoreFromSnapshot: A boolean indicating whether to restore from a snapshot.
+//   - snapshottingEnabled: A boolean indicating whether to restore from a snapshot.
 //
 // Returns:
-//
-//	An Option function that sets the restore from snapshot flag in the options.
-func WithRestoreFromSnapshot(restoreFromSnapshot bool) Option {
+//   - Option: An Option function that sets the snapshottingEnabled flag in the options.
+func WithSnapshotting(snaphottingEnabled bool) Option {
 	return func(options *options) error {
-		options.restoreFromSnapshot = restoreFromSnapshot
+		options.snapshottingEnabled = snaphottingEnabled
 		return nil
 	}
 }
@@ -184,12 +152,10 @@ func WithRestoreFromSnapshot(restoreFromSnapshot bool) Option {
 // WithLogger sets the logger used by the Raft server.
 //
 // Parameters:
-//
-//	logger: A Logger implementation for logging messages.
+//   - logger: A Logger implementation for logging messages.
 //
 // Returns:
-//
-//	An Option function that sets the logger in the options.
+//   - Option: An Option function that sets the logger in the options.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
 		options.logger = logger

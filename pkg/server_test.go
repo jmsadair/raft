@@ -1,8 +1,11 @@
 package raft
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,6 +46,8 @@ type TestCluster struct {
 	serverErrors     []string
 	commands         []Command
 	lastApplied      []uint64
+	snapshotting     bool
+	snapshotSize     int
 	mu               sync.Mutex
 	wg               sync.WaitGroup
 }
@@ -60,10 +65,12 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
 	tmpDir := t.TempDir()
+	snapshotting := os.Getenv("SNAPSHOTS") == "true"
+	snapshotSize, _ := strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
 
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
-		snapshotStores[i] = NewSnapshotStorageMock()
+		snapshotStores[i] = NewPersistentSnapshotStorage(tmpDir+fmt.Sprintf("/raft-snapshots-%d", i), new(ProtoSnapshotEncoder), new(ProtoSnapshotDecoder))
 		stateMachines[i] = NewStateMachineMock()
 		logs[i] = NewPersistentLog(tmpDir+fmt.Sprintf("/raft-log-%d", i), new(ProtoLogEncoder), new(ProtoLogDecoder))
 		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), new(ProtoStorageEncoder), new(ProtoStorageDecoder))
@@ -72,10 +79,12 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		id := peers[0][i].Id()
 		address := peers[0][i].Address()
 
-		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i])
+		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i],
+			WithSnapshotting(snapshotting), WithMaxLogEntriesPerSnapshot(snapshotSize))
 		if err != nil {
 			return nil, errors.WrapError(err, "error creating cluster server: %s", err.Error())
 		}
+
 		servers[i] = server
 	}
 
@@ -93,6 +102,8 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		serverErrors:     serverErrors,
 		lastApplied:      lastApplied,
 		shutdownCh:       make(chan interface{}),
+		snapshotting:     snapshotting,
+		snapshotSize:     snapshotSize,
 	}, nil
 }
 
@@ -223,12 +234,37 @@ func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
 
 	expectedIndex := tc.lastApplied[index] + 1
 	if response.Index != expectedIndex {
-		tc.serverErrors[index] = fmt.Sprintf("command applied out of order: expected index %d, got index %d",
-			expectedIndex, response.Index)
+		tc.serverErrors[index] = fmt.Sprintf("server %d applied command out of order: expected index %d, got index %d",
+			index, expectedIndex, response.Index)
+		return
 	}
 
 	tc.commandResponses[index][response.Index] = response
 	tc.lastApplied[index]++
+}
+
+func (tc *TestCluster) checkSnapshot(index int, response CommandResponse) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	if response.Snapshot.LastIncludedIndex <= tc.lastApplied[index] {
+		tc.serverErrors[index] = fmt.Sprintf("server %d applied command out of order: expected index %d, got index %d",
+			index, tc.lastApplied[index]+1, response.Snapshot.LastIncludedIndex)
+	}
+
+	var appliedCommands []AppliedCommand
+	data := bytes.NewBuffer(response.Snapshot.Data)
+	dec := gob.NewDecoder(data)
+	if err := dec.Decode(&appliedCommands); err != nil {
+		tc.serverErrors[index] = fmt.Sprintf("failed to decode commands: %s", err)
+		return
+	}
+
+	for _, command := range appliedCommands {
+		tc.commandResponses[index][command.Index] = CommandResponse{Index: command.Index, Term: command.Term, Command: command.Command}
+	}
+
+	tc.lastApplied[index] = response.Snapshot.LastIncludedIndex
 }
 
 func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
@@ -259,7 +295,11 @@ func (tc *TestCluster) applyLoop(index int) {
 	defer tc.wg.Done()
 
 	for response := range tc.replicateCh[index] {
-		tc.checkLogs(index, response)
+		if response.IsSnapshot {
+			tc.checkSnapshot(index, response)
+		} else {
+			tc.checkLogs(index, response)
+		}
 	}
 }
 
@@ -279,14 +319,20 @@ func (tc *TestCluster) restartServer(serverID string) {
 	tc.replicateCh[index] = make(chan CommandResponse)
 	tc.stateMachines[index] = NewStateMachineMock()
 
-	newServer, err := NewProtobufServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index],
-		tc.snapshotStores[index], tc.stateMachines[index], address, tc.replicateCh[index])
+	newServer, err := NewProtobufServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index], tc.snapshotStores[index],
+		tc.stateMachines[index], address, tc.replicateCh[index], WithSnapshotting(tc.snapshotting), WithMaxLogEntriesPerSnapshot(tc.snapshotSize))
 	if err != nil {
 		tc.t.Fatalf("error restarting cluster server: %s", err.Error())
 	}
 
+	if tc.snapshotting {
+		snapshot, _ := tc.snapshotStores[index].LastSnapshot()
+		tc.lastApplied[index] = snapshot.LastIncludedIndex
+	} else {
+		tc.lastApplied[index] = 0
+	}
+
 	tc.servers[index] = newServer
-	tc.lastApplied[index] = 0
 	tc.commandResponses[index] = make(map[uint64]CommandResponse)
 
 	tc.wg.Add(1)
@@ -469,7 +515,7 @@ func TestMultipleSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := cluster.makeCommands(100)
+	commands := cluster.makeCommands(200)
 	for _, command := range commands {
 		cluster.submit(command, false, false, 5)
 	}
@@ -669,14 +715,14 @@ func TestCrashRejoin(t *testing.T) {
 
 	// Wait for a leader and submit some commands.
 	leader := cluster.checkLeaders(false)
-	commands := cluster.makeCommands(50)
+	commands := cluster.makeCommands(200)
 	for i := 0; i < 25; i++ {
 		cluster.submit(commands[i], false, false, 5)
 	}
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
-	for i := 25; i < 40; i++ {
+	for i := 25; i < 150; i++ {
 		cluster.submit(commands[i], true, false, 4)
 	}
 
@@ -684,7 +730,7 @@ func TestCrashRejoin(t *testing.T) {
 	// committing commands.
 	cluster.restartServer(leader)
 	cluster.checkLeaders(false)
-	for i := 40; i < len(commands); i++ {
+	for i := 150; i < len(commands); i++ {
 		cluster.submit(commands[i], true, false, 5)
 	}
 }
@@ -731,6 +777,71 @@ func TestMultiCrash(t *testing.T) {
 
 	// See if we can commit commands in the face of multiple crashes.
 	commands := cluster.makeCommands(300)
+	for _, command := range commands {
+		cluster.submit(command, true, false, 3)
+	}
+
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
+}
+
+// TestDisconnectCrashPartition checks whether the cluster can still
+// make progress when there are disconnections, crashes, and partitions.
+func TestDisconnectCrashPartition(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	// A go routine to crash, disconnect, and partition random servers every so often.
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	failureRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+			action := util.RandomInt(0, 3)
+			switch action {
+			// Crash a single server.
+			case 0:
+				crash := util.RandomInt(0, 5)
+				id := fmt.Sprint(crash)
+				cluster.crashServer(id)
+				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.restartServer(id)
+			// Disconnect a single server.
+			case 1:
+				disconnect := util.RandomInt(0, 5)
+				id := fmt.Sprint(disconnect)
+				cluster.DisconnectServerTwoWay(id)
+				randomTime = util.RandomTimeout(200*time.Millisecond, 400*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.reconnectAllServers()
+			// Partition the servers into two separate groups.
+			case 2:
+				cluster.createPartition()
+				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.reconnectAllServers()
+			}
+		}
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// Start causing failures.
+	wg.Add(1)
+	go failureRoutine()
+
+	// See if we can commit commands in the face of random network and server failures.
+	// Submit enough commands to ensure that a variety of failures occur.
+	commands := cluster.makeCommands(500)
 	for _, command := range commands {
 		cluster.submit(command, true, false, 3)
 	}

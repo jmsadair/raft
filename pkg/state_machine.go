@@ -6,10 +6,12 @@ type StateMachine interface {
 	//
 	// Parameters:
 	//     - command: The command to apply to the state machine.
+	//	   - index: the log index associated with the command.
+	//     - term: the term associated with the command.
 	//
 	// Returns:
 	//     - interface{}: The result of applying the command to the state machine.
-	Apply(command []byte) interface{}
+	Apply(command []byte, index uint64, term uint64) interface{}
 
 	// Snapshot returns a snapshot of the current state of the state machine.
 	// The returned bytes must be serialized in a way that the Restore function can understand.

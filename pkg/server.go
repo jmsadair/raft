@@ -144,7 +144,7 @@ func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) 
 }
 
 // AppendEntries handles the AppendEntries gRPC request.
-// It converts the request to the internal representation, invokes the AppendEntries method on the Raft instance,
+// It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.
 //
 // Parameters:
@@ -164,7 +164,7 @@ func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEn
 }
 
 // RequestVote handles the RequestVote gRPC request.
-// It converts the request to the internal representation, invokes the RequestVote method on the Raft instance,
+// It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
 // and returns the response.
 //
 // Parameters:
@@ -184,7 +184,8 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 }
 
 // InstallSnapshot handles the InstallSnapshot gRPC request.
-// This method is not implemented and always returns a nil response.
+// It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
+// and returns the response.
 //
 // Parameters:
 //   - ctx: The context of the gRPC request.
@@ -194,5 +195,10 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 //   - *pb.InstallSnapshotResponse: The InstallSnapshotResponse to be sent back to the client.
 //   - error: An error if handling the request fails.
 func (s *ProtobufServer) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
-	return nil, nil
+	installSnapshotRequest := makeInstallSnapshotRequest(request)
+	installSnapshotResponse := &InstallSnapshotResponse{}
+	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
+		return nil, err
+	}
+	return makeProtoInstallSnapshotResponse(*installSnapshotResponse), nil
 }

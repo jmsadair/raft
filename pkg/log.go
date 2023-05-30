@@ -65,6 +65,21 @@ type Log interface {
 	//     - error: An error if truncating the log fails.
 	Truncate(index uint64) error
 
+	// Discard deletes all in-memory and persistent data in the
+	// log and returns a new empty log where the starting index
+	// is the provided index and the starting term is the provided
+	// term. The new log is located at the same path and is ready for
+	// operations immediantly. Primarily intended to be used for snapshotting.
+	//
+	// Paramaters:
+	//     - index: the index that the log will start at.
+	//     - term: the term the log will start at.
+	//
+	// Returns:
+	//     - Log: A new, empty log that starts at the provided index and term.
+	//	   - error: An error if discarding the log fails.
+	Discard(index uint64, term uint64) (Log, error)
+
 	// Compact deletes all log entries with index less than
 	// or equal to the provided index.
 	//
@@ -342,6 +357,37 @@ func (l *PersistentLog) Compact(index uint64) error {
 	l.entries = newEntries
 
 	return nil
+}
+
+func (l *PersistentLog) Discard(index uint64, term uint64) (Log, error) {
+	if l.file == nil {
+		return nil, fmt.Errorf("log is not open")
+	}
+
+	newLogFile, err := os.CreateTemp("", "raft-log")
+	if err != nil {
+		return nil, err
+	}
+
+	writer := bufio.NewWriter(newLogFile)
+	entry := &LogEntry{index: index, term: term}
+	if err := l.logEncoder.Encode(writer, entry); err != nil {
+		return nil, err
+	}
+	if err := writer.Flush(); err != nil {
+		return nil, err
+	}
+
+	newLogFile.Sync()
+
+	if err := os.Rename(newLogFile.Name(), l.path); err != nil {
+		return nil, err
+	}
+
+	l.file = newLogFile
+	l.entries = []*LogEntry{entry}
+
+	return l, nil
 }
 
 func (l *PersistentLog) LastTerm() uint64 {

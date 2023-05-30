@@ -1,30 +1,65 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
 name: Format
 
 on:
   push:
-    branches: [ "dev" ]
   pull_request:
-    branches: [ "dev" ]
 
 jobs:
   report:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Install clang-format
-        run: sudo apt install clang-format
-      - name: Format .proto files
-        run: clang-format -i internal/protobuf/*.proto
-      - name: Check for modified files
-        id: git-check
-        run: echo ::set-output name=modified::$(if [ -n "$(git status --porcelain)" ]; then echo "true"; else echo "false"; fi)
-      - name: Commit clang-format changes
-        if: steps.git-check.outputs.modified == 'true'
+      - name: Set Git Config
         run: |
           git config --global user.name 'James Adair'
           git config --global user.email 'jmsadair@gmail.com'
+
+      - name: Install clang-format
+        run: sudo apt install -y clang-format
+
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Format .proto files
+        run: clang-format -i internal/protobuf/*.proto
+
+      - name: Check for modified .proto files
+        id: git-check-1
+        run: |
+          if [[ $(git diff --name-only) == *".proto"* ]]; then
+            echo "MODIFIED=true" >> $GITHUB_OUTPUT
+          else
+            echo "MODIFIED=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check output
+        run: echo "Modified is ${{ steps.git-check-1.outputs.MODIFIED }}"
+
+      - name: Commit clang-format changes
+        if: steps.git-check-1.outputs.MODIFIED == 'true'
+        run: |
           git commit -am "Committing clang-format changes"
           git push
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: 1.19
+
+      - name: Format Go code
+        run: go fmt ./...
+      
+      - name: Check for modified .go files
+        id: git-check-2
+        run: |
+          if [[ $(git diff --name-only) == *".go"* ]]; then
+            echo "MODIFIED=true" >> $GITHUB_OUTPUT
+          else
+            echo "MODIFIED=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit go fmt changes
+        if: steps.git-check-2.outputs.MODIFIED == 'true'
+        run: |
+          git commit -am "Committing go fmt changes"
+          git push
+

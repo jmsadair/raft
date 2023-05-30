@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	errNoConn = "no connection established with peer %s"
+	errNoConn = "no connection established with peer: ID = %s"
 )
 
 // Peer is an interface representing a component responsible for establishing a connection
@@ -76,6 +76,17 @@ type Peer interface {
 	//     - error: An error if sending the request fails.
 	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
 
+	// InstallSnapshot sends a InstallSnapshotRequest to the peer and returns a InstallSnapshotResponse and an error
+	// if the request was unsuccessful.
+	//
+	// Parameters:
+	//	   - request: The InstallSnapshotRequest to be sent.
+	//
+	// Returns:
+	//     - InstallSnapshotResponse: The response recieved from the peer.
+	//     - error: An error if sending the request fails.
+	InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error)
+
 	// SetNextIndex sets the next log index associated with the peer.
 	//
 	// Parameters:
@@ -104,13 +115,25 @@ type Peer interface {
 // ProtobufPeer is an implementation of Peer that is responsible for establishing
 // a connection with a server using protobuf.
 type ProtobufPeer struct {
-	id         string
-	address    net.Addr
-	nextIndex  uint64
+	// The ID of this peer.
+	id string
+
+	// The network address of this peer.
+	address net.Addr
+
+	// The index of the next log entry this peer expects.
+	nextIndex uint64
+
+	// The highest index log entry that matches with leader.
 	matchIndex uint64
-	conn       *grpc.ClientConn
-	client     pb.RaftClient
-	mu         sync.Mutex
+
+	// The gRPC client connection to communicate with the peer.
+	conn *grpc.ClientConn
+
+	// The gRPC client for making Raft protocol calls to the peer.
+	client pb.RaftClient
+
+	mu sync.Mutex
 }
 
 // NewProtobufPeer creates a new instance of a ProtobufPeer.
@@ -187,7 +210,7 @@ func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntrie
 	pbRequest := makeProtoAppendEntriesRequest(request)
 	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, err
+		return AppendEntriesResponse{}, errors.WrapError(err, "failed to invoke AppendEntries RPC on peer: %s", err.Error())
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -204,10 +227,27 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 	pbRequest := makeProtoRequestVoteRequest(request)
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return RequestVoteResponse{}, err
+		return RequestVoteResponse{}, errors.WrapError(err, "failed to invoke RequestVote RPC on peer: %s", err.Error())
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
+}
+
+func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.client == nil {
+		return InstallSnapshotResponse{}, errors.WrapError(nil, errNoConn, p.id)
+	}
+
+	pbRequest := makeProtoInstallSnapshotRequest(request)
+	pbResponse, err := p.client.InstallSnapshot(context.Background(), pbRequest, []grpc.CallOption{}...)
+	if err != nil {
+		return InstallSnapshotResponse{}, errors.WrapError(err, "failed to invoke InstallSnapshot RPC on peer: %s", err.Error())
+	}
+
+	return makeInstallSnapshotResponse(pbResponse), nil
 }
 
 func (p *ProtobufPeer) SetNextIndex(index uint64) {

@@ -1009,8 +1009,8 @@ func (r *Raft) applyLoop() {
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed. If a snapshot has just been installed,
-		// NO other entries should be applied or sent over the command response channel until the
-		// a response containing the snapshot is sent.
+		// newly committed entries CANNOT be applied or sent over the command response channel
+		// until the a response containing the snapshot is sent over the response channel.
 		for index := r.lastApplied + 1; index <= r.commitIndex && !r.needSnapshotResponse; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {

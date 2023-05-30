@@ -71,11 +71,21 @@ type SnapshotStorage interface {
 // PersistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
 // and persists them to durable storage.
 type PersistentSnapshotStorage struct {
+	// All snapshots that have been saved to this storage. Empty if no snapshots
+	// have been saved or if the snapshot store is not open.
 	snapshots []Snapshot
-	path      string
-	file      *os.File
-	encoder   SnapshotEncoder
-	decoder   SnapshotDecoder
+
+	// The path to the file where the snapshot storage is persisted.
+	path string
+
+	// The file associated with the snapshot storage, nil if snapshot storage is closed.
+	file *os.File
+
+	// The encoder used to encode the snapshots associated with this snapshot storage.
+	encoder SnapshotEncoder
+
+	// The decoder used to decode the snapshots associated with this snapshot storage.
+	decoder SnapshotDecoder
 }
 
 // NewPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage.

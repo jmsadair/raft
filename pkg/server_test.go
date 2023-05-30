@@ -785,6 +785,71 @@ func TestMultiCrash(t *testing.T) {
 	wg.Wait()
 }
 
+// TestDisconnectCrashPartition checks whether the cluster can still
+// make progress when there are disconnections, crashes, and partitions.
+func TestDisconnectCrashPartition(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster, err := newCluster(t, 5)
+	if err != nil {
+		t.Fatalf("error creating new cluster: %s", err.Error())
+	}
+
+	// A go routine to crash, disconnect, and partition random servers every so often.
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	failureRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+			action := util.RandomInt(0, 3)
+			switch action {
+			// Crash a single server.
+			case 0:
+				crash := util.RandomInt(0, 5)
+				id := fmt.Sprint(crash)
+				cluster.crashServer(id)
+				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.restartServer(id)
+			// Disconnect a single server.
+			case 1:
+				disconnect := util.RandomInt(0, 5)
+				id := fmt.Sprint(disconnect)
+				cluster.DisconnectServerTwoWay(id)
+				randomTime = util.RandomTimeout(200*time.Millisecond, 400*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.reconnectAllServers()
+			// Partition the servers into two separate groups.
+			case 2:
+				cluster.createPartition()
+				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				time.Sleep(randomTime * time.Millisecond)
+				cluster.reconnectAllServers()
+			}
+		}
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// Start causing failures.
+	wg.Add(1)
+	go failureRoutine()
+
+	// See if we can commit commands in the face of random network and server failures.
+	// Submit enough commands to ensure that a variety of failures occur.
+	commands := cluster.makeCommands(500)
+	for _, command := range commands {
+		cluster.submit(command, true, false, 3)
+	}
+
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
+}
+
 // TestAllCrash checks that a cluster can still make
 // progress committing commands after all the servers
 // crash and come back online.

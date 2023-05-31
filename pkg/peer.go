@@ -23,11 +23,11 @@ const (
 // Peer is an interface representing a component responsible for establishing a connection
 // with and making RPCs to a Raft server.
 type Peer interface {
-	// Id returns the ID of the peer.
+	// ID returns the ID of the peer.
 	//
 	// Returns:
 	//     - string: The ID of the peer.
-	Id() string
+	ID() string
 
 	// Address returns the network address of the peer.
 	//
@@ -149,7 +149,7 @@ func NewProtobufPeer(id string, address net.Addr) *ProtobufPeer {
 	return &ProtobufPeer{id: id, address: address}
 }
 
-func (p *ProtobufPeer) Id() string {
+func (p *ProtobufPeer) ID() string {
 	return p.id
 }
 

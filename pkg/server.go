@@ -17,7 +17,7 @@ type ProtobufServer struct {
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            RaftServer
+	raft            Server
 	wg              sync.WaitGroup
 }
 

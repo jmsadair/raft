@@ -23,7 +23,8 @@ const (
 	errShutdown                    = "server %s is shutdown"
 )
 
-// The state of a Raft instance.
+// State represents the current state of a Raft server.
+// A Raft server may either be shutdown, the leader, or a follower.
 type State uint32
 
 const (
@@ -74,8 +75,8 @@ type CommandResponse struct {
 	Snapshot Snapshot
 }
 
-// RaftServer represents the consensus module in the replicated state machine architecture.
-type RaftServer interface {
+// Server represents the consensus module in the Raft architecture.
+type Server interface {
 	// Start starts server.
 	//
 	// Returns:
@@ -139,7 +140,7 @@ type RaftServer interface {
 	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
 }
 
-// Raft implements the RaftServer interface.
+// Raft implements the Server interface.
 // This implementation should be used as the underlying logic for an actual server
 // and cannot act as a complete server alone (see ProtobufServer for usage).
 type Raft struct {
@@ -210,7 +211,7 @@ type Raft struct {
 //
 // Parameters:
 //   - id: The ID of the Raft server.
-//   - peers: The list of peers participating in the Raft consensus.
+//   - peers: The list of peers participating in the Raft consensus protocol.
 //   - log: The log implementation for storing and retrieving log entries.
 //   - storage: The storage implementation for persisting Raft state.
 //   - snapshotStorage: The storage implementation for persisting snapshots.
@@ -219,7 +220,7 @@ type Raft struct {
 //   - opts: Optional configuration options for customizing Raft behavior.
 //
 // Returns:
-//   - *Raft: A new instance of the Raft consensus.
+//   - *Raft: A new instance of Raft.
 //   - error: An error if creating the Raft instance fails.
 func NewRaft(
 	id string,
@@ -281,7 +282,7 @@ func NewRaft(
 
 	peerLookup := make(map[string]Peer)
 	for _, peer := range peers {
-		peerLookup[peer.Id()] = peer
+		peerLookup[peer.ID()] = peer
 	}
 
 	raft := &Raft{
@@ -687,7 +688,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 
 func (r *Raft) sendAppendEntries() {
 	for _, peer := range r.peers {
-		if peer.Id() == r.id {
+		if peer.ID() == r.id {
 			continue
 		}
 
@@ -771,7 +772,7 @@ func (r *Raft) sendAppendEntries() {
 
 func (r *Raft) sendRequestVote(votes *int) {
 	for _, peer := range r.peers {
-		if peer.Id() == r.id {
+		if peer.ID() == r.id {
 			continue
 		}
 
@@ -802,7 +803,7 @@ func (r *Raft) sendRequestVote(votes *int) {
 
 			// Increment vote count if vote is granted.
 			if response.voteGranted {
-				*votes += 1
+				*votes++
 			}
 
 			// Become a follower if a peer has a more up-to-date term.
@@ -993,11 +994,11 @@ func (r *Raft) commitLoop() {
 			// If they do, it is safe to commit.
 			matches := 1
 			for _, peer := range r.peers {
-				if peer.Id() == r.id {
+				if peer.ID() == r.id {
 					continue
 				}
 				if peer.MatchIndex() >= index {
-					matches += 1
+					matches++
 				}
 				if r.hasQuorum(matches) {
 					r.commitIndex = index

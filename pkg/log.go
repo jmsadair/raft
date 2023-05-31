@@ -21,6 +21,13 @@ type Log interface {
 	//     - error: An error if opening the log fails.
 	Open() error
 
+	// Replay reads the persisted state of the log into
+	// memory. Log must be open.
+	//
+	// Returns:
+	//     - error: An error if replaying the log fails.
+	Replay() error
+
 	// Close closes the log.
 	//
 	// Returns:
@@ -197,9 +204,13 @@ func (l *PersistentLog) Open() error {
 		return err
 	}
 	l.file = file
+	l.entries = make([]*LogEntry, 0)
+	return nil
+}
 
+func (l *PersistentLog) Replay() error {
 	reader := bufio.NewReader(l.file)
-	entries := make([]*LogEntry, 0)
+
 	for {
 		entry, err := l.logDecoder.Decode(reader)
 		if err == io.EOF {
@@ -208,10 +219,12 @@ func (l *PersistentLog) Open() error {
 		if err != nil {
 			return err
 		}
-		entries = append(entries, &entry)
+		l.entries = append(l.entries, &entry)
 	}
 
-	if len(entries) == 0 {
+	// The log must always contain atleast one entry.
+	// The first entry is a dummy entry used for indexing into the log.
+	if len(l.entries) == 0 {
 		entry := NewLogEntry(0, 0, nil)
 		writer := bufio.NewWriter(l.file)
 		if err := l.logEncoder.Encode(writer, entry); err != nil {
@@ -221,10 +234,9 @@ func (l *PersistentLog) Open() error {
 			return err
 		}
 		l.file.Sync()
-		entries = append(entries, entry)
+		l.entries = append(l.entries, entry)
 	}
 
-	l.entries = entries
 	return nil
 }
 
@@ -301,14 +313,22 @@ func (l *PersistentLog) Truncate(index uint64) error {
 	if logIndex <= 0 || logIndex > lastIndex {
 		return errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
+
+	// The offset of the entry at the provided index is the
+	// new size of the file.
 	size := l.entries[logIndex].offset
+
 	if err := l.file.Truncate(size); err != nil {
 		return err
 	}
+
+	// Update to I/O offset to the new size.
 	if _, err := l.file.Seek(size, io.SeekStart); err != nil {
 		return err
 	}
+
 	l.entries = l.entries[:logIndex]
+
 	return nil
 }
 
@@ -326,11 +346,14 @@ func (l *PersistentLog) Compact(index uint64) error {
 	newEntries := make([]*LogEntry, len(l.entries)-int(logIndex))
 	copy(newEntries[:], l.entries[logIndex:])
 
+	// Create a temporary file to write the compacted log to.
 	compactedFile, err := os.CreateTemp("", "raft-log")
 	if err != nil {
 		return err
 	}
 
+	// Write the entries contained in the compacted log to the
+	// temporary file.
 	writer := bufio.NewWriter(compactedFile)
 	for _, entry := range newEntries {
 		offset, err := compactedFile.Seek(0, io.SeekCurrent)
@@ -349,6 +372,7 @@ func (l *PersistentLog) Compact(index uint64) error {
 
 	compactedFile.Sync()
 
+	// Atomically rename the temporary file to the actual file.
 	if err := os.Rename(compactedFile.Name(), l.path); err != nil {
 		return err
 	}
@@ -364,11 +388,14 @@ func (l *PersistentLog) Discard(index uint64, term uint64) (Log, error) {
 		return nil, fmt.Errorf("log is not open")
 	}
 
+	// Create a temporary file for the new log.
 	newLogFile, err := os.CreateTemp("", "raft-log")
 	if err != nil {
 		return nil, err
 	}
 
+	// Write a dummy entry to the temporary file with the provided
+	// term and index.
 	writer := bufio.NewWriter(newLogFile)
 	entry := &LogEntry{index: index, term: term}
 	if err := l.logEncoder.Encode(writer, entry); err != nil {
@@ -380,6 +407,7 @@ func (l *PersistentLog) Discard(index uint64, term uint64) (Log, error) {
 
 	newLogFile.Sync()
 
+	// Atomically rename the temporary file to the actual file.
 	if err := os.Rename(newLogFile.Name(), l.path); err != nil {
 		return nil, err
 	}

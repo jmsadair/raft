@@ -260,6 +260,11 @@ func NewRaft(
 		return nil, errors.WrapError(err, "failed to open log: %s", err.Error())
 	}
 
+	// Replay the persisted state of the log into memory.
+	if err := log.Replay(); err != nil {
+		return nil, errors.WrapError(err, "failed to replay log: %s", err.Error())
+	}
+
 	peerLookup := make(map[string]Peer)
 	for _, peer := range peers {
 		peerLookup[peer.Id()] = peer

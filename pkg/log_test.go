@@ -16,9 +16,16 @@ func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
 	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
+
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
+
+	defer log.Close()
 
 	var entry1, entry2 *LogEntry
 	var err error
@@ -60,6 +67,10 @@ func TestAppendEntries(t *testing.T) {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
 
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
+
 	defer log.Close()
 
 	entry1, err = log.GetEntry(entry1Index)
@@ -79,9 +90,15 @@ func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
 	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
+
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
+
 	defer log.Close()
 
 	var err error
@@ -125,7 +142,9 @@ func TestTruncate(t *testing.T) {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
 
-	defer log.Close()
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
 
 	entry1, err = log.GetEntry(entry1Index)
 	if err != nil {
@@ -138,9 +157,15 @@ func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
 	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
+
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
+
 	defer log.Close()
 
 	var err error
@@ -197,7 +222,9 @@ func TestCompact(t *testing.T) {
 		t.Fatalf("error opening log: %s", err.Error())
 	}
 
-	defer log.Close()
+	if err := log.Replay(); err != nil {
+		t.Fatalf("error replaying log: %s", err.Error())
+	}
 
 	entry3, err = log.GetEntry(entry3Index)
 	if err != nil {

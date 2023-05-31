@@ -637,11 +637,9 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	// entry at the last included index but its term does not match the last included term, then
 	// discard the log and reset the state machine with the data from the snapshot.
 	if entry == nil || entry.term != request.lastIncludedTerm {
-		newLog, err := r.log.Discard(r.lastIncludedIndex, r.lastIncludedTerm)
-		if err != nil {
-			r.options.logger.Fatalf("server %s failed to discard log: %s", err.Error())
+		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
+			r.options.logger.Fatalf("server %s failed to discard log entries: %s", err.Error())
 		}
-		r.log = newLog
 		if err := r.fsm.Restore(snapshot.Data); err != nil {
 			r.options.logger.Fatalf("server %s failed to reset state machine with snapshot: %s", r.id, err.Error())
 		}

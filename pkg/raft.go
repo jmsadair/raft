@@ -296,6 +296,10 @@ func NewRaft(
 			return nil, errors.WrapError(err, "failed to open snapshot storage: %s", err.Error())
 		}
 
+		if err := snapshotStorage.Replay(); err != nil {
+			return nil, errors.WrapError(err, "failed to replay snapshot storage: %s", err.Error())
+		}
+
 		snapshot, ok := snapshotStorage.LastSnapshot()
 
 		if ok {
@@ -305,7 +309,7 @@ func NewRaft(
 			raft.lastApplied = snapshot.LastIncludedIndex
 
 			if err := raft.fsm.Restore(snapshot.Data); err != nil {
-				return nil, errors.WrapError(err, "failed to restore from snapshot: %s", err.Error())
+				return nil, errors.WrapError(err, "failed to restore state machine from snapshot: %s", err.Error())
 			}
 		}
 	}

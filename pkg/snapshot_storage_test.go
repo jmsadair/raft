@@ -23,6 +23,10 @@ func TestSnapshotStore(t *testing.T) {
 		t.Fatalf("error opening snapshot store: %s", err.Error())
 	}
 
+	if err := snapshotStore.Replay(); err != nil {
+		t.Fatalf("error replaying snapshot store: %s", err.Error())
+	}
+
 	snapshot1 := NewSnapshot(1, 1, []byte("test1"))
 	if err := snapshotStore.SaveSnapshot(snapshot1); err != nil {
 		t.Fatalf("error saving snapshot: %s", err.Error())
@@ -57,6 +61,10 @@ func TestSnapshotStore(t *testing.T) {
 
 	if err := snapshotStore.Open(); err != nil {
 		t.Fatalf("error opening snapshot store: %s", err.Error())
+	}
+
+	if err := snapshotStore.Replay(); err != nil {
+		t.Fatalf("error replaying snapshot store: %s", err.Error())
 	}
 
 	last2, ok = snapshotStore.LastSnapshot()

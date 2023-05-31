@@ -12,7 +12,12 @@ import (
 )
 
 const (
-	errNoConn = "no connection established with peer: ID = %s"
+	errNoConn                = "no connection established with peer: ID = %s"
+	errFailedConnect         = "failed to connect to peer: ID = %s, err = %s"
+	errFailedCloseConnect    = "failed to close connection with peer: ID = %s, err = %s"
+	errFailedAppendEntries   = "failed to invoke AppendEntries RPC on peer: ID = %s, err = %s"
+	errFailedRequestVote     = "failed to invoke RequestVote RPC on peer: ID = %s, err = %s"
+	errFailedInstallSnapshot = "failed to invoke InstallSnapshot RPC on peer: ID = %s, err = %s"
 )
 
 // Peer is an interface representing a component responsible for establishing a connection
@@ -166,7 +171,7 @@ func (p *ProtobufPeer) Connect() error {
 
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
-		return errors.WrapError(err, "failed to connect to peer: %s", err.Error())
+		return errors.WrapError(err, errFailedConnect, p.id, err.Error())
 	}
 
 	p.client = pb.NewRaftClient(conn)
@@ -184,7 +189,7 @@ func (p *ProtobufPeer) Disconnect() error {
 	}
 
 	if err := p.conn.Close(); err != nil {
-		return errors.WrapError(err, "failed to close connection with peer: %s", err.Error())
+		return errors.WrapError(err, errFailedCloseConnect, p.id, err.Error())
 	}
 
 	p.conn = nil
@@ -196,6 +201,7 @@ func (p *ProtobufPeer) Disconnect() error {
 func (p *ProtobufPeer) Connected() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.client != nil
 }
 
@@ -210,7 +216,7 @@ func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntrie
 	pbRequest := makeProtoAppendEntriesRequest(request)
 	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, errors.WrapError(err, "failed to invoke AppendEntries RPC on peer: %s", err.Error())
+		return AppendEntriesResponse{}, errors.WrapError(err, errFailedAppendEntries, p.id, err.Error())
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -227,7 +233,7 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 	pbRequest := makeProtoRequestVoteRequest(request)
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return RequestVoteResponse{}, errors.WrapError(err, "failed to invoke RequestVote RPC on peer: %s", err.Error())
+		return RequestVoteResponse{}, errors.WrapError(err, errFailedRequestVote, p.id, err.Error())
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
@@ -244,7 +250,7 @@ func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallS
 	pbRequest := makeProtoInstallSnapshotRequest(request)
 	pbResponse, err := p.client.InstallSnapshot(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return InstallSnapshotResponse{}, errors.WrapError(err, "failed to invoke InstallSnapshot RPC on peer: %s", err.Error())
+		return InstallSnapshotResponse{}, errors.WrapError(err, errFailedInstallSnapshot, p.id, err.Error())
 	}
 
 	return makeInstallSnapshotResponse(pbResponse), nil
@@ -253,23 +259,27 @@ func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallS
 func (p *ProtobufPeer) SetNextIndex(index uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	p.nextIndex = index
 }
 
 func (p *ProtobufPeer) NextIndex() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.nextIndex
 }
 
 func (p *ProtobufPeer) SetMatchIndex(index uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	p.matchIndex = index
 }
 
 func (p *ProtobufPeer) MatchIndex() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	return p.matchIndex
 }

@@ -1,14 +1,27 @@
 package raft
 
 import (
-	"errors"
 	"io"
 	"os"
+
+	"github.com/jmsadair/raft/internal/errors"
+)
+
+const (
+	errStorageNotOpen              = "storage is not open: path = %s"
+	errFailedStorageOpen           = "failed to open storage file: path = %s, err = %s"
+	errFailedPersistentStateEncode = "storage failed to encode persistent state: %s"
+	errFailedPeristentStateDecode  = "storage failed to decode persistent state: %s"
+	errFailedStorageSync           = "failed to sync storage file: %s"
+	errFailedStorageFlush          = "failed flushing data from storage file writer: %s"
+	errFailedStorageClose          = "failed to close storage file: path = %s, err = %s"
+	errFailedStorageCreateTempFile = "failed to create temporary storage file: %s"
+	errFailedStorageRename         = "failed to rename temporary storage file: %s"
 )
 
 // Storage is an interface representing a storage object that can persist state.
 type Storage interface {
-	// Open opens the storage for persisting state. Open must be called before calling SetState or GetState.
+	// Open opens the storage for reading and writing persisting state.
 	//
 	// Returns:
 	//     - error: An error if opening the storage fails, or nil otherwise.
@@ -20,7 +33,7 @@ type Storage interface {
 	//     - error: An error if closing the storage fails, or nil otherwise.
 	Close() error
 
-	// SetState persists the provided state in the storage.
+	// SetState persists the provided state in the storage. Storage must be open.
 	//
 	// Parameters:
 	//     - persistentState: The state to be persisted.
@@ -29,7 +42,7 @@ type Storage interface {
 	//     - error: An error if persisting the state fails, or nil otherwise.
 	SetState(persistentState *PersistentState) error
 
-	// GetState recovers the state from the storage.
+	// GetState recovers the state from the storage. Storage must be open.
 	//
 	// Returns:
 	//     - PersistentState: The recovered state.
@@ -76,7 +89,7 @@ func NewPersistentStorage(path string, storageEncoder StorageEncoder, storageDec
 func (p *PersistentStorage) Open() error {
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0777)
 	if err != nil {
-		return err
+		return errors.WrapError(err, errFailedStorageOpen, p.path, err.Error())
 	}
 	p.file = file
 	return nil
@@ -84,30 +97,36 @@ func (p *PersistentStorage) Open() error {
 
 func (p *PersistentStorage) Close() error {
 	if p.file == nil {
-		return errors.New("storage already closed")
+		return nil
 	}
-	return p.file.Close()
+	if err := p.file.Close(); err != nil {
+		return errors.WrapError(err, errFailedStorageClose, p.path, err.Error())
+	}
+	return nil
 }
 
 func (p *PersistentStorage) SetState(persistentState *PersistentState) error {
 	// Create a temporary file that will replace the file currently associated with storage.
 	tmpFile, err := os.CreateTemp("", "persistent-storage")
 	if err != nil {
-		return err
+		return errors.WrapError(err, errFailedStorageCreateTempFile, err.Error())
 	}
 
 	// Write the new state to the temporary file.
 	writer := io.Writer(tmpFile)
 	if err := p.storageEncoder.Encode(writer, persistentState); err != nil {
-		return err
+		return errors.WrapError(err, errFailedPersistentStateEncode, err.Error())
 	}
-	tmpFile.Sync()
+	if err := tmpFile.Sync(); err != nil {
+		return errors.WrapError(err, errFailedStorageSync, err.Error())
+	}
 
 	// Perform atomic rename to swap the newly persisted state with the old.
 	oldFile := p.file
 	if err := os.Rename(tmpFile.Name(), p.path); err != nil {
-		return err
+		return errors.WrapError(err, errFailedStorageRename, err.Error())
 	}
+
 	p.file = tmpFile
 
 	// Close the previous file.
@@ -122,7 +141,7 @@ func (p *PersistentStorage) GetState() (PersistentState, error) {
 	persistentState, err := p.storageDecoder.Decode(reader)
 
 	if err != nil && err != io.EOF {
-		return persistentState, err
+		return persistentState, errors.WrapError(err, errFailedPeristentStateDecode, err.Error())
 	}
 
 	return persistentState, nil

@@ -24,8 +24,8 @@ func makeProtobufPeers(numServers int) [][]*ProtobufPeer {
 		clusterPeers[i] = make([]*ProtobufPeer, numServers)
 		for j := 0; j < numServers; j++ {
 			ip := fmt.Sprintf("127.0.0.%d", j)
-			peerId := fmt.Sprint(j)
-			clusterPeers[i][j] = NewProtobufPeer(peerId, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
+			peerID := fmt.Sprint(j)
+			clusterPeers[i][j] = NewProtobufPeer(peerID, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
 		}
 	}
 
@@ -76,7 +76,7 @@ func newCluster(t *testing.T, numServers int) (*TestCluster, error) {
 		stores[i] = NewPersistentStorage(tmpDir+fmt.Sprintf("/raft-storage-%d", i), new(ProtoStorageEncoder), new(ProtoStorageDecoder))
 		responses[i] = make(map[uint64]CommandResponse)
 
-		id := peers[0][i].Id()
+		id := peers[0][i].ID()
 		address := peers[0][i].Address()
 
 		server, err := NewProtobufServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i],

@@ -75,72 +75,7 @@ type CommandResponse struct {
 	Snapshot Snapshot
 }
 
-// Server represents the consensus module in the Raft architecture.
-type Server interface {
-	// Start starts server.
-	//
-	// Returns:
-	//     - error: An error if starting the server fails.
-	Start() error
-
-	// Stop stops the server.
-	//
-	// Returns:
-	//     - error: An error if stopping the server  fails.
-	Stop() error
-
-	// SubmitCommand accepts a command from a client for replication and
-	// returns the log index assigned to the command, the term assigned to the
-	// command, and an error if this server is not the leader. Note that submitting
-	// a command for replication does not guarantee replication if there are failures.
-	//
-	// Parameters:
-	//     - command: The command to be submitted for replication.
-	//
-	// Returns:
-	//     - uint64: The log index assigned to the command.
-	//     - uint64: The term assigned to the command.
-	//     - error: An error if this server is not the leader.
-	SubmitCommand(command Command) (uint64, uint64, error)
-
-	// Status returns the current status of the server.
-	//
-	// Returns:
-	//     - Status: The current status of this server.
-	Status() Status
-
-	// AppendEntries is invoked by the leader to replicate log entries.
-	//
-	// Parameters:
-	//     - request: The AppendEntriesRequest containing log entries to replicate.
-	//     - response: The AppendEntriesResponse to be filled with the result.
-	//
-	// Returns:
-	//     - error: An error if replicating log entries fails.
-	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
-
-	// RequestVote is invoked by the candidate server to gather a vote from this server.
-	//
-	// Parameters:
-	//     - request: The RequestVoteRequest containing the candidate's information.
-	//     - response: The RequestVoteResponse to be filled with the vote result.
-	//
-	// Returns:
-	//     - error: An error if the voting process fails.
-	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
-
-	// InstallSnapshot is invoked by the leader to send a snapshot to a follower.
-	//
-	// Parameters:
-	//     - request: The InstallSnapshotRequest containing the leader's data.
-	//     - response: The InstallSnapshotResponse to be filled with the follower's term.
-	//
-	// Returns:
-	//     - error: An error if the snapshot installation process fails.
-	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
-}
-
-// Raft implements the Server interface.
+// Raft implements the consensus module in the Raft architecture.
 // This implementation should be used as the underlying logic for an actual server
 // and cannot act as a complete server alone (see ProtobufServer for usage).
 type Raft struct {
@@ -207,21 +142,7 @@ type Raft struct {
 	mu sync.Mutex
 }
 
-// NewRaft creates a new instance of Raft.
-//
-// Parameters:
-//   - id: The ID of the Raft server.
-//   - peers: The list of peers participating in the Raft consensus protocol.
-//   - log: The log implementation for storing and retrieving log entries.
-//   - storage: The storage implementation for persisting Raft state.
-//   - snapshotStorage: The storage implementation for persisting snapshots.
-//   - fsm: The state machine implementation for applying commands.
-//   - responseCh: The channel for receiving command responses.
-//   - opts: Optional configuration options for customizing Raft behavior.
-//
-// Returns:
-//   - *Raft: A new instance of Raft.
-//   - error: An error if creating the Raft instance fails.
+// NewRaft creates a new instance of Raft that is configured with the provided options.
 func NewRaft(
 	id string,
 	peers []Peer,
@@ -332,6 +253,7 @@ func NewRaft(
 	return raft, nil
 }
 
+// Start starts the Raft instance.
 func (r *Raft) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -340,8 +262,7 @@ func (r *Raft) Start() error {
 		return nil
 	}
 
-	// Do not return an error for failed connections. Connection to peers is not
-	// required to start.
+	// Do not return an error for failed connections. Connection to peers is not required to start.
 	for _, peer := range r.peers {
 		if err := peer.Connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
@@ -363,6 +284,7 @@ func (r *Raft) Start() error {
 	return nil
 }
 
+// Stop stops the Raft instance.
 func (r *Raft) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -371,8 +293,7 @@ func (r *Raft) Stop() error {
 		return nil
 	}
 
-	// Indicate shutdown state and notify commit loop and apply loop
-	// so that they can return.
+	// Indicate shutdown state and notify commit loop and apply loop so that they can return.
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
@@ -383,8 +304,7 @@ func (r *Raft) Stop() error {
 
 	close(r.commandResponseCh)
 
-	// Do not return an error for failed disconnections. Disconnection from peers
-	// is not required to stop.
+	// Do not return an error for failed disconnections. Disconnection from peers is not required to stop.
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
 			r.options.logger.Errorf("server %s failed to disconnect from peer: %s", r.id, err.Error())
@@ -410,6 +330,10 @@ func (r *Raft) Stop() error {
 	return nil
 }
 
+// SubmitCommand accepts a command from a client for replication and
+// returns the log index assigned to the command, the term assigned to the
+// command, and an error if this server is not the leader. Note that submitting
+// a command for replication does not guarantee replication if there are failures.
 func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -440,6 +364,7 @@ func (r *Raft) Status() Status {
 	}
 }
 
+// AppendEntries is invoked by the leader to replicate log entries.
 func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -550,6 +475,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	r.log.AppendEntries(toAppend)
 
+	// Update the commit index.
 	if request.leaderCommit > r.commitIndex {
 		r.commitIndex = util.Min(request.leaderCommit, r.log.LastIndex())
 		r.applyCond.Broadcast()
@@ -558,6 +484,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
+// RequestVote is invoked by the candidate server to gather a vote from this server.
 func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -601,13 +528,16 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	}
 
 	r.lastContact = time.Now()
-	r.votedFor = request.candidateID
 	response.voteGranted = true
+
+	// Update this server's vote and write it to disk.
+	r.votedFor = request.candidateID
 	r.persistTermAndVote()
 
 	return nil
 }
 
+// InstallSnapshot is invoked by the leader to send a snapshot to a follower.
 func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1052,10 +982,9 @@ func (r *Raft) applyLoop() {
 			}
 
 			response := CommandResponse{
-				Index:    entry.index,
-				Term:     entry.term,
-				Command:  entry.data,
-				Response: r.fsm.Apply(entry.data, entry.index, entry.term),
+				Index:   entry.index,
+				Term:    entry.term,
+				Command: entry.data,
 			}
 
 			r.lastApplied++
@@ -1068,6 +997,7 @@ func (r *Raft) applyLoop() {
 			// Warning: do not hold locks when sending on the response channel. May deadlock
 			// if the client is not listening.
 			r.mu.Unlock()
+			response.Response = r.fsm.Apply(response.Command, response.Index, response.Term)
 			r.commandResponseCh <- response
 			r.mu.Lock()
 

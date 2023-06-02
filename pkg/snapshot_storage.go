@@ -28,15 +28,8 @@ type Snapshot struct {
 	Data []byte
 }
 
-// NewSnapshot creates a new Snapshot instance with the provided values.
-//
-// Parameters:
-//   - lastIncludedIndex: The last index included in the snapshot.
-//   - lastIncludedTerm: The last term included in the snapshot.
-//   - data: The state data of the replicated state machine.
-//
-// Returns:
-//   - *Snapshot: A pointer to the created Snapshot instance.
+// NewSnapshot creates a new Snapshot instance with the provided state data
+// from the replicated state machine.
 func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) *Snapshot {
 	return &Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: data}
 }
@@ -44,44 +37,22 @@ func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte)
 // SnapshotStorage is an interface representing a component responsible for managing snapshots.
 type SnapshotStorage interface {
 	// Open opens the snapshot storage for reading and writing snapshots.
-	//
-	// Returns:
-	//     - error: An error if opening the snapshot storage fails.
 	Open() error
 
 	// Replay reads the persisted state of the snapshot store
 	// into memory.
-	//
-	// Returns:
-	//     - error: An error if replaying the snapshot store fails.
 	Replay() error
 
 	// Close closes the snapshot storage.
-	//
-	// Returns:
-	// 	   - error: An error if the closing the snapshot storage fails.
 	Close() error
 
 	// LastSnapshot gets the most recently saved snapshot, if it exists.
-	//
-	// Returns:
-	//     - Snapshot: The most recently saved snapshot.
-	//     - bool: True if the snapshot is valid and false otherwise.
 	LastSnapshot() (Snapshot, bool)
 
 	// SaveSnapshot saves the provided snapshot to durable storage.
-	//
-	// Parameters:
-	//     - snapshot: The snapshot to be saved.
-	//
-	// Returns:
-	//     - error: An error if saving the snapshot fails, or nil otherwise.
 	SaveSnapshot(snapshot *Snapshot) error
 
 	// ListSnapshots returns an array of the snapshots that have been saved.
-	//
-	// Returns:
-	//     - []Snapshot: An array of the saved snapshots.
 	ListSnapshots() []Snapshot
 }
 
@@ -105,15 +76,9 @@ type PersistentSnapshotStorage struct {
 	decoder SnapshotDecoder
 }
 
-// NewPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage.
-//
-// Parameters:
-//   - path: The path to the file where snapshots will be stored.
-//   - encoder: The SnapshotEncoder implementation for encoding snapshots.
-//   - decoder: The SnapshotDecoder implementation for decoding snapshots.
-//
-// Returns:
-//   - *PersistentSnapshotStorage: A new instance of PersistentSnapshotStorage.
+// NewPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage at the
+// provided path. Snapshots will be encoded using the provided SnapshotEncoder, and decoded
+// using the provided SnapshotDecoder.
 func NewPersistentSnapshotStorage(path string, encoder SnapshotEncoder, decoder SnapshotDecoder) *PersistentSnapshotStorage {
 	return &PersistentSnapshotStorage{path: path, encoder: encoder, decoder: decoder}
 }

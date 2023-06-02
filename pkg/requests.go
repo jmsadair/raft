@@ -104,12 +104,6 @@ type Status struct {
 }
 
 // makeProtoEntries converts an array of LogEntry instances to an array of protobuf LogEntry instances.
-//
-// Parameters:
-//   - entries: An array of LogEntry instances to convert.
-//
-// Returns:
-//   - []*pb.LogEntry: An array of protobuf LogEntry instances.
 func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 	protoEntries := make([]*pb.LogEntry, len(entries))
 	for i, entry := range entries {
@@ -120,12 +114,6 @@ func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 }
 
 // makeProtoRequestVoteRequest converts a RequestVoteRequest instance to a protobuf RequestVoteRequest instance.
-//
-// Parameters:
-//   - request: The RequestVoteRequest instance to convert.
-//
-// Returns:
-//   - *pb.RequestVoteRequest: The converted protobuf RequestVoteRequest instance.
 func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequest {
 	return &pb.RequestVoteRequest{
 		CandidateId:  request.candidateID,
@@ -136,12 +124,6 @@ func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequ
 }
 
 // makeRequestVoteResponse converts a protobuf RequestVoteResponse instance to a RequestVoteResponse instance.
-//
-// Parameters:
-//   - response: The protobuf RequestVoteResponse instance to convert.
-//
-// Returns:
-//   - RequestVoteResponse: The converted RequestVoteResponse instance.
 func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteResponse {
 	return RequestVoteResponse{
 		term:        response.GetTerm(),
@@ -150,12 +132,6 @@ func makeRequestVoteResponse(response *pb.RequestVoteResponse) RequestVoteRespon
 }
 
 // makeProtoAppendEntriesRequest converts an AppendEntriesRequest instance to a protobuf AppendEntriesRequest instance.
-//
-// Parameters:
-//   - request: The AppendEntriesRequest instance to convert.
-//
-// Returns:
-//   - *pb.AppendEntriesRequest: The converted protobuf AppendEntriesRequest instance.
 func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntriesRequest {
 	return &pb.AppendEntriesRequest{
 		LeaderId:     request.leaderID,
@@ -168,12 +144,6 @@ func makeProtoAppendEntriesRequest(request AppendEntriesRequest) *pb.AppendEntri
 }
 
 // makeAppendEntriesResponse converts a protobuf AppendEntriesResponse instance to an AppendEntriesResponse instance.
-//
-// Parameters:
-//   - response: The protobuf AppendEntriesResponse instance to convert.
-//
-// Returns:
-//   - AppendEntriesResponse: The converted AppendEntriesResponse instance.
 func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntriesResponse {
 	return AppendEntriesResponse{
 		success: response.GetSuccess(),
@@ -183,12 +153,6 @@ func makeAppendEntriesResponse(response *pb.AppendEntriesResponse) AppendEntries
 }
 
 // makeProtoInstallSnapshotRequest converts an InstallSnapshotRequest instance to a protobuf InstallSnapshotRequest instance.
-//
-// Parameters:
-//   - request: The InstallSnapshotRequest instance to convert.
-//
-// Returns:
-//   - *pb.InstallSnapshotRequest: The converted protobuf InstallSnapshotRequest instance.
 func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.InstallSnapshotRequest {
 	return &pb.InstallSnapshotRequest{
 		Leader:            request.leaderID,
@@ -200,12 +164,6 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 }
 
 // makeInstallSnapshotResponse converts an protobuf InstallSnapshotResponse instance to a InstallSnapshotResponse instance.
-//
-// Parameters:
-//   - response: The protobuf InstallSnapshotResponse instance to convert.
-//
-// Returns:
-//   - InstallSnapshotResponse: The converted InstallSnapshotResponse instance.
 func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSnapshotResponse {
 	return InstallSnapshotResponse{
 		term: response.GetTerm(),
@@ -213,12 +171,6 @@ func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSn
 }
 
 // makeEntries converts an array of protobuf LogEntry instances to an array of LogEntry instances.
-//
-// Parameters:
-//   - protoEntries: An array of protobuf LogEntry instances to convert.
-//
-// Returns:
-//   - []*LogEntry: An array of LogEntry instances.
 func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
 	entries := make([]*LogEntry, len(protoEntries))
 	for i, protoEntry := range protoEntries {
@@ -229,12 +181,6 @@ func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
 }
 
 // makeRequestVoteRequest converts a protobuf RequestVoteRequest instance to a RequestVoteRequest instance.
-//
-// Parameters:
-//   - request: The protobuf RequestVoteRequest instance to convert.
-//
-// Returns:
-//   - RequestVoteRequest: The converted RequestVoteRequest instance.
 func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
 	return RequestVoteRequest{
 		candidateID:  request.GetCandidateId(),
@@ -245,12 +191,6 @@ func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
 }
 
 // makeProtoRequestVoteResponse converts a RequestVoteResponse instance to a protobuf RequestVoteResponse instance.
-//
-// Parameters:
-//   - response: The RequestVoteResponse instance to convert.
-//
-// Returns:
-//   - *pb.RequestVoteResponse: The converted protobuf RequestVoteResponse instance.
 func makeProtoRequestVoteResponse(response RequestVoteResponse) *pb.RequestVoteResponse {
 	return &pb.RequestVoteResponse{
 		Term:        response.term,
@@ -259,12 +199,6 @@ func makeProtoRequestVoteResponse(response RequestVoteResponse) *pb.RequestVoteR
 }
 
 // makeAppendEntriesRequest converts a protobuf AppendEntriesRequest instance to an AppendEntriesRequest instance.
-//
-// Parameters:
-//   - request: The protobuf AppendEntriesRequest instance to convert.
-//
-// Returns:
-//   - AppendEntriesRequest: The converted AppendEntriesRequest instance.
 func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesRequest {
 	return AppendEntriesRequest{
 		leaderID:     request.GetLeaderId(),
@@ -277,12 +211,6 @@ func makeAppendEntriesRequest(request *pb.AppendEntriesRequest) AppendEntriesReq
 }
 
 // makeProtoAppendEntriesResponse converts an AppendEntriesResponse instance to a protobuf AppendEntriesResponse instance.
-//
-// Parameters:
-//   - response: The AppendEntriesResponse instance to convert.
-//
-// Returns:
-//   - *pb.AppendEntriesResponse: The converted protobuf AppendEntriesResponse instance.
 func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEntriesResponse {
 	return &pb.AppendEntriesResponse{
 		Success: response.success,
@@ -292,12 +220,6 @@ func makeProtoAppendEntriesResponse(response AppendEntriesResponse) *pb.AppendEn
 }
 
 // makeInstallSnapshotRequest converts a protobuf InstallSnapshotRequest instance to a InstallSnapshotRequest instance.
-//
-// Parameters:
-//   - request: The protobuf InstallSnapshotRequest instance to convert.
-//
-// Returns:
-//   - InstallSnapshotRequest: The converted InstallSnapshotRequest instance.
 func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnapshotRequest {
 	return InstallSnapshotRequest{
 		leaderID:          request.GetLeader(),
@@ -309,12 +231,6 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 }
 
 // makeProtoInstallSnapshotResponse converts an InstallSnapshotResponse instance to a protobuf InstallSnapshotResponse instance.
-//
-// Parameters:
-//   - response: The InstallSnapshotResponse instance to convert.
-//
-// Returns:
-//   - *pb.InstallSnapshotResponse: The converted protobuf InstallSnapshotResponse instance.
 func makeProtoInstallSnapshotResponse(response InstallSnapshotResponse) *pb.InstallSnapshotResponse {
 	return &pb.InstallSnapshotResponse{
 		Term: response.term,

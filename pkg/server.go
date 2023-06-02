@@ -17,27 +17,11 @@ type ProtobufServer struct {
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            Server
+	raft            *Raft
 	wg              sync.WaitGroup
 }
 
 // NewProtobufServer creates a new instance of ProtobufServer.
-// It initializes the ProtobufServer with the given parameters and returns a pointer to the created instance.
-//
-// Parameters:
-//   - id: The unique identifier for the server.
-//   - peers: An array of ProtobufPeer instances representing the peers in the Raft cluster.
-//   - log: The log implementation for storing Raft log entries.
-//   - storage: The storage implementation for persistent storage of Raft state.
-//   - snapshotStorage: The storage implementation for persistent storage of Raft snapshots.
-//   - fsm: The state machine implementation for applying commands to the application's state.
-//   - listenInterface: The network address on which the server listens for incoming connections.
-//   - responseCh: The channel for receiving command response notifications.
-//   - opts: Optional additional configuration options for the server.
-//
-// Returns:
-//   - *ProtobufServer: A pointer to the created ProtobufServer instance.
-//   - error: An error if the creation of the server fails.
 func NewProtobufServer(
 	id string,
 	peers []*ProtobufPeer,
@@ -66,15 +50,10 @@ func NewProtobufServer(
 	return server, nil
 }
 
-// Start starts the ProtobufServer.
-// It listens for incoming connections on the configured network address and starts the Raft instance.
-// It also starts serving gRPC requests on the listener.
-//
-// Parameters:
-//   - ready: A channel that signals when the server is ready to start serving requests.
-//
-// Returns:
-//   - error: An error if starting the server fails.
+// Start starts the ProtobufServer. It listens for incoming connections on the configured
+// network address and starts the Raft instance. It also starts serving gRPC requests on the
+// listener. The provided channel is used to signal to the server that it should start serving
+// requests.
 func (s *ProtobufServer) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
@@ -113,32 +92,20 @@ func (s *ProtobufServer) Stop() {
 
 // Status returns the status of the ProtobufServer.
 // It retrieves the status from the underlying Raft instance.
-//
-// Returns:
-//   - Status: The status of the server.
 func (s *ProtobufServer) Status() Status {
 	return s.raft.Status()
 }
 
 // IsStarted checks if the ProtobufServer is started.
 // It returns true if the server is started, false otherwise.
-//
-// Returns:
-//   - bool: True if the server is started, false otherwise.
 func (s *ProtobufServer) IsStarted() bool {
 	return s.server != nil
 }
 
 // SubmitCommand submits a command to the ProtobufServer for processing.
-// It forwards the command to the underlying Raft instance for handling.
-//
-// Parameters:
-//   - command: The command to be submitted.
-//
-// Returns:
-//   - uint64: The index of the appended entry in the Raft log.
-//   - uint64: The term of the Raft leader after the command is applied.
-//   - error: An error if submitting the command fails.
+// It forwards the command to the underlying Raft instance for handling
+// and returns the index and term assigned to the command, as well as
+// an error if submitting the command failed.
 func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) {
 	return s.raft.SubmitCommand(command)
 }
@@ -146,14 +113,6 @@ func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) 
 // AppendEntries handles the AppendEntries gRPC request.
 // It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.
-//
-// Parameters:
-//   - ctx: The context of the gRPC request.
-//   - request: The AppendEntriesRequest received from the client.
-//
-// Returns:
-//   - *pb.AppendEntriesResponse: The AppendEntriesResponse to be sent back to the client.
-//   - error: An error if handling the request fails.
 func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
@@ -166,14 +125,6 @@ func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEn
 // RequestVote handles the RequestVote gRPC request.
 // It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
 // and returns the response.
-//
-// Parameters:
-//   - ctx: The context of the gRPC request.
-//   - request: The RequestVoteRequest received from the client.
-//
-// Returns:
-//   - *pb.RequestVoteResponse: The RequestVoteResponse to be sent back to the client.
-//   - error: An error if handling the request fails.
 func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
@@ -186,14 +137,6 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 // InstallSnapshot handles the InstallSnapshot gRPC request.
 // It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
 // and returns the response.
-//
-// Parameters:
-//   - ctx: The context of the gRPC request.
-//   - request: The InstallSnapshotRequest received from the client.
-//
-// Returns:
-//   - *pb.InstallSnapshotResponse: The InstallSnapshotResponse to be sent back to the client.
-//   - error: An error if handling the request fails.
 func (s *ProtobufServer) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}

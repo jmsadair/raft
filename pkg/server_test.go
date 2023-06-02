@@ -121,7 +121,7 @@ type TestCluster struct {
 	wg sync.WaitGroup
 }
 
-func newCluster(t *testing.T, numServers int) *TestCluster {
+func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *TestCluster {
 	servers := make([]*ProtobufServer, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stateMachines := make([]StateMachine, numServers)
@@ -132,12 +132,6 @@ func newCluster(t *testing.T, numServers int) *TestCluster {
 	peers := makeProtobufPeers(numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
-
-	// Is snapshotting enabled?
-	snapshotting := os.Getenv("SNAPSHOTS") == "true"
-
-	// Max number of log entries per snapshot.
-	snapshotSize, _ := strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
 
 	// The paths for all of the persistent storage associated with the cluster.
 	tmpDir := t.TempDir()
@@ -206,7 +200,7 @@ func (tc *TestCluster) stopCluster() {
 func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
-	electionTimeout := 300 * time.Millisecond
+	electionTimeout := 200 * time.Millisecond
 
 	// Allow for a maximum of five seconds if retry is enabled.
 	start := time.Now()
@@ -564,12 +558,28 @@ func (tc *TestCluster) disconnectServer(serverID string) {
 	}
 }
 
+var snapshotting bool
+var snapshotSize int
+
+// TestMain sets up the Raft tests.
+func TestMain(m *testing.M) {
+	// Is snapshotting enabled for the tests?
+	snapshotting = os.Getenv("SNAPSHOTS") == "true"
+
+	// The number of log entries per snapshot.
+	snapshotSize, _ = strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
+
+	exitCode := m.Run()
+
+	os.Exit(exitCode)
+}
+
 // TestBasicElection checks whether a cluster can elect a leader
 // when there are no failures.
 func TestBasicElection(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -582,7 +592,7 @@ func TestBasicElection(t *testing.T) {
 func TestElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -600,7 +610,7 @@ func TestElectLeaderDisconnect(t *testing.T) {
 func TestFailElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -623,7 +633,7 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 func TestBasicSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -638,7 +648,7 @@ func TestBasicSubmit(t *testing.T) {
 func TestMultipleSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -650,12 +660,62 @@ func TestMultipleSubmit(t *testing.T) {
 	}
 }
 
+// TestConcurrentSubmit test whether commands are correctly
+// applied when there are multiple clients submitting commands
+// at the same time.
+func TestConcurrentSubmit(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	cluster.checkLeaders(false)
+	commands := makeCommands(200)
+
+	var wg sync.WaitGroup
+
+	// Simulates a client submitting commands.
+	client := func(commands []Command, readyCh chan interface{}) {
+		defer wg.Done()
+		<-readyCh
+		for _, command := range commands {
+			cluster.submit(command, false, false, 5)
+		}
+	}
+
+	// The number of clients submitting commands concurrently.
+	numClients := 10
+
+	// The number of command each client will submit.
+	commandsPerClient := len(commands) / numClients
+
+	// Signals to the clients that they can start submitting commands.
+	readyCh := make(chan interface{})
+
+	// Spin up the clients with their respective commands.
+	for i := 0; i < numClients; i++ {
+		clientCommands := commands[i*commandsPerClient : (i+1)*commandsPerClient]
+		wg.Add(1)
+		go client(clientCommands, readyCh)
+	}
+
+	// Allow clients to start and wait until they are done.
+	close(readyCh)
+	wg.Wait()
+
+	if t.Failed() {
+		t.Fatal("concurrent apply operations failed")
+	}
+}
+
 // TestSubmitDisconnect checks that a cluster can still
-// commit commands after a single server is Disconnected.
+// commit commands after the leader is disconnected.
 func TestSubmitDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -669,13 +729,62 @@ func TestSubmitDisconnect(t *testing.T) {
 	}
 }
 
+// TestSubmitDisconnectRejoin checks that a cluster correctly
+// handles leaders being disconnected and rejoining after commands
+// are submitted.
+func TestSubmitDisconnectRejoin(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Disconnect the first leader.
+	leader1 := cluster.checkLeaders(false)
+
+	// Submit some commands with this leader.
+	commands := makeCommands(80)
+	for i := 0; i < 20; i++ {
+		cluster.submit(commands[i], false, false, 5)
+	}
+
+	// Disconnect the leader.
+	cluster.disconnectServer(leader1)
+
+	// Submit some more commands. Note that we only expect
+	// 4 servers to apply the command.
+	for i := 20; i < 40; i++ {
+		cluster.submit(commands[i], true, false, 4)
+	}
+
+	// Disconnect the second leader.
+	leader2 := cluster.checkLeaders(false)
+
+	// Submit some more commands. Note that we only expect
+	// 3 servers to apply the command.
+	for i := 40; i < 60; i++ {
+		cluster.submit(commands[i], true, false, 3)
+	}
+
+	// Allow the old leaders to rejoin.
+	cluster.reconnectServer(leader1)
+	cluster.reconnectServer(leader2)
+
+	// Submit some more commands. All servers should apply the
+	// command now.
+	for i := 60; i < 80; i++ {
+		cluster.submit(commands[i], true, false, 5)
+	}
+}
+
 // TestSubmitDisconnectFail checks that a cluster is unable to
-// commit commands when a majority of the servers are unable to
-// communicate.
+// commit commands when a majority of the servers are completely
+// disconnected from the cluster but still online.
 func TestSubmitDisconnectFail(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -705,7 +814,7 @@ func TestSubmitDisconnectFail(t *testing.T) {
 func TestUnreliableNetwork(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	done := int32(0)
 	wg := sync.WaitGroup{}
@@ -757,7 +866,7 @@ func TestUnreliableNetwork(t *testing.T) {
 func TestBasicPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -773,7 +882,7 @@ func TestBasicPartition(t *testing.T) {
 
 	commands := makeCommands(50)
 	for _, command := range commands {
-		cluster.submit(command, false, false, 3)
+		cluster.submit(command, true, false, 3)
 	}
 
 	// Heal the partition.
@@ -786,7 +895,7 @@ func TestBasicPartition(t *testing.T) {
 func TestMultiPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -833,7 +942,7 @@ func TestMultiPartition(t *testing.T) {
 func TestCrashRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -866,7 +975,7 @@ func TestCrashRejoin(t *testing.T) {
 func TestMultiCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -919,7 +1028,7 @@ func TestMultiCrash(t *testing.T) {
 func TestDisconnectCrashPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash, disconnect, and partition random servers every so often.
 	done := int32(0)
@@ -986,7 +1095,7 @@ func TestDisconnectCrashPartition(t *testing.T) {
 func TestAllCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()

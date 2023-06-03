@@ -106,6 +106,11 @@ type Raft struct {
 	// Notifies the commit loop that new log entries may be ready to be committed.
 	commitCond *sync.Cond
 
+	// Transfer applied log entries from the apply loop to the fsm loop for
+	// actual application to the state machine. A buffered channel is not required,
+	// bu blocking may occur if the channel is not buffered.
+	fsmCh chan *LogEntry
+
 	// Notifies receivers that command has been applied.
 	commandResponseCh chan<- CommandResponse
 
@@ -126,10 +131,6 @@ type Raft struct {
 
 	// The last included term of the most recent snapshot.
 	lastIncludedTerm uint64
-
-	// A flag to indicate whether a response for a snapshot must be sent over the
-	// response channel before any other responses are sent.
-	needSnapshotResponse bool
 
 	// ID of the candidate that this Raft instance voted for. Must be persisted.
 	votedFor string
@@ -214,6 +215,7 @@ func NewRaft(
 		storage:           storage,
 		snapshotStorage:   snapshotStorage,
 		fsm:               fsm,
+		fsmCh:             make(chan *LogEntry, 100),
 		commandResponseCh: responseCh,
 		currentTerm:       currentTerm,
 		votedFor:          votedFor,
@@ -244,7 +246,7 @@ func NewRaft(
 			raft.commitIndex = snapshot.LastIncludedIndex
 			raft.lastApplied = snapshot.LastIncludedIndex
 
-			if err := raft.fsm.Restore(snapshot.Data); err != nil {
+			if err := raft.fsm.Restore(&snapshot); err != nil {
 				return nil, errors.WrapError(err, errFailedRestoreStateMachine, err.Error())
 			}
 		}
@@ -272,8 +274,9 @@ func (r *Raft) Start() error {
 	r.lastContact = time.Now()
 	r.state = Follower
 
-	r.wg.Add(4)
+	r.wg.Add(5)
 	go r.applyLoop()
+	go r.fsmLoop()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
@@ -297,6 +300,7 @@ func (r *Raft) Stop() error {
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
+	close(r.fsmCh)
 
 	r.mu.Unlock()
 	r.wg.Wait()
@@ -348,7 +352,7 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 
 	r.options.logger.Debugf("server %s submitted command: logEntry = %v", r.id, entry)
 
-	return entry.index, entry.term, nil
+	return entry.Index, entry.Term, nil
 }
 
 func (r *Raft) Status() Status {
@@ -429,9 +433,9 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		}
 
 		// Reject the request if the log has the previous log entry, but its term does not match.
-		if prevLogEntry.term != request.prevLogTerm {
+		if prevLogEntry.Term != request.prevLogTerm {
 			r.options.logger.Debugf("server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
-				r.id, request.prevLogIndex, prevLogEntry.term, request.prevLogTerm)
+				r.id, request.prevLogIndex, prevLogEntry.Term, request.prevLogTerm)
 
 			// Find the first index of the conflicting term.
 			var index uint64
@@ -440,7 +444,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 				if err != nil {
 					r.options.logger.Fatalf("server %s failed to get entry from log: %s", r.id, err.Error())
 				}
-				if entry.term != prevLogEntry.term {
+				if entry.Term != prevLogEntry.Term {
 					break
 				}
 			}
@@ -453,19 +457,19 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	var toAppend []*LogEntry
 	for i, entry := range request.entries {
-		if r.log.LastIndex() < entry.index {
+		if r.log.LastIndex() < entry.Index {
 			toAppend = request.entries[i:]
 			break
 		}
 
-		existing, _ := r.log.GetEntry(entry.index)
+		existing, _ := r.log.GetEntry(entry.Index)
 		if !existing.IsConflict(entry) {
 			continue
 		}
 
-		r.options.logger.Warnf("server %s truncating log: index = %d", r.id, entry.index)
+		r.options.logger.Warnf("server %s truncating log: index = %d", r.id, entry.Index)
 
-		if err := r.log.Truncate(entry.index); err != nil {
+		if err := r.log.Truncate(entry.Index); err != nil {
 			r.options.logger.Fatalf("server %s failed truncating log: %s", err.Error())
 		}
 
@@ -582,13 +586,6 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
 	}
 
-	// Set flag indicating that the apply loop should IMMEDIANTLY stop applying entries
-	// until the snapshot response has been handled.
-	r.needSnapshotResponse = true
-
-	// Notify the apply loop that a snapshot has just been installed.
-	defer r.applyCond.Broadcast()
-
 	r.commitIndex = request.lastIncludedIndex
 	r.lastApplied = request.lastIncludedIndex
 	r.lastIncludedIndex = request.lastIncludedIndex
@@ -597,11 +594,11 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	// If the log either does not have an entry at the last included index or the log has an
 	// entry at the last included index but its term does not match the last included term, then
 	// discard the log and reset the state machine with the data from the snapshot.
-	if entry == nil || entry.term != request.lastIncludedTerm {
+	if entry == nil || entry.Term != request.lastIncludedTerm {
 		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
 			r.options.logger.Fatalf("server %s failed to discard log entries: %s", err.Error())
 		}
-		if err := r.fsm.Restore(snapshot.Data); err != nil {
+		if err := r.fsm.Restore(snapshot); err != nil {
 			r.options.logger.Fatalf("server %s failed to reset state machine with snapshot: %s", r.id, err.Error())
 		}
 		return nil
@@ -639,7 +636,7 @@ func (r *Raft) sendAppendEntries() {
 				if err != nil {
 					r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 				}
-				prevLogTerm = prevEntry.term
+				prevLogTerm = prevEntry.Term
 			}
 
 			// Retrieve the log entries that need to be replicated to the peer. Ensure that next index
@@ -793,39 +790,33 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 }
 
 func (r *Raft) takeSnapshot() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if !r.options.snapshottingEnabled {
 		return
 	}
 
 	// Retrieve current state of state machine.
-	bytes, err := r.fsm.Snapshot()
+	snapshot, err := r.fsm.Snapshot()
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", err.Error())
 	}
 
-	lastAppliedEntry, err := r.log.GetEntry(r.lastApplied)
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed getting entry from log: %s", err.Error())
-	}
-
-	r.options.logger.Infof("server %s taking snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
-		r.id, lastAppliedEntry.index, lastAppliedEntry.term)
-
 	// Persist the snapshot.
-	snapshot := NewSnapshot(lastAppliedEntry.index, lastAppliedEntry.term, bytes)
-	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
+	if err := r.snapshotStorage.SaveSnapshot(&snapshot); err != nil {
 		r.options.logger.Fatalf("server %s failed to save snapshot; %s", r.id, err.Error())
 	}
 
-	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, lastAppliedEntry.index)
+	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, snapshot.LastIncludedIndex)
 
 	// Compact the log up to the last log entry that was applied to the state machine.
-	if err := r.log.Compact(lastAppliedEntry.index); err != nil {
+	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
 		r.options.logger.Fatalf("server %s failed compacting log: %s", err.Error())
 	}
 
-	r.lastIncludedIndex = lastAppliedEntry.index
-	r.lastIncludedTerm = lastAppliedEntry.term
+	r.lastIncludedIndex = snapshot.LastIncludedIndex
+	r.lastIncludedTerm = snapshot.LastIncludedTerm
 
 	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
 		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
@@ -916,7 +907,7 @@ func (r *Raft) commitLoop() {
 			// be overwritten by a future leader.
 			if entry, err := r.log.GetEntry(index); err != nil {
 				r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
-			} else if entry.term != r.currentTerm {
+			} else if entry.Term != r.currentTerm {
 				continue
 			}
 
@@ -953,55 +944,46 @@ func (r *Raft) applyLoop() {
 	for r.state != Shutdown {
 		r.applyCond.Wait()
 
-		// A snapshot was just installed and must be sent over the command response channel.
-		if r.needSnapshotResponse {
-			// Reset snapshot response flag.
-			r.needSnapshotResponse = false
-
-			// Retrieve the most recent snapshot.
-			lastSnapshot, _ := r.snapshotStorage.LastSnapshot()
-
-			response := CommandResponse{
-				IsSnapshot: true,
-				Snapshot:   lastSnapshot,
-			}
-
-			r.mu.Unlock()
-			r.commandResponseCh <- response
-			r.mu.Lock()
-		}
-
 		// Scan the log starting at the entry following the last applied entry
-		// and apply any entries that have been committed. If a snapshot has just been installed,
-		// newly committed entries CANNOT be applied or sent over the command response channel
-		// until the a response containing the snapshot is sent over the response channel.
-		for index := r.lastApplied + 1; index <= r.commitIndex && !r.needSnapshotResponse; index++ {
+		// and apply any entries that have been committed.
+		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
 			entry, err := r.log.GetEntry(index)
 			if err != nil {
 				r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 			}
 
-			response := CommandResponse{
-				Index:   entry.index,
-				Term:    entry.term,
-				Command: entry.data,
-			}
-
-			r.lastApplied++
-
-			// Take a snapshot if enough log entries have been committed.
-			if r.lastApplied%uint64(r.options.maxEntriesPerSnapshot) == 0 {
-				r.takeSnapshot()
-			}
-
 			// Warning: do not hold locks when sending on the response channel. May deadlock
 			// if the client is not listening.
 			r.mu.Unlock()
-			response.Response = r.fsm.Apply(response.Command, response.Index, response.Term)
-			r.commandResponseCh <- response
+			r.fsmCh <- entry
 			r.mu.Lock()
 
-			r.options.logger.Debugf("server %s applied command: response = %v", r.id, response)
+			r.lastApplied++
+		}
+	}
+}
+
+func (r *Raft) fsmLoop() {
+	defer r.wg.Done()
+
+	for entry := range r.fsmCh {
+		// Apply the log entry to the state machine.
+		response := CommandResponse{
+			Index:    entry.Index,
+			Term:     entry.Term,
+			Command:  entry.Data,
+			Response: r.fsm.Apply(entry),
+		}
+
+		// Notify client of result.
+		r.commandResponseCh <- response
+
+		r.options.logger.Debugf("server %s applied command: index = %d, term = %d",
+			r.id, entry.Index, entry.Term)
+
+		// Take a snapshot of the state machine if necessary.
+		if r.options.snapshottingEnabled && entry.Index%uint64(r.options.maxEntriesPerSnapshot) == 0 {
+			r.takeSnapshot()
 		}
 	}
 }

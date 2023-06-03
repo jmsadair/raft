@@ -937,8 +937,33 @@ func TestMultiPartition(t *testing.T) {
 	wg.Wait()
 }
 
-// TestCrashRejoin checks that a cluster can still make
+// TestBasicCrash checks that a cluster can still make
 // progress after a single server crashes.
+func TestBasicCrash(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader and submit some commands.
+	leader := cluster.checkLeaders(false)
+	commands := makeCommands(200)
+	for i := 0; i < 25; i++ {
+		cluster.submit(commands[i], false, false, 5)
+	}
+
+	// Crash the leader and see if we can still make progress.
+	cluster.crashServer(leader)
+	for i := 25; i < len(commands); i++ {
+		cluster.submit(commands[i], true, false, 4)
+	}
+}
+
+// TestCrashRejoin checks that a cluster correctly
+// handles a server crashing and coming back online
+// after commands are submitted.
 func TestCrashRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -963,7 +988,6 @@ func TestCrashRejoin(t *testing.T) {
 	// Allow the leader to rejoin and see if we can make progress
 	// committing commands.
 	cluster.restartServer(leader)
-	cluster.checkLeaders(false)
 	for i := 150; i < len(commands); i++ {
 		cluster.submit(commands[i], true, false, 5)
 	}

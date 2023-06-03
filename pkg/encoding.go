@@ -148,10 +148,10 @@ type ProtoLogEncoder struct{}
 
 func (p ProtoLogEncoder) Encode(w io.Writer, entry *LogEntry) error {
 	pbEntry := &pb.LogEntry{
-		Index:  entry.index,
-		Term:   entry.term,
-		Data:   entry.data,
-		Offset: entry.offset,
+		Index:  entry.Index,
+		Term:   entry.Term,
+		Data:   entry.Data,
+		Offset: entry.Offset,
 	}
 
 	buf, err := proto.Marshal(pbEntry)
@@ -200,10 +200,10 @@ func (p ProtoLogDecoder) Decode(r io.Reader) (LogEntry, error) {
 	}
 
 	entry := LogEntry{
-		index:  pbEntry.GetIndex(),
-		term:   pbEntry.GetTerm(),
-		data:   pbEntry.GetData(),
-		offset: pbEntry.GetOffset(),
+		Index:  pbEntry.GetIndex(),
+		Term:   pbEntry.GetTerm(),
+		Data:   pbEntry.GetData(),
+		Offset: pbEntry.GetOffset(),
 	}
 
 	return entry, nil

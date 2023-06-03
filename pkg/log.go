@@ -74,29 +74,29 @@ type Log interface {
 
 // LogEntry represents a log entry in the log.
 type LogEntry struct {
-	// The index of the log entry.
-	index uint64
+	// The Index of the log entry.
+	Index uint64
 
-	// The term of the log entry.
-	term uint64
+	// The Term of the log entry.
+	Term uint64
 
-	// The offset of the log entry.
-	offset int64
+	// The Offset of the log entry.
+	Offset int64
 
-	// The data of the log entry.
-	data []byte
+	// The Data of the log entry.
+	Data []byte
 }
 
 // NewLogEntry creates a new instance of LogEntry with the provided
 // index, term, and data.
 func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
-	return &LogEntry{index: index, term: term, data: data}
+	return &LogEntry{Index: index, Term: term, Data: data}
 }
 
 // IsConflict checks whether the current log entry conflicts with another log entry.
 // Two log entries are considered conflicting if they have the same index but different terms.
 func (e *LogEntry) IsConflict(other *LogEntry) bool {
-	return e.index == other.index && e.term != other.term
+	return e.Index == other.Index && e.Term != other.Term
 }
 
 // PersistentLog implements the Log interface.
@@ -183,8 +183,8 @@ func (l *PersistentLog) GetEntry(index uint64) (*LogEntry, error) {
 		return nil, errors.WrapError(nil, errLogNotOpen, l.path)
 	}
 
-	logIndex := index - l.entries[0].index
-	lastIndex := l.entries[len(l.entries)-1].index
+	logIndex := index - l.entries[0].Index
+	lastIndex := l.entries[len(l.entries)-1].Index
 	if logIndex <= 0 || logIndex > lastIndex {
 		return nil, errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
@@ -195,8 +195,8 @@ func (l *PersistentLog) GetEntry(index uint64) (*LogEntry, error) {
 }
 
 func (l *PersistentLog) Contains(index uint64) bool {
-	logIndex := index - l.entries[0].index
-	lastIndex := l.entries[len(l.entries)-1].index
+	logIndex := index - l.entries[0].Index
+	lastIndex := l.entries[len(l.entries)-1].Index
 	return !(logIndex <= 0 || logIndex > lastIndex)
 }
 
@@ -215,7 +215,7 @@ func (l *PersistentLog) AppendEntries(entries []*LogEntry) error {
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
-		entry.offset = offset
+		entry.Offset = offset
 		if err := l.logEncoder.Encode(writer, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
@@ -238,15 +238,15 @@ func (l *PersistentLog) Truncate(index uint64) error {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
 
-	logIndex := index - l.entries[0].index
-	lastIndex := l.entries[len(l.entries)-1].index
+	logIndex := index - l.entries[0].Index
+	lastIndex := l.entries[len(l.entries)-1].Index
 	if logIndex <= 0 || logIndex > lastIndex {
 		return errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
 
 	// The offset of the entry at the provided index is the
 	// new size of the file.
-	size := l.entries[logIndex].offset
+	size := l.entries[logIndex].Offset
 
 	if err := l.file.Truncate(size); err != nil {
 		return errors.WrapError(err, errFailedLogTruncate, size, err.Error())
@@ -267,8 +267,8 @@ func (l *PersistentLog) Compact(index uint64) error {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
 
-	logIndex := index - l.entries[0].index
-	lastIndex := l.entries[len(l.entries)-1].index
+	logIndex := index - l.entries[0].Index
+	lastIndex := l.entries[len(l.entries)-1].Index
 	if logIndex <= 0 || logIndex > lastIndex {
 		return errors.WrapError(nil, errIndexDoesNotExist, index)
 	}
@@ -290,7 +290,7 @@ func (l *PersistentLog) Compact(index uint64) error {
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
-		entry.offset = offset
+		entry.Offset = offset
 		if err := l.logEncoder.Encode(writer, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
@@ -329,7 +329,7 @@ func (l *PersistentLog) DiscardEntries(index uint64, term uint64) error {
 	// Write a dummy entry to the temporary file with the provided
 	// term and index.
 	writer := bufio.NewWriter(newLogFile)
-	entry := &LogEntry{index: index, term: term}
+	entry := &LogEntry{Index: index, Term: term}
 	if err := l.logEncoder.Encode(writer, entry); err != nil {
 		return errors.WrapError(err, errFailedLogEncode, err.Error())
 	}
@@ -352,13 +352,13 @@ func (l *PersistentLog) DiscardEntries(index uint64, term uint64) error {
 }
 
 func (l *PersistentLog) LastTerm() uint64 {
-	return l.entries[len(l.entries)-1].term
+	return l.entries[len(l.entries)-1].Term
 }
 
 func (l *PersistentLog) LastIndex() uint64 {
-	return l.entries[len(l.entries)-1].index
+	return l.entries[len(l.entries)-1].Index
 }
 
 func (l *PersistentLog) NextIndex() uint64 {
-	return l.entries[len(l.entries)-1].index + 1
+	return l.entries[len(l.entries)-1].Index + 1
 }

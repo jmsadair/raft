@@ -22,9 +22,9 @@ func TestProtoLogEncoderDecoder(t *testing.T) {
 		t.Fatalf("failed to decode log entry: %s", err.Error())
 	}
 
-	assert.Equal(t, entry.index, decodedEntry.index, "decoded log entry has incorrect index")
-	assert.Equal(t, entry.term, decodedEntry.term, "decoded log entry has incorrect term")
-	assert.Equal(t, entry.data, decodedEntry.data, "decoded log entry has incorrect data")
+	assert.Equal(t, entry.Index, decodedEntry.Index, "decoded log entry has incorrect index")
+	assert.Equal(t, entry.Term, decodedEntry.Term, "decoded log entry has incorrect term")
+	assert.Equal(t, entry.Data, decodedEntry.Data, "decoded log entry has incorrect data")
 }
 
 func TestProtoStorageEncoderDecoder(t *testing.T) {

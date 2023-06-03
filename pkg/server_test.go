@@ -331,28 +331,33 @@ func (tc *TestCluster) checkSnapshot(index int, response CommandResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// A server should never install a snapshot with a last included index
-	// less than its last applied index. This would mean that the server is taking
-	// the state machine back in time, which is not allowed.
-	if response.Snapshot.LastIncludedIndex <= tc.lastApplied[index] {
-		tc.serverErrors[index] = fmt.Sprintf(errOutOfOrder, index, tc.lastApplied[index]+1, response.Snapshot.LastIncludedIndex)
+	snapshots := tc.snapshotStores[index].ListSnapshots()
+	for _, snapshot := range snapshots {
+		fmt.Printf("server %d: response.Index = %d snapshot.LastIncludedIndex = %d\n", index, response.Index, snapshot.LastIncludedIndex)
+		if snapshot.LastIncludedIndex+1 == response.Index {
+			// Decode the snapshot data into entries.
+			var appliedEntries []*LogEntry
+			data := bytes.NewBuffer(snapshot.Data)
+			dec := gob.NewDecoder(data)
+			if err := dec.Decode(&appliedEntries); err != nil {
+				fmt.Printf("server %d decoder error: %s", index, err.Error())
+				tc.serverErrors[index] = fmt.Sprintf("failed to decode applied entries: %s", err)
+				return
+			}
+
+			// Update this server's responses with the commands included in the snapshot.
+			for _, entry := range appliedEntries {
+				tc.commandResponses[index][entry.Index] = CommandResponse{Index: entry.Index, Term: entry.Term, Command: entry.Data}
+			}
+
+			fmt.Printf("server %d updating last applied from %d to %d", index, tc.lastApplied[index], response.Index)
+			tc.commandResponses[index][response.Index] = response
+			tc.lastApplied[index] = response.Index
+			return
+		}
 	}
 
-	// Decode the snapshot data into commands.
-	var appliedCommands []AppliedCommand
-	data := bytes.NewBuffer(response.Snapshot.Data)
-	dec := gob.NewDecoder(data)
-	if err := dec.Decode(&appliedCommands); err != nil {
-		tc.serverErrors[index] = fmt.Sprintf("failed to decode commands: %s", err)
-		return
-	}
-
-	// Update this server's responses with the commands included in the snapshot.
-	for _, command := range appliedCommands {
-		tc.commandResponses[index][command.Index] = CommandResponse{Index: command.Index, Term: command.Term, Command: command.Command}
-	}
-
-	tc.lastApplied[index] = response.Snapshot.LastIncludedIndex
+	tc.serverErrors[index] = fmt.Sprintf(errOutOfOrder, index, tc.lastApplied[index]+1, response.Index)
 }
 
 func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
@@ -389,7 +394,10 @@ func (tc *TestCluster) applyLoop(index int) {
 	defer tc.wg.Done()
 
 	for response := range tc.responseCh[index] {
-		if response.IsSnapshot {
+		// If the index was greater than the expected index then either
+		// a snapshot must have been installed or there was an error.
+		if response.Index > tc.lastApplied[index]+1 {
+			fmt.Println("true")
 			tc.checkSnapshot(index, response)
 		} else {
 			tc.checkLogs(index, response)

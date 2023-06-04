@@ -99,7 +99,7 @@ func (e *LogEntry) IsConflict(other *LogEntry) bool {
 	return e.Index == other.Index && e.Term != other.Term
 }
 
-// PersistentLog implements the Log interface.
+// PersistentLog implements the Log interface. Not concurrent safe.
 type PersistentLog struct {
 	// The in-memory log entries of the log.
 	entries []*LogEntry

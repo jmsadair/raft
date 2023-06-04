@@ -57,7 +57,7 @@ type SnapshotStorage interface {
 }
 
 // PersistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
-// and persists them to durable storage.
+// and persists them to durable storage. Not concurrent safe.
 type PersistentSnapshotStorage struct {
 	// All snapshots that have been saved to this storage. Empty if no snapshots
 	// have been saved or if the snapshot store is not open.

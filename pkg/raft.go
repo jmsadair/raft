@@ -75,10 +75,10 @@ type CommandResponse struct {
 	Snapshot Snapshot
 }
 
-// Raft implements the consensus module in the Raft architecture.
-// This implementation should be used as the underlying logic for an actual server
-// and cannot act as a complete server alone (see ProtobufServer for usage).
-type Raft struct {
+// RaftCore implements the consensus module in the Raft architecture.
+// This implementation should be used as the internal logic for an actual server
+// and cannot act as a complete server alone.
+type RaftCore struct {
 	// The ID of this Raft instance.
 	id string
 
@@ -87,6 +87,12 @@ type Raft struct {
 
 	// The peers of this Raft instance.
 	peers map[string]Peer
+
+	// This contains the next log index to send to each server.
+	nextIndex map[string]uint64
+
+	// This contains the highest log entry known to be replicated on each sever.
+	matchIndex map[string]uint64
 
 	// Durable storage for log entries.
 	log Log
@@ -138,21 +144,15 @@ type Raft struct {
 	// Time of last contact by the leader.
 	lastContact time.Time
 
+	// Ensures go routines have exited upon stopping.
 	wg sync.WaitGroup
 
 	mu sync.Mutex
 }
 
-// NewRaft creates a new instance of Raft that is configured with the provided options.
-func NewRaft(
-	id string,
-	peers []Peer,
-	log Log,
-	storage Storage,
-	snapshotStorage SnapshotStorage,
-	fsm StateMachine,
-	responseCh chan<- CommandResponse,
-	opts ...Option) (*Raft, error) {
+// NewRaftCore creates a new instance of Raft that is configured with the provided options.
+func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
+	fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*RaftCore, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
@@ -203,14 +203,20 @@ func NewRaft(
 	}
 
 	peerLookup := make(map[string]Peer)
+	nextIndex := make(map[string]uint64)
+	matchIndex := make(map[string]uint64)
 	for _, peer := range peers {
 		peerLookup[peer.ID()] = peer
+		nextIndex[peer.ID()] = 0
+		matchIndex[peer.ID()] = 0
 	}
 
-	raft := &Raft{
+	raft := &RaftCore{
 		id:                id,
 		options:           options,
 		peers:             peerLookup,
+		nextIndex:         nextIndex,
+		matchIndex:        matchIndex,
 		log:               log,
 		storage:           storage,
 		snapshotStorage:   snapshotStorage,
@@ -256,7 +262,7 @@ func NewRaft(
 }
 
 // Start starts the Raft instance.
-func (r *Raft) Start() error {
+func (r *RaftCore) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -264,15 +270,14 @@ func (r *Raft) Start() error {
 		return nil
 	}
 
-	// Do not return an error for failed connections. Connection to peers is not required to start.
+	r.lastContact = time.Now()
+	r.state = Follower
+
 	for _, peer := range r.peers {
 		if err := peer.Connect(); err != nil {
 			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
 		}
 	}
-
-	r.lastContact = time.Now()
-	r.state = Follower
 
 	r.wg.Add(5)
 	go r.applyLoop()
@@ -288,7 +293,7 @@ func (r *Raft) Start() error {
 }
 
 // Stop stops the Raft instance.
-func (r *Raft) Stop() error {
+func (r *RaftCore) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -308,7 +313,6 @@ func (r *Raft) Stop() error {
 
 	close(r.commandResponseCh)
 
-	// Do not return an error for failed disconnections. Disconnection from peers is not required to stop.
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
 			r.options.logger.Errorf("server %s failed to disconnect from peer: %s", r.id, err.Error())
@@ -338,7 +342,7 @@ func (r *Raft) Stop() error {
 // returns the log index assigned to the command, the term assigned to the
 // command, and an error if this server is not the leader. Note that submitting
 // a command for replication does not guarantee replication if there are failures.
-func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
+func (r *RaftCore) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -355,7 +359,7 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	return entry.Index, entry.Term, nil
 }
 
-func (r *Raft) Status() Status {
+func (r *RaftCore) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -369,7 +373,7 @@ func (r *Raft) Status() Status {
 }
 
 // AppendEntries is invoked by the leader to replicate log entries.
-func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
+func (r *RaftCore) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -489,7 +493,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 }
 
 // RequestVote is invoked by the candidate server to gather a vote from this server.
-func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
+func (r *RaftCore) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -542,7 +546,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 }
 
 // InstallSnapshot is invoked by the leader to send a snapshot to a follower.
-func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
+func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -613,7 +617,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	return nil
 }
 
-func (r *Raft) sendAppendEntries() {
+func (r *RaftCore) sendAppendEntries() {
 	for _, peer := range r.peers {
 		if peer.ID() == r.id {
 			continue
@@ -627,7 +631,7 @@ func (r *Raft) sendAppendEntries() {
 				return
 			}
 
-			nextIndex := peer.NextIndex()
+			nextIndex := r.nextIndex[peer.ID()]
 			prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
 			prevLogTerm := r.lastIncludedTerm
 
@@ -676,28 +680,27 @@ func (r *Raft) sendAppendEntries() {
 			}
 
 			if !response.success {
-				peer.SetNextIndex(util.Max(1, util.Min(r.log.NextIndex(), response.index)))
+				r.nextIndex[peer.ID()] = util.Max(1, util.Min(r.log.NextIndex(), response.index))
 
 				// The log has been compacted and no longer contains the entries the peer needs.
 				// Send the peer a snapshot to catch them up.
-				if r.options.snapshottingEnabled && peer.NextIndex() <= r.lastIncludedIndex {
+				if r.options.snapshottingEnabled && r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
 					go r.sendInstallSnapshot(peer)
 				}
 
 				return
 			}
 
-			if request.prevLogIndex+uint64(len(entries)) >= peer.NextIndex() {
-				peer.SetNextIndex(request.prevLogIndex + uint64(len(entries)) + 1)
-				peer.SetMatchIndex(peer.NextIndex() - 1)
+			if request.prevLogIndex+uint64(len(entries)) >= r.nextIndex[peer.ID()] {
+				r.nextIndex[peer.ID()] = request.prevLogIndex + uint64(len(entries)) + 1
+				r.matchIndex[peer.ID()] = request.prevLogIndex + uint64(len(entries))
 				r.commitCond.Broadcast()
-				go r.sendAppendEntries()
 			}
 		}(peer)
 	}
 }
 
-func (r *Raft) sendRequestVote(votes *int) {
+func (r *RaftCore) sendRequestVote(votes *int) {
 	for _, peer := range r.peers {
 		if peer.ID() == r.id {
 			continue
@@ -748,13 +751,13 @@ func (r *Raft) sendRequestVote(votes *int) {
 	}
 }
 
-func (r *Raft) sendInstallSnapshot(peer Peer) {
+func (r *RaftCore) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// Only leaders may send snapshots. If the leader has the log entry corresponding to the next
 	// index of a peer, a snapshot is not necessary.
-	if !r.options.snapshottingEnabled || r.state != Leader || peer.NextIndex() > r.lastIncludedIndex {
+	if !r.options.snapshottingEnabled || r.state != Leader || r.nextIndex[peer.ID()] > r.lastIncludedIndex {
 		return
 	}
 
@@ -785,11 +788,11 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 		return
 	}
 
-	peer.SetNextIndex(request.lastIncludedIndex + 1)
-	peer.SetMatchIndex(peer.NextIndex() - 1)
+	r.nextIndex[peer.ID()] = request.lastIncludedIndex + 1
+	r.matchIndex[peer.ID()] = request.lastIncludedIndex
 }
 
-func (r *Raft) takeSnapshot() {
+func (r *RaftCore) takeSnapshot() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -822,7 +825,7 @@ func (r *Raft) takeSnapshot() {
 		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
 }
 
-func (r *Raft) heartbeatLoop() {
+func (r *RaftCore) heartbeatLoop() {
 	defer r.wg.Done()
 
 	// If this server is the leader, broadcast heartbeat messages to peers
@@ -847,7 +850,7 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-func (r *Raft) electionLoop() {
+func (r *RaftCore) electionLoop() {
 	defer r.wg.Done()
 
 	for {
@@ -868,7 +871,7 @@ func (r *Raft) electionLoop() {
 	}
 }
 
-func (r *Raft) election() {
+func (r *RaftCore) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -884,7 +887,7 @@ func (r *Raft) election() {
 	r.sendRequestVote(&votesReceived)
 }
 
-func (r *Raft) commitLoop() {
+func (r *RaftCore) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
@@ -914,11 +917,11 @@ func (r *Raft) commitLoop() {
 			// Check whether the majority of servers in the cluster agree on the entry.
 			// If they do, it is safe to commit.
 			matches := 1
-			for _, peer := range r.peers {
-				if peer.ID() == r.id {
+			for id, matchIndex := range r.matchIndex {
+				if id == r.id {
 					continue
 				}
-				if peer.MatchIndex() >= index {
+				if matchIndex >= index {
 					matches++
 				}
 				if r.hasQuorum(matches) {
@@ -936,7 +939,7 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-func (r *Raft) applyLoop() {
+func (r *RaftCore) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
@@ -963,7 +966,7 @@ func (r *Raft) applyLoop() {
 	}
 }
 
-func (r *Raft) fsmLoop() {
+func (r *RaftCore) fsmLoop() {
 	defer r.wg.Done()
 
 	for entry := range r.fsmCh {
@@ -988,24 +991,24 @@ func (r *Raft) fsmLoop() {
 	}
 }
 
-func (r *Raft) becomeCandidate() {
+func (r *RaftCore) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
 	r.persistTermAndVote()
 	r.options.logger.Infof("server %s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *Raft) becomeLeader() {
+func (r *RaftCore) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
-		peer.SetNextIndex(r.log.LastIndex() + 1)
-		peer.SetMatchIndex(0)
+		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
+		r.matchIndex[peer.ID()] = 0
 	}
 	r.sendAppendEntries()
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *Raft) becomeFollower(term uint64) {
+func (r *RaftCore) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
 	r.votedFor = ""
@@ -1013,11 +1016,11 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *Raft) hasQuorum(count int) bool {
+func (r *RaftCore) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }
 
-func (r *Raft) persistTermAndVote() {
+func (r *RaftCore) persistTermAndVote() {
 	persistentState := &PersistentState{term: r.currentTerm, votedFor: r.votedFor}
 	if err := r.storage.SetState(persistentState); err != nil {
 		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", err.Error())

@@ -35,7 +35,7 @@ type Storage interface {
 }
 
 // PersistentStorage is a type that implements the Storage interface and persists
-// state to a file using an encoder and decoder.
+// state to a file using an encoder and decoder. Not concurrent safe.
 type PersistentStorage struct {
 	// The encoder used to encode the persistent state associated with the storage.
 	storageEncoder StorageEncoder

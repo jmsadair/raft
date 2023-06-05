@@ -10,17 +10,18 @@ import (
 )
 
 const (
-	errFailedRaftLog               = "failed to create a log for raft: %s"
-	errFailedRaftOption            = "failed to apply provided option: %s"
-	errFailedRaftStorageOpen       = "failed to open raft storage: %s"
-	errFailedRaftSnapshotStoreOpen = "failed to open raft snapshot storage: %s"
-	errFailedRaftLogOpen           = "failed to open raft log: %s"
-	errFailedRaftLogReplay         = "failed to recover persisted state from raft log: %s"
-	errFailedSnapshotReplay        = "failed to recover persisted raft snapshot data: %s"
-	errFailedStorageRecover        = "failed to recover raft persisted state: %s"
-	errFailedRestoreStateMachine   = "failed to restore state machine: %s"
-	errNotLeader                   = "server %s is not the leader"
-	errShutdown                    = "server %s is shutdown"
+	errFailedRaftLog                 = "failed to create a log for raft: %s"
+	errFailedRaftOption              = "failed to apply provided option: %s"
+	errFailedRaftStorageOpen         = "failed to open raft storage: %s"
+	errFailedRaftSnapshotStoreOpen   = "failed to open raft snapshot storage: %s"
+	errFailedRaftLogOpen             = "failed to open raft log: %s"
+	errFailedRaftLogReplay           = "failed to recover persisted state from raft log: %s"
+	errFailedRaftSnapshotReplay      = "failed to recover persisted raft snapshot data: %s"
+	errFailedRaftStorageRecover      = "failed to recover raft persisted state: %s"
+	errFailedRaftRestoreStateMachine = "failed to restore state machine: %s"
+	errRaftNotLeader                 = "server %s is not the leader"
+	errRaftSnapshotsDisabled         = "server %s does not have snapshot enabled"
+	RaftShutdown                     = "server %s is shutdown"
 )
 
 // State represents the current state of a Raft server.
@@ -151,7 +152,7 @@ type RaftCore struct {
 }
 
 // NewRaftCore creates a new instance of Raft that is configured with the provided options.
-func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
+func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
 	fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*RaftCore, error) {
 	// Apply provided options.
 	var options options
@@ -187,10 +188,10 @@ func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStor
 	// Restore the current term and vote if they have been persisted.
 	persistentState, err := storage.GetState()
 	if err != nil {
-		return nil, errors.WrapError(err, errFailedStorageRecover, err.Error())
+		return nil, errors.WrapError(err, errFailedRaftStorageRecover, err.Error())
 	}
-	currentTerm := persistentState.term
-	votedFor := persistentState.votedFor
+	currentTerm := persistentState.Term
+	votedFor := persistentState.VotedFor
 
 	// Open the log for new operations.
 	if err := log.Open(); err != nil {
@@ -202,11 +203,19 @@ func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStor
 		return nil, errors.WrapError(err, errFailedRaftLogReplay, err.Error())
 	}
 
-	peerLookup := make(map[string]Peer)
+	// Open the snapshot storage for new operations.
+	if err := snapshotStorage.Open(); err != nil {
+		return nil, errors.WrapError(err, errFailedRaftSnapshotStoreOpen, err.Error())
+	}
+
+	// Replay the persisted snapshots into memory.
+	if err := snapshotStorage.Replay(); err != nil {
+		return nil, errors.WrapError(err, errFailedRaftSnapshotReplay, err.Error())
+	}
+
 	nextIndex := make(map[string]uint64)
 	matchIndex := make(map[string]uint64)
 	for _, peer := range peers {
-		peerLookup[peer.ID()] = peer
 		nextIndex[peer.ID()] = 0
 		matchIndex[peer.ID()] = 0
 	}
@@ -214,7 +223,7 @@ func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStor
 	raft := &RaftCore{
 		id:                id,
 		options:           options,
-		peers:             peerLookup,
+		peers:             peers,
 		nextIndex:         nextIndex,
 		matchIndex:        matchIndex,
 		log:               log,
@@ -233,28 +242,16 @@ func NewRaftCore(id string, peers []Peer, log Log, storage Storage, snapshotStor
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 
-	// Open the snapshot storage for operations and restore the
-	// state machine from the last snapshot if there is one.
-	if options.snapshottingEnabled {
-		if err := snapshotStorage.Open(); err != nil {
-			return nil, errors.WrapError(err, errFailedRaftSnapshotStoreOpen, err.Error())
-		}
+	// Restore the state machine from the most recent snapshot if there was one.
+	snapshot, ok := snapshotStorage.LastSnapshot()
+	if ok {
+		raft.lastIncludedIndex = snapshot.LastIncludedIndex
+		raft.lastIncludedTerm = snapshot.LastIncludedTerm
+		raft.commitIndex = snapshot.LastIncludedIndex
+		raft.lastApplied = snapshot.LastIncludedIndex
 
-		if err := snapshotStorage.Replay(); err != nil {
-			return nil, errors.WrapError(err, errFailedSnapshotReplay, err.Error())
-		}
-
-		snapshot, ok := snapshotStorage.LastSnapshot()
-
-		if ok {
-			raft.lastIncludedIndex = snapshot.LastIncludedIndex
-			raft.lastIncludedTerm = snapshot.LastIncludedTerm
-			raft.commitIndex = snapshot.LastIncludedIndex
-			raft.lastApplied = snapshot.LastIncludedIndex
-
-			if err := raft.fsm.Restore(&snapshot); err != nil {
-				return nil, errors.WrapError(err, errFailedRestoreStateMachine, err.Error())
-			}
+		if err := raft.fsm.Restore(&snapshot); err != nil {
+			return nil, errors.WrapError(err, errFailedRaftRestoreStateMachine, err.Error())
 		}
 	}
 
@@ -287,7 +284,7 @@ func (r *RaftCore) Start() error {
 	go r.commitLoop()
 
 	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v snapshotsEnabled = %v, snapshotSize = %v",
-		r.id, r.options.electionTimeout, r.options.heartbeatInterval, r.options.snapshottingEnabled, r.options.maxEntriesPerSnapshot)
+		r.id, r.options.electionTimeout, r.options.heartbeatInterval, r.options.autoSnapshottingEnabled, r.options.maxEntriesPerSnapshot)
 
 	return nil
 }
@@ -305,13 +302,10 @@ func (r *RaftCore) Stop() error {
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
-	close(r.fsmCh)
 
 	r.mu.Unlock()
 	r.wg.Wait()
 	r.mu.Lock()
-
-	close(r.commandResponseCh)
 
 	for _, peer := range r.peers {
 		if err := peer.Disconnect(); err != nil {
@@ -327,10 +321,8 @@ func (r *RaftCore) Stop() error {
 		r.options.logger.Errorf("server %s failed to close storage: %s", r.id, err.Error())
 	}
 
-	if r.options.snapshottingEnabled {
-		if err := r.snapshotStorage.Close(); err != nil {
-			r.options.logger.Errorf("server %s failed to close snapshot storage: %s", r.id, err.Error())
-		}
+	if err := r.snapshotStorage.Close(); err != nil {
+		r.options.logger.Errorf("server %s failed to close snapshot storage: %s", r.id, err.Error())
 	}
 
 	r.options.logger.Infof("server %s stopped", r.id)
@@ -347,7 +339,7 @@ func (r *RaftCore) SubmitCommand(command Command) (uint64, uint64, error) {
 	defer r.mu.Unlock()
 
 	if r.state != Leader {
-		return 0, 0, errors.WrapError(nil, errNotLeader, r.id)
+		return 0, 0, errors.WrapError(nil, errRaftNotLeader, r.id)
 	}
 
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, command.Bytes)
@@ -378,7 +370,7 @@ func (r *RaftCore) AppendEntries(request *AppendEntriesRequest, response *Append
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errShutdown, r.id)
+		return errors.WrapError(nil, RaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
@@ -498,7 +490,7 @@ func (r *RaftCore) RequestVote(request *RequestVoteRequest, response *RequestVot
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errShutdown, r.id)
+		return errors.WrapError(nil, RaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
@@ -551,7 +543,7 @@ func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *In
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errShutdown, r.id)
+		return errors.WrapError(nil, RaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s recieved InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
@@ -615,6 +607,43 @@ func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *In
 	}
 
 	return nil
+}
+
+func (r *RaftCore) TakeSnapshot() (uint64, uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Retrieve current state of state machine.
+	snapshot, err := r.fsm.Snapshot()
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", err.Error())
+	}
+
+	// Persist the snapshot.
+	if err := r.snapshotStorage.SaveSnapshot(&snapshot); err != nil {
+		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
+	}
+
+	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, snapshot.LastIncludedIndex)
+
+	// Compact the log up to the last log entry that was applied to the state machine.
+	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
+		r.options.logger.Fatalf("server %s failed compacting log: %s", err.Error())
+	}
+
+	r.lastIncludedIndex = snapshot.LastIncludedIndex
+	r.lastIncludedTerm = snapshot.LastIncludedTerm
+
+	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
+		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
+
+	return snapshot.LastIncludedIndex, snapshot.LastIncludedTerm
+}
+
+func (r *RaftCore) ListSnapshots() []Snapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.snapshotStorage.ListSnapshots()
 }
 
 func (r *RaftCore) sendAppendEntries() {
@@ -684,7 +713,7 @@ func (r *RaftCore) sendAppendEntries() {
 
 				// The log has been compacted and no longer contains the entries the peer needs.
 				// Send the peer a snapshot to catch them up.
-				if r.options.snapshottingEnabled && r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
+				if r.options.autoSnapshottingEnabled && r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
 					go r.sendInstallSnapshot(peer)
 				}
 
@@ -757,7 +786,7 @@ func (r *RaftCore) sendInstallSnapshot(peer Peer) {
 
 	// Only leaders may send snapshots. If the leader has the log entry corresponding to the next
 	// index of a peer, a snapshot is not necessary.
-	if !r.options.snapshottingEnabled || r.state != Leader || r.nextIndex[peer.ID()] > r.lastIncludedIndex {
+	if !r.options.autoSnapshottingEnabled || r.state != Leader || r.nextIndex[peer.ID()] > r.lastIncludedIndex {
 		return
 	}
 
@@ -790,39 +819,6 @@ func (r *RaftCore) sendInstallSnapshot(peer Peer) {
 
 	r.nextIndex[peer.ID()] = request.lastIncludedIndex + 1
 	r.matchIndex[peer.ID()] = request.lastIncludedIndex
-}
-
-func (r *RaftCore) takeSnapshot() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if !r.options.snapshottingEnabled {
-		return
-	}
-
-	// Retrieve current state of state machine.
-	snapshot, err := r.fsm.Snapshot()
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", err.Error())
-	}
-
-	// Persist the snapshot.
-	if err := r.snapshotStorage.SaveSnapshot(&snapshot); err != nil {
-		r.options.logger.Fatalf("server %s failed to save snapshot; %s", r.id, err.Error())
-	}
-
-	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, snapshot.LastIncludedIndex)
-
-	// Compact the log up to the last log entry that was applied to the state machine.
-	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed compacting log: %s", err.Error())
-	}
-
-	r.lastIncludedIndex = snapshot.LastIncludedIndex
-	r.lastIncludedTerm = snapshot.LastIncludedTerm
-
-	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
-		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
 }
 
 func (r *RaftCore) heartbeatLoop() {
@@ -943,6 +939,7 @@ func (r *RaftCore) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
+	defer close(r.fsmCh)
 
 	for r.state != Shutdown {
 		r.applyCond.Wait()
@@ -968,6 +965,7 @@ func (r *RaftCore) applyLoop() {
 
 func (r *RaftCore) fsmLoop() {
 	defer r.wg.Done()
+	defer close(r.commandResponseCh)
 
 	for entry := range r.fsmCh {
 		// Apply the log entry to the state machine.
@@ -985,8 +983,8 @@ func (r *RaftCore) fsmLoop() {
 			r.id, entry.Index, entry.Term)
 
 		// Take a snapshot of the state machine if necessary.
-		if r.options.snapshottingEnabled && entry.Index%uint64(r.options.maxEntriesPerSnapshot) == 0 {
-			r.takeSnapshot()
+		if r.options.autoSnapshottingEnabled && entry.Index%uint64(r.options.maxEntriesPerSnapshot) == 0 {
+			r.TakeSnapshot()
 		}
 	}
 }
@@ -1021,8 +1019,26 @@ func (r *RaftCore) hasQuorum(count int) bool {
 }
 
 func (r *RaftCore) persistTermAndVote() {
-	persistentState := &PersistentState{term: r.currentTerm, votedFor: r.votedFor}
+	persistentState := &PersistentState{Term: r.currentTerm, VotedFor: r.votedFor}
 	if err := r.storage.SetState(persistentState); err != nil {
 		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", err.Error())
 	}
+}
+
+func (r *RaftCore) disconnectPeer(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.peers[id].Disconnect(); err != nil {
+		return errors.WrapError(err, "server failed to disconnect peer: %s", err.Error())
+	}
+	return nil
+}
+
+func (r *RaftCore) connectPeer(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.peers[id].Connect(); err != nil {
+		return errors.WrapError(err, "server failed to connect peer: %s", err.Error())
+	}
+	return nil
 }

@@ -45,9 +45,9 @@ type Peer interface {
 	InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error)
 }
 
-// GrpcPeer is an implementation of GrpcPeer that is responsible for establishing
-// a connection with a server using protobuf.
-type GrpcPeer struct {
+// peer is an implementation of the Peer interface that is responsible for establishing
+// a connection with a remote server using gRPC.
+type peer struct {
 	// The gRPC client for making Raft protocol calls to the peer.
 	client pb.RaftClient
 
@@ -64,21 +64,21 @@ type GrpcPeer struct {
 	mu sync.RWMutex
 }
 
-// NewGrpcPeer creates a new instance of a GrpcPeer with
+// newPeer creates a new instance of a peer with
 // the provided ID and network address.
-func NewGrpcPeer(id string, address net.Addr) *GrpcPeer {
-	return &GrpcPeer{id: id, address: address}
+func newPeer(id string, address net.Addr) *peer {
+	return &peer{id: id, address: address}
 }
 
-func (p *GrpcPeer) ID() string {
+func (p *peer) ID() string {
 	return p.id
 }
 
-func (p *GrpcPeer) Address() net.Addr {
+func (p *peer) Address() net.Addr {
 	return p.address
 }
 
-func (p *GrpcPeer) Connect() error {
+func (p *peer) Connect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -97,7 +97,7 @@ func (p *GrpcPeer) Connect() error {
 	return nil
 }
 
-func (p *GrpcPeer) Disconnect() error {
+func (p *peer) Disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -115,14 +115,7 @@ func (p *GrpcPeer) Disconnect() error {
 	return nil
 }
 
-func (p *GrpcPeer) Connected() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	return p.client != nil
-}
-
-func (p *GrpcPeer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
+func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -139,7 +132,7 @@ func (p *GrpcPeer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRes
 	return makeAppendEntriesResponse(pbResponse), nil
 }
 
-func (p *GrpcPeer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
+func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -156,7 +149,7 @@ func (p *GrpcPeer) RequestVote(request RequestVoteRequest) (RequestVoteResponse,
 	return makeRequestVoteResponse(pbResponse), nil
 }
 
-func (p *GrpcPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 

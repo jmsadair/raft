@@ -6,16 +6,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
-	assert.Equal(t, expectedIndex, entry.Index, "entry has incorrect index")
-	assert.Equal(t, expectedTerm, entry.Term, "entry has incorrect term")
-	assert.Equal(t, expectedData, entry.Data, "entry has incorrect data")
-}
-
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+	log := newPersistentLog(path)
 
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
@@ -89,7 +83,7 @@ func TestAppendEntries(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+	log := newPersistentLog(path)
 
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())
@@ -156,7 +150,7 @@ func TestTruncate(t *testing.T) {
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := NewPersistentLog(path, new(ProtoLogEncoder), new(ProtoLogDecoder))
+	log := newPersistentLog(path)
 
 	if err := log.Open(); err != nil {
 		t.Fatalf("error opening log: %s", err.Error())

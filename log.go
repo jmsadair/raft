@@ -99,8 +99,8 @@ func (e *LogEntry) IsConflict(other *LogEntry) bool {
 	return e.Index == other.Index && e.Term != other.Term
 }
 
-// PersistentLog implements the Log interface. Not concurrent safe.
-type PersistentLog struct {
+// persistentLog implements the Log interface. Not concurrent safe.
+type persistentLog struct {
 	// The in-memory log entries of the log.
 	entries []*LogEntry
 
@@ -109,22 +109,14 @@ type PersistentLog struct {
 
 	// The path to the file that the log is written to.
 	path string
-
-	// An encoder for encoding log entries.
-	logEncoder LogEncoder
-
-	// A decoder for decoding log entries.
-	logDecoder LogDecoder
 }
 
-// NewPersistentLog creates a new instance of PersistentLog at the provided path.
-// Log entries will be encoded using the provided LogEncoder, and decoded using
-// the provided LogDecoder.
-func NewPersistentLog(path string, logEncoder LogEncoder, logDecoder LogDecoder) *PersistentLog {
-	return &PersistentLog{path: path, logEncoder: logEncoder, logDecoder: logDecoder}
+// newPersistentLog creates a new instance of PersistentLog at the provided path.
+func newPersistentLog(path string) *persistentLog {
+	return &persistentLog{path: path}
 }
 
-func (l *PersistentLog) Open() error {
+func (l *persistentLog) Open() error {
 	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0777)
 	if err != nil {
 		return errors.WrapError(err, errFailedLogOpen, l.path)
@@ -134,11 +126,12 @@ func (l *PersistentLog) Open() error {
 	return nil
 }
 
-func (l *PersistentLog) Replay() error {
+func (l *persistentLog) Replay() error {
 	reader := bufio.NewReader(l.file)
+	logDecoder := logDecoder{}
 
 	for {
-		entry, err := l.logDecoder.Decode(reader)
+		entry, err := logDecoder.decode(reader)
 		if err == io.EOF {
 			break
 		}
@@ -153,7 +146,8 @@ func (l *PersistentLog) Replay() error {
 	if len(l.entries) == 0 {
 		entry := NewLogEntry(0, 0, nil)
 		writer := bufio.NewWriter(l.file)
-		if err := l.logEncoder.Encode(writer, entry); err != nil {
+		logEncoder := logEncoder{}
+		if err := logEncoder.encode(writer, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
 		if err := writer.Flush(); err != nil {
@@ -168,7 +162,7 @@ func (l *PersistentLog) Replay() error {
 	return nil
 }
 
-func (l *PersistentLog) Close() error {
+func (l *persistentLog) Close() error {
 	if l.file == nil {
 		return nil
 	}
@@ -178,7 +172,7 @@ func (l *PersistentLog) Close() error {
 	return nil
 }
 
-func (l *PersistentLog) GetEntry(index uint64) (*LogEntry, error) {
+func (l *persistentLog) GetEntry(index uint64) (*LogEntry, error) {
 	if l.file == nil {
 		return nil, errors.WrapError(nil, errLogNotOpen, l.path)
 	}
@@ -194,29 +188,30 @@ func (l *PersistentLog) GetEntry(index uint64) (*LogEntry, error) {
 	return entry, nil
 }
 
-func (l *PersistentLog) Contains(index uint64) bool {
+func (l *persistentLog) Contains(index uint64) bool {
 	logIndex := index - l.entries[0].Index
 	lastIndex := l.entries[len(l.entries)-1].Index
 	return !(logIndex <= 0 || logIndex > lastIndex)
 }
 
-func (l *PersistentLog) AppendEntry(entry *LogEntry) error {
+func (l *persistentLog) AppendEntry(entry *LogEntry) error {
 	return l.AppendEntries([]*LogEntry{entry})
 }
 
-func (l *PersistentLog) AppendEntries(entries []*LogEntry) error {
+func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 	if l.file == nil {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
 
 	writer := bufio.NewWriter(l.file)
+	logEncoder := logEncoder{}
 	for _, entry := range entries {
 		offset, err := l.file.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
 		entry.Offset = offset
-		if err := l.logEncoder.Encode(writer, entry); err != nil {
+		if err := logEncoder.encode(writer, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
 		if err := writer.Flush(); err != nil {
@@ -233,7 +228,7 @@ func (l *PersistentLog) AppendEntries(entries []*LogEntry) error {
 	return nil
 }
 
-func (l *PersistentLog) Truncate(index uint64) error {
+func (l *persistentLog) Truncate(index uint64) error {
 	if l.file == nil {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
@@ -262,7 +257,7 @@ func (l *PersistentLog) Truncate(index uint64) error {
 	return nil
 }
 
-func (l *PersistentLog) Compact(index uint64) error {
+func (l *persistentLog) Compact(index uint64) error {
 	if l.file == nil {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
@@ -285,13 +280,14 @@ func (l *PersistentLog) Compact(index uint64) error {
 	// Write the entries contained in the compacted log to the
 	// temporary file.
 	writer := bufio.NewWriter(compactedFile)
+	logEncoder := logEncoder{}
 	for _, entry := range newEntries {
 		offset, err := compactedFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
 		entry.Offset = offset
-		if err := l.logEncoder.Encode(writer, entry); err != nil {
+		if err := logEncoder.encode(writer, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
 	}
@@ -315,7 +311,7 @@ func (l *PersistentLog) Compact(index uint64) error {
 	return nil
 }
 
-func (l *PersistentLog) DiscardEntries(index uint64, term uint64) error {
+func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	if l.file == nil {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
@@ -329,8 +325,9 @@ func (l *PersistentLog) DiscardEntries(index uint64, term uint64) error {
 	// Write a dummy entry to the temporary file with the provided
 	// term and index.
 	writer := bufio.NewWriter(newLogFile)
+	logEncoder := logEncoder{}
 	entry := &LogEntry{Index: index, Term: term}
-	if err := l.logEncoder.Encode(writer, entry); err != nil {
+	if err := logEncoder.encode(writer, entry); err != nil {
 		return errors.WrapError(err, errFailedLogEncode, err.Error())
 	}
 	if err := writer.Flush(); err != nil {
@@ -351,14 +348,14 @@ func (l *PersistentLog) DiscardEntries(index uint64, term uint64) error {
 	return nil
 }
 
-func (l *PersistentLog) LastTerm() uint64 {
+func (l *persistentLog) LastTerm() uint64 {
 	return l.entries[len(l.entries)-1].Term
 }
 
-func (l *PersistentLog) LastIndex() uint64 {
+func (l *persistentLog) LastIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index
 }
 
-func (l *PersistentLog) NextIndex() uint64 {
+func (l *persistentLog) NextIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index + 1
 }

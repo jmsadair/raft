@@ -6,18 +6,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
-	assert.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex, "last included index does not match")
-	assert.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm, "last included term does not match")
-	assert.Equal(t, expected.Data, actual.Data, "data does not match")
-}
-
 func TestSnapshotStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	storageFile := tmpDir + "/test-snap-storage.bin"
-	encoder := new(ProtoSnapshotEncoder)
-	decoder := new(ProtoSnapshotDecoder)
-	snapshotStore := NewPersistentSnapshotStorage(storageFile, encoder, decoder)
+	snapshotStore := newPersistentSnapshotStorage(storageFile)
 
 	if err := snapshotStore.Open(); err != nil {
 		t.Fatalf("error opening snapshot store: %s", err.Error())

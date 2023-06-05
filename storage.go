@@ -42,7 +42,7 @@ type PersistentState struct {
 }
 
 // persistentStorage is a type that implements the Storage interface and persists
-// state to a file using an encoder and decoder. Not concurrent safe.
+// state to a file. Not concurrent safe.
 type persistentStorage struct {
 	// The path to the file where the storage is persisted.
 	path string
@@ -51,8 +51,7 @@ type persistentStorage struct {
 	file *os.File
 }
 
-// newPersistentStorage creates a new instance of PersistentStorage with the provided path, storage encoder,
-// and storage decoder.
+// newPersistentStorage creates a new instance of PersistentStorage with the provided path.
 func newPersistentStorage(path string) *persistentStorage {
 	return &persistentStorage{path: path}
 }

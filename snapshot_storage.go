@@ -71,8 +71,7 @@ type persistentSnapshotStorage struct {
 }
 
 // newPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage at the
-// provided path. Snapshots will be encoded using the provided SnapshotEncoder, and decoded
-// using the provided SnapshotDecoder.
+// provided path.
 func newPersistentSnapshotStorage(path string) *persistentSnapshotStorage {
 	return &persistentSnapshotStorage{path: path}
 }

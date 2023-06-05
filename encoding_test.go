@@ -11,13 +11,13 @@ func TestProtoLogEncoderDecoder(t *testing.T) {
 	entry := NewLogEntry(1, 1, []byte("test"))
 	buf := new(bytes.Buffer)
 
-	encoder := new(ProtoLogEncoder)
-	if err := encoder.Encode(buf, entry); err != nil {
+	encoder := new(logEncoder)
+	if err := encoder.encode(buf, entry); err != nil {
 		t.Fatalf("failed to encode log entry: %s", err.Error())
 	}
 
-	decoder := new(ProtoLogDecoder)
-	decodedEntry, err := decoder.Decode(buf)
+	decoder := new(logDecoder)
+	decodedEntry, err := decoder.decode(buf)
 	if err != nil {
 		t.Fatalf("failed to decode log entry: %s", err.Error())
 	}
@@ -28,35 +28,35 @@ func TestProtoLogEncoderDecoder(t *testing.T) {
 }
 
 func TestProtoStorageEncoderDecoder(t *testing.T) {
-	persistentState := PersistentState{term: 1, votedFor: "test"}
+	persistentState := PersistentState{Term: 1, VotedFor: "test"}
 	buf := new(bytes.Buffer)
 
-	encoder := new(ProtoStorageEncoder)
-	if err := encoder.Encode(buf, &persistentState); err != nil {
+	encoder := new(storageEncoder)
+	if err := encoder.encode(buf, &persistentState); err != nil {
 		t.Fatalf("failed to encode persistent state : %s", err.Error())
 	}
 
-	decoder := new(ProtoStorageDecoder)
-	decodedState, err := decoder.Decode(buf)
+	decoder := new(storageDecoder)
+	decodedState, err := decoder.decode(buf)
 	if err != nil {
 		t.Fatalf("failed to decode persistent state: %s", err.Error())
 	}
 
-	assert.Equal(t, persistentState.term, decodedState.term, "decoded state has incorrect term")
-	assert.Equal(t, persistentState.votedFor, decodedState.votedFor, "decoded state has incorrect votedFor")
+	assert.Equal(t, persistentState.Term, decodedState.Term, "decoded state has incorrect term")
+	assert.Equal(t, persistentState.VotedFor, decodedState.VotedFor, "decoded state has incorrect votedFor")
 }
 
 func TestProtoSnapshotEncoderDecoder(t *testing.T) {
 	snapshot := Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Data: []byte("test")}
 	buf := new(bytes.Buffer)
 
-	encoder := new(ProtoSnapshotEncoder)
-	if err := encoder.Encode(buf, &snapshot); err != nil {
+	encoder := new(snapshotEncoder)
+	if err := encoder.encode(buf, &snapshot); err != nil {
 		t.Fatalf("failed to encode persistent state : %s", err.Error())
 	}
 
-	decoder := new(ProtoSnapshotDecoder)
-	decodedSnapshot, err := decoder.Decode(buf)
+	decoder := new(snapshotDecoder)
+	decodedSnapshot, err := decoder.decode(buf)
 	if err != nil {
 		t.Fatalf("failed to decode persistent state: %s", err.Error())
 	}

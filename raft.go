@@ -609,6 +609,10 @@ func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *In
 	return nil
 }
 
+// TakeSnapshot takes a snapshot of the current state of the state machine,
+// persists the snapshot, compacts the log up to and including the
+// last included index of the snapshot, and retursn the both the last included
+// index and term of the snapshot.
 func (r *RaftCore) TakeSnapshot() (uint64, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -640,6 +644,7 @@ func (r *RaftCore) TakeSnapshot() (uint64, uint64) {
 	return snapshot.LastIncludedIndex, snapshot.LastIncludedTerm
 }
 
+// ListSnapshots returns an array of all the snapshots that have been taken.
 func (r *RaftCore) ListSnapshots() []Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()

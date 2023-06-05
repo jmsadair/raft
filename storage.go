@@ -34,15 +34,16 @@ type Storage interface {
 	GetState() (PersistentState, error)
 }
 
-// PersistentStorage is a type that implements the Storage interface and persists
+// PersistentState contains the state that must be persisted
+// in the Raft protocol that is not a part of the log.
+type PersistentState struct {
+	Term     uint64
+	VotedFor string
+}
+
+// persistentStorage is a type that implements the Storage interface and persists
 // state to a file using an encoder and decoder. Not concurrent safe.
-type PersistentStorage struct {
-	// The encoder used to encode the persistent state associated with the storage.
-	storageEncoder StorageEncoder
-
-	// The decoder used to decode the persistent state associated with the storage.
-	storageDecoder StorageDecoder
-
+type persistentStorage struct {
 	// The path to the file where the storage is persisted.
 	path string
 
@@ -50,19 +51,13 @@ type PersistentStorage struct {
 	file *os.File
 }
 
-// PersistentState is a simple struct that contains the persisted state.
-type PersistentState struct {
-	term     uint64
-	votedFor string
-}
-
-// NewPersistentStorage creates a new instance of PersistentStorage with the provided path, storage encoder,
+// newPersistentStorage creates a new instance of PersistentStorage with the provided path, storage encoder,
 // and storage decoder.
-func NewPersistentStorage(path string, storageEncoder StorageEncoder, storageDecoder StorageDecoder) *PersistentStorage {
-	return &PersistentStorage{path: path, storageEncoder: storageEncoder, storageDecoder: storageDecoder}
+func newPersistentStorage(path string) *persistentStorage {
+	return &persistentStorage{path: path}
 }
 
-func (p *PersistentStorage) Open() error {
+func (p *persistentStorage) Open() error {
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0777)
 	if err != nil {
 		return errors.WrapError(err, errFailedStorageOpen, p.path, err.Error())
@@ -71,7 +66,7 @@ func (p *PersistentStorage) Open() error {
 	return nil
 }
 
-func (p *PersistentStorage) Close() error {
+func (p *persistentStorage) Close() error {
 	if p.file == nil {
 		return nil
 	}
@@ -81,7 +76,7 @@ func (p *PersistentStorage) Close() error {
 	return nil
 }
 
-func (p *PersistentStorage) SetState(persistentState *PersistentState) error {
+func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	// Create a temporary file that will replace the file currently associated with storage.
 	tmpFile, err := os.CreateTemp("", "persistent-storage")
 	if err != nil {
@@ -90,7 +85,8 @@ func (p *PersistentStorage) SetState(persistentState *PersistentState) error {
 
 	// Write the new state to the temporary file.
 	writer := io.Writer(tmpFile)
-	if err := p.storageEncoder.Encode(writer, persistentState); err != nil {
+	storageEncoder := storageEncoder{}
+	if err := storageEncoder.encode(writer, persistentState); err != nil {
 		return errors.WrapError(err, errFailedPersistentStateEncode, err.Error())
 	}
 	if err := tmpFile.Sync(); err != nil {
@@ -111,10 +107,11 @@ func (p *PersistentStorage) SetState(persistentState *PersistentState) error {
 	return nil
 }
 
-func (p *PersistentStorage) GetState() (PersistentState, error) {
+func (p *persistentStorage) GetState() (PersistentState, error) {
 	// Read the contents of the file associated with the storage.
 	reader := io.Reader(p.file)
-	persistentState, err := p.storageDecoder.Decode(reader)
+	storageDecoder := storageDecoder{}
+	persistentState, err := storageDecoder.decode(reader)
 
 	if err != nil && err != io.EOF {
 		return persistentState, errors.WrapError(err, errFailedPeristentStateDecode, err.Error())

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmsadair/raft/internal/errors"
 	"github.com/jmsadair/raft/internal/util"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -24,10 +24,28 @@ const (
 	errUnexpectedApply           = "cluster applied a command without quorum: command = %s"
 	errFailApply                 = "cluster failed to apply command: command = %s"
 	errOutOfOrder                = "cluster applied commands out of order: server = %d, expectedIndex = %d, actualIndex = %d"
+	errEmptySnapshot             = "cluster took snapshot that was empty: server = %d"
+	errIncorrectNumberSnapshots  = "cluster has incorrrect number of snapshots: server = %d, expectedNumberSnapshots = %d, actualNumberSnapshots = %d"
+	errIncorrectSnapshotIndex    = "cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d"
+	errIncorrectSnapshotTerm     = "cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d"
 	errDifferentCommandSameIndex = "cluster applied different commands at the same index: index = %d, command1 = %s, command2 = %s"
 	errReconnectingPeer          = "error reconnecting peer: peer = %d, connectingTo = %d, err = %s"
 	errDisconnectingPeer         = "error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s"
+	errStateMachineEncode        = "error encoding state machine state: %s"
+	errStateMachineDecode        = "error decoding state machine state: %s"
 )
+
+func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
+	assert.Equal(t, expectedIndex, entry.Index, "entry has incorrect index")
+	assert.Equal(t, expectedTerm, entry.Term, "entry has incorrect term")
+	assert.Equal(t, expectedData, entry.Data, "entry has incorrect data")
+}
+
+func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
+	assert.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex, "last included index does not match")
+	assert.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm, "last included term does not match")
+	assert.Equal(t, expected.Data, actual.Data, "data does not match")
+}
 
 func makeCommands(numCommands int) []Command {
 	commands := make([]Command, numCommands)
@@ -38,32 +56,55 @@ func makeCommands(numCommands int) []Command {
 	return commands
 }
 
-func makeGrpcPeers(numServers int) [][]*GrpcPeer {
+func makePeerMaps(numServers int) []map[string]net.Addr {
 	port := 8080
-	clusterPeers := make([][]*GrpcPeer, numServers)
+	clusterPeers := make([]map[string]net.Addr, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make([]*GrpcPeer, numServers)
+		clusterPeers[i] = make(map[string]net.Addr, numServers)
 		for j := 0; j < numServers; j++ {
 			ip := fmt.Sprintf("127.0.0.%d", j)
 			peerID := fmt.Sprint(j)
-			clusterPeers[i][j] = NewGrpcPeer(peerID, &net.TCPAddr{IP: net.ParseIP(ip), Port: port})
+			clusterPeers[i][peerID] = &net.TCPAddr{IP: net.ParseIP(ip), Port: port}
 		}
 	}
 
 	return clusterPeers
 }
 
-type StateMachineMock struct {
+type stateMachineEncoderMock struct{}
+
+func (s *stateMachineEncoderMock) encode(entries []*LogEntry) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(entries); err != nil {
+		return buf.Bytes(), err
+	}
+	return buf.Bytes(), nil
+}
+
+type stateMachineDecoderMock struct{}
+
+func (s *stateMachineDecoderMock) decode(data []byte) ([]*LogEntry, error) {
+	var commands []*LogEntry
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&commands); err != nil {
+		return commands, err
+	}
+	return commands, nil
+}
+
+type stateMachineMock struct {
 	commands []*LogEntry
 	mu       sync.Mutex
 }
 
-func NewStateMachineMock() *StateMachineMock {
+func newStateMachineMock() *stateMachineMock {
 	gob.Register(LogEntry{})
-	return &StateMachineMock{commands: make([]*LogEntry, 0)}
+	return &stateMachineMock{commands: make([]*LogEntry, 0)}
 }
 
-func (s *StateMachineMock) Apply(entry *LogEntry) interface{} {
+func (s *stateMachineMock) Apply(entry *LogEntry) interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -71,14 +112,14 @@ func (s *StateMachineMock) Apply(entry *LogEntry) interface{} {
 	return len(s.commands)
 }
 
-func (s *StateMachineMock) Snapshot() (Snapshot, error) {
+func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var data bytes.Buffer
-	enc := gob.NewEncoder(&data)
-	if err := enc.Encode(s.commands); err != nil {
-		return Snapshot{}, errors.WrapError(err, "error saving snapshot: %s", err.Error())
+	encoder := stateMachineEncoderMock{}
+	bytes, err := encoder.encode(s.commands)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf(errStateMachineEncode, err.Error())
 	}
 
 	var lastIncludedIndex uint64
@@ -91,53 +132,52 @@ func (s *StateMachineMock) Snapshot() (Snapshot, error) {
 		lastIncludedTerm = s.commands[len(s.commands)-1].Term
 	}
 
-	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: data.Bytes()}, nil
+	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: bytes}, nil
 }
 
-func (s *StateMachineMock) Restore(snapshot *Snapshot) error {
+func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var commands []*LogEntry
-	data := bytes.NewBuffer(snapshot.Data)
-	dec := gob.NewDecoder(data)
-	if err := dec.Decode(&commands); err != nil {
-		return errors.WrapError(err, "error restoring from snapshot: %s", err.Error())
+	decoder := stateMachineDecoderMock{}
+	entries, err := decoder.decode(snapshot.Data)
+	if err != nil {
+		return fmt.Errorf(errStateMachineDecode, err.Error())
 	}
 
-	s.commands = commands
+	s.commands = entries
 
 	return nil
 }
 
-type TestCluster struct {
+type storagePaths struct {
+	logPath             string
+	storagePath         string
+	snapshotStoragePath string
+}
+
+type testCluster struct {
 	// The testing instance associated with the cluster.
 	t *testing.T
 
-	// The peers associated with each server, where
-	// peers[i] corresponds to the peers for servers[i].
-	peers [][]*GrpcPeer
-
 	// The servers making up the cluster.
-	servers []*GrpcServer
+	servers []*Server
 
-	// The log associated with each server, where
-	// logs[i] corresponds to the log for servers[i].
-	logs []Log
+	// The peers fore each server, where peers[i] is the peers
+	// for servers[i].
+	peers []map[string]net.Addr
 
-	// The snapshot store associated with each server,
-	// where snapshotStores[i] corresponds to the snapshot
-	// store for servers[i].
-	snapshotStores []SnapshotStorage
+	// The associated storage paths for each server, where
+	// paths[i] is the paths for servers[i].
+	paths []storagePaths
 
-	// The state machine associated with each server,
-	// where stateMachines[i] corresponds to the state
-	// machine for servers[i].
-	stateMachines []StateMachine
+	// The servers which are disconnected, where disconnected[i] being
+	// true indicates servers[i] is disconnected.
+	disconnected []bool
 
-	// The storage associated with each server, where
-	// storage[i] corresponds to the storage for servers[i].
-	stores []Storage
+	// The state machine associated with each server, where fsm[i]
+	// corresponds to the state machine for servers[i].
+	fsm []*stateMachineMock
 
 	// The response channel associated with each server, where
 	// responseCh[i] corresponds to the response channel for
@@ -163,12 +203,11 @@ type TestCluster struct {
 	// corresponds to last applied index for servers[i].
 	lastApplied []uint64
 
-	// Indicates whether snapshotting is enabled.
-	// Set by enviroment variable.
-	snapshotting bool
+	// Indicates whether auto snapshotting will be used.
+	autoSnapshotting bool
 
-	// The maximum number of log entries per snapshot.
-	// Set by environment variable.
+	// The maximum number of log entries per snapshot if auto
+	// snapshotting is enabled.
 	snapshotSize int
 
 	mu sync.Mutex
@@ -176,17 +215,15 @@ type TestCluster struct {
 	wg sync.WaitGroup
 }
 
-func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *TestCluster {
-	servers := make([]*GrpcServer, numServers)
-	snapshotStores := make([]SnapshotStorage, numServers)
-	stateMachines := make([]StateMachine, numServers)
-	logs := make([]Log, numServers)
-	stores := make([]Storage, numServers)
+func newCluster(t *testing.T, numServers int, autoSnapshotting bool, snapshotSize int) *testCluster {
+	servers := make([]*Server, numServers)
+	fsm := make([]*stateMachineMock, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
 	responses := make([]map[uint64]CommandResponse, numServers)
-	peers := makeGrpcPeers(numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
+	disconnected := make([]bool, numServers)
+	paths := make([]storagePaths, numServers)
 
 	// The paths for all of the persistent storage associated with the cluster.
 	tmpDir := t.TempDir()
@@ -194,19 +231,19 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	logFileFmt := tmpDir + "/raft-log-%d"
 	storageFileFmt := tmpDir + "/raft-storage-%d"
 
+	// Make peer map for each server.
+	peers := makePeerMaps(numServers)
+
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
-		snapshotStores[i] = NewPersistentSnapshotStorage(fmt.Sprintf(snapshotFileFmt, i), new(ProtoSnapshotEncoder), new(ProtoSnapshotDecoder))
-		stateMachines[i] = NewStateMachineMock()
-		logs[i] = NewPersistentLog(fmt.Sprintf(logFileFmt, i), new(ProtoLogEncoder), new(ProtoLogDecoder))
-		stores[i] = NewPersistentStorage(fmt.Sprintf(storageFileFmt, i), new(ProtoStorageEncoder), new(ProtoStorageDecoder))
+		fsm[i] = newStateMachineMock()
 		responses[i] = make(map[uint64]CommandResponse)
+		paths[i] = storagePaths{logPath: fmt.Sprintf(logFileFmt, i), storagePath: fmt.Sprintf(storageFileFmt, i),
+			snapshotStoragePath: fmt.Sprintf(snapshotFileFmt, i)}
+		id := fmt.Sprint(i)
 
-		id := peers[0][i].ID()
-		address := peers[0][i].Address()
-
-		server, err := NewGrpcServer(id, peers[i], logs[i], stores[i], snapshotStores[i], stateMachines[i], address, replicateCh[i],
-			WithSnapshotting(snapshotting), WithMaxLogEntriesPerSnapshot(snapshotSize))
+		server, err := NewServer(id, peers[i], fsm[i], paths[i].logPath, paths[i].storagePath, paths[i].snapshotStoragePath, replicateCh[i],
+			WithAutoSnapshotting(autoSnapshotting), WithMaxLogEntriesPerSnapshot(snapshotSize))
 		if err != nil {
 			t.Fatalf(errCreateClusterServer, i, err.Error())
 		}
@@ -214,25 +251,24 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		servers[i] = server
 	}
 
-	return &TestCluster{
+	return &testCluster{
 		t:                t,
-		peers:            peers,
 		servers:          servers,
-		snapshotStores:   snapshotStores,
-		stateMachines:    stateMachines,
-		stores:           stores,
-		logs:             logs,
+		disconnected:     disconnected,
+		peers:            peers,
+		paths:            paths,
+		fsm:              fsm,
 		responseCh:       replicateCh,
 		commandResponses: responses,
 		serverErrors:     serverErrors,
 		lastApplied:      lastApplied,
 		shutdownCh:       make(chan interface{}),
-		snapshotting:     snapshotting,
+		autoSnapshotting: autoSnapshotting,
 		snapshotSize:     snapshotSize,
 	}
 }
 
-func (tc *TestCluster) startCluster() {
+func (tc *testCluster) startCluster() {
 	ready := make(chan interface{})
 	for i, server := range tc.servers {
 		if err := server.Start(ready); err != nil {
@@ -244,7 +280,7 @@ func (tc *TestCluster) startCluster() {
 	close(ready)
 }
 
-func (tc *TestCluster) stopCluster() {
+func (tc *testCluster) stopCluster() {
 	for _, server := range tc.servers {
 		server.Stop()
 	}
@@ -252,7 +288,7 @@ func (tc *TestCluster) stopCluster() {
 	tc.wg.Wait()
 }
 
-func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
+func (tc *testCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
@@ -303,9 +339,9 @@ func (tc *TestCluster) submit(command Command, retry bool, expectFail bool, expe
 	}
 }
 
-func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
+func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	// Any leaders detected.
-	leaders := make([]string, 0)
+	leaders := make([]int, 0)
 
 	// Time between checks for a leader. This amount should be large enough
 	// to allow an election to take place.
@@ -333,8 +369,9 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 			//    a minority of the cluster. Members of the majority partition
 			//    cannnot communicate with it.
 			tc.mu.Lock()
-			if status.State == Leader && tc.peers[i][i].Connected() {
-				leaders = append(leaders, status.ID)
+			if status.State == Leader && !tc.disconnected[i] {
+				index, _ := strconv.Atoi(status.ID)
+				leaders = append(leaders, index)
 			}
 			tc.mu.Unlock()
 		}
@@ -361,13 +398,13 @@ func (tc *TestCluster) checkLeaders(expectNoLeader bool) string {
 	}
 
 	if expectNoLeader {
-		return ""
+		return -1
 	}
 
 	return leaders[0]
 }
 
-func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
+func (tc *testCluster) checkLogs(index int, response CommandResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -382,25 +419,38 @@ func (tc *TestCluster) checkLogs(index int, response CommandResponse) {
 	tc.lastApplied[index]++
 }
 
-func (tc *TestCluster) checkSnapshot(index int, response CommandResponse) {
+func (tc *testCluster) checkSnapshot(index int, response CommandResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// The snapshot storage is not concurrent safe. We need to ensure that
-	// the raft implementation is not writing to it when read.
-	tc.servers[index].raft.mu.Lock()
-	snapshots := tc.snapshotStores[index].ListSnapshots()
-	tc.servers[index].raft.mu.Unlock()
+	snapshots := tc.servers[index].ListSnapshots()
 
 	for _, snapshot := range snapshots {
 		if snapshot.LastIncludedIndex+1 == response.Index {
 			// Decode the snapshot data into entries.
-			var appliedEntries []*LogEntry
-			data := bytes.NewBuffer(snapshot.Data)
-			dec := gob.NewDecoder(data)
-			if err := dec.Decode(&appliedEntries); err != nil {
-				tc.serverErrors[index] = fmt.Sprintf("failed to decode applied entries: %s", err)
+			decoder := stateMachineDecoderMock{}
+			appliedEntries, err := decoder.decode(snapshot.Data)
+			if err != nil {
+				tc.serverErrors[index] = err.Error()
 				return
+			}
+
+			if len(appliedEntries) == 0 {
+				tc.serverErrors[index] = fmt.Sprintf(errEmptySnapshot, index)
+				return
+			}
+
+			actualLastIncludedIndex := appliedEntries[len(appliedEntries)-1].Index
+			actualLastIncludedTerm := appliedEntries[len(appliedEntries)-1].Term
+
+			// Sanity check last included index matches with the last included index in the snapshot bytes.
+			if actualLastIncludedIndex != snapshot.LastIncludedIndex {
+				tc.serverErrors[index] = fmt.Sprintf(errIncorrectSnapshotIndex, index, snapshot.LastIncludedIndex, actualLastIncludedIndex)
+			}
+
+			// Sanity chec last included term matches with the last included term in the snapshot bytes.
+			if actualLastIncludedTerm != snapshot.LastIncludedTerm {
+				tc.serverErrors[index] = fmt.Sprintf(errIncorrectSnapshotTerm, index, snapshot.LastIncludedTerm, actualLastIncludedTerm)
 			}
 
 			// Update this server's responses with the commands included in the snapshot.
@@ -417,7 +467,7 @@ func (tc *TestCluster) checkSnapshot(index int, response CommandResponse) {
 	tc.serverErrors[index] = fmt.Sprintf(errOutOfOrder, index, tc.lastApplied[index]+1, response.Index)
 }
 
-func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
+func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -447,7 +497,7 @@ func (tc *TestCluster) checkApplied(index uint64, expectedApplied int) bool {
 	return hasApplied >= expectedApplied
 }
 
-func (tc *TestCluster) applyLoop(index int) {
+func (tc *testCluster) applyLoop(index int) {
 	defer tc.wg.Done()
 
 	for response := range tc.responseCh[index] {
@@ -461,60 +511,52 @@ func (tc *TestCluster) applyLoop(index int) {
 	}
 }
 
-func (tc *TestCluster) crashServer(serverID string) {
-	index, _ := strconv.Atoi(serverID)
-	tc.disconnectServer(serverID)
-	tc.servers[index].Stop()
+func (tc *testCluster) crashServer(server int) {
+	// Do not acquire lock here - will cause deadlock.
+	tc.disconnectServer(server)
+	tc.servers[server].Stop()
 }
 
-func (tc *TestCluster) restartServer(serverID string) {
+func (tc *testCluster) restartServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	index, _ := strconv.Atoi(serverID)
-	address := tc.peers[index][index].Address()
+	serverID := fmt.Sprint(server)
 
-	tc.responseCh[index] = make(chan CommandResponse)
-	tc.stateMachines[index] = NewStateMachineMock()
+	tc.responseCh[server] = make(chan CommandResponse)
+	tc.fsm[server] = newStateMachineMock()
 
-	newServer, err := NewGrpcServer(serverID, tc.peers[index], tc.logs[index], tc.stores[index], tc.snapshotStores[index],
-		tc.stateMachines[index], address, tc.responseCh[index], WithSnapshotting(tc.snapshotting), WithMaxLogEntriesPerSnapshot(tc.snapshotSize))
+	newServer, err := NewServer(serverID, tc.peers[server], tc.fsm[server], tc.paths[server].logPath,
+		tc.paths[server].storagePath, tc.paths[server].snapshotStoragePath, tc.responseCh[server],
+		WithAutoSnapshotting(tc.autoSnapshotting), WithMaxLogEntriesPerSnapshot(tc.snapshotSize))
 	if err != nil {
-		tc.t.Fatalf(errStartingClusterServer, index, err.Error())
+		tc.t.Fatalf(errStartingClusterServer, server, err.Error())
 	}
 
-	// If snapshotting is enabled, the server should restore its
-	// state machine from its last snapshot and update its last
-	// applied index to the last included index of the snapshot.
-	// Otherwise, the server's last applied index should alawys
-	// start at 0.
-	if tc.snapshotting {
-		snapshot, _ := tc.snapshotStores[index].LastSnapshot()
-		tc.lastApplied[index] = snapshot.LastIncludedIndex
-	} else {
-		tc.lastApplied[index] = 0
-	}
-
-	tc.servers[index] = newServer
-	tc.commandResponses[index] = make(map[uint64]CommandResponse)
+	snapshot, _ := tc.servers[server].raft.snapshotStorage.LastSnapshot()
+	tc.lastApplied[server] = snapshot.LastIncludedIndex
+	tc.servers[server] = newServer
+	tc.commandResponses[server] = make(map[uint64]CommandResponse)
 
 	tc.wg.Add(1)
-	go tc.applyLoop(index)
+	go tc.applyLoop(server)
 
 	readyCh := make(chan interface{})
 	defer close(readyCh)
 	if err := newServer.Start(readyCh); err != nil {
-		tc.t.Fatalf(errStartingClusterServer, index, err.Error())
+		tc.t.Fatalf(errStartingClusterServer, server, err.Error())
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
-		if err := tc.peers[i][index].Connect(); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, i, index, err.Error())
+		if err := tc.servers[i].raft.connectPeer(serverID); err != nil {
+			tc.t.Fatalf(errReconnectingPeer, i, server, err.Error())
 		}
 	}
+
+	tc.disconnected[server] = false
 }
 
-func (tc *TestCluster) createPartition() {
+func (tc *testCluster) createPartition() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -539,85 +581,149 @@ func (tc *TestCluster) createPartition() {
 				if _, ok := partitionSet[j]; ok {
 					continue
 				}
-				if err := tc.peers[i][j].Disconnect(); err != nil {
+				if err := tc.servers[i].raft.disconnectPeer(fmt.Sprint(j)); err != nil {
 					tc.t.Fatalf(errDisconnectingPeer, i, j, err.Error())
 				}
-				if err := tc.peers[j][i].Disconnect(); err != nil {
+				if err := tc.servers[j].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
 					tc.t.Fatalf(errDisconnectingPeer, j, i, err.Error())
 				}
 			}
 
-			if err := tc.peers[i][i].Disconnect(); err != nil {
+			if err := tc.servers[i].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
 				tc.t.Fatalf(errDisconnectingPeer, i, i, err.Error())
 			}
 		}
 	}
+
+	for index := range partitionSet {
+		tc.disconnected[index] = true
+	}
 }
 
-func (tc *TestCluster) reconnectServer(serverID string) {
+func (tc *testCluster) reconnectServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	index, _ := strconv.Atoi(serverID)
+	serverID := fmt.Sprint(server)
 
 	// Reconnect this server to itself. Note that this has no effect
 	// on the operation of the cluster. The only purpose of this is to
 	// indicate that this server is connected and should operate as expected.
-	if err := tc.peers[index][index].Connect(); err != nil {
-		tc.t.Fatalf(errReconnectingPeer, index, index, err.Error())
+	if err := tc.servers[server].raft.disconnectPeer(serverID); err != nil {
+		tc.t.Fatalf(errReconnectingPeer, server, server, err.Error())
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
-		if index == i {
+		if server == i {
 			continue
 		}
-		if err := tc.peers[i][index].Connect(); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, i, index, err.Error())
+		if err := tc.servers[i].raft.connectPeer(serverID); err != nil {
+			tc.t.Fatalf(errReconnectingPeer, i, server, err.Error())
 		}
-		if err := tc.peers[index][i].Connect(); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, index, i, err.Error())
+		if err := tc.servers[server].raft.connectPeer(fmt.Sprint(i)); err != nil {
+			tc.t.Fatalf(errReconnectingPeer, server, i, err.Error())
 		}
 	}
+
+	tc.disconnected[server] = false
 }
 
-func (tc *TestCluster) reconnectAllServers() {
+func (tc *testCluster) reconnectAllServers() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
 	for i := 0; i < len(tc.servers); i++ {
 		for j := 0; j < len(tc.servers); j++ {
-			if tc.peers[i][j].Connected() {
-				continue
-			}
-			if err := tc.peers[i][j].Connect(); err != nil {
+			if err := tc.servers[i].raft.connectPeer(fmt.Sprint(j)); err != nil {
 				tc.t.Fatalf(errReconnectingPeer, i, j, err.Error())
 			}
 		}
 	}
+
+	for i := 0; i < len(tc.servers); i++ {
+		tc.disconnected[i] = false
+	}
 }
 
-func (tc *TestCluster) disconnectServer(serverID string) {
+func (tc *testCluster) disconnectServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// Disconnect this server from itself. Note that this has no effect
+	serverID := fmt.Sprint(server)
+
+	// Disconnect this index from itself. Note that this has no effect
 	// on the operation of the cluster. The only purpose of this is to
-	// indicate that this server is disconnected and will not operate
+	// indicate that this index is disconnected and will not operate
 	// as expected.
-	server, _ := strconv.Atoi(serverID)
-	if err := tc.peers[server][server].Disconnect(); err != nil {
+	if err := tc.servers[server].raft.disconnectPeer(serverID); err != nil {
 		tc.t.Fatalf(errDisconnectingPeer, server, server, err.Error())
 	}
 
-	for i := 0; i < len(tc.peers); i++ {
+	for i := 0; i < len(tc.servers); i++ {
 		if i == server {
 			continue
 		}
-		if err := tc.peers[i][server].Disconnect(); err != nil {
+		if err := tc.servers[i].raft.disconnectPeer(serverID); err != nil {
 			tc.t.Fatalf(errDisconnectingPeer, i, server, err.Error())
 		}
-		if err := tc.peers[server][i].Disconnect(); err != nil {
+		if err := tc.servers[server].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
 			tc.t.Fatalf(errDisconnectingPeer, server, i, err.Error())
 		}
+	}
+
+	tc.disconnected[server] = true
+}
+
+func (tc *testCluster) takeAndValidateSnapshot(server int) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	oldSnaphsots := tc.servers[server].ListSnapshots()
+	lastIncludedIndex, lastIncludedTerm := tc.servers[server].TakeSnapshot()
+	newSnapshots := tc.servers[server].ListSnapshots()
+
+	// A snapshot was just taken so there should be one additional snapshot in the snapshot store.
+	if len(newSnapshots) != len(oldSnaphsots)+1 {
+		tc.t.Fatalf(errIncorrectNumberSnapshots, server, len(oldSnaphsots)+1, len(newSnapshots))
+	}
+
+	// The most recent snapshot.
+	snapshot := newSnapshots[len(newSnapshots)-1]
+
+	// Decode the snapshot data into entries.
+	decoder := stateMachineDecoderMock{}
+	appliedEntries, err := decoder.decode(snapshot.Data)
+	if err != nil {
+		tc.t.Fatal(err)
+		return
+	}
+
+	// Snapshots should never be empty.
+	if len(appliedEntries) == 0 {
+		tc.t.Fatalf(errEmptySnapshot, server)
+		return
+	}
+
+	actualLastIncludedIndex := appliedEntries[len(appliedEntries)-1].Index
+	actualLastIncludedTerm := appliedEntries[len(appliedEntries)-1].Term
+
+	// Make sure last included index returned by server matches with the last included index in the snapshot bytes.
+	if actualLastIncludedIndex != lastIncludedIndex {
+		tc.t.Fatalf(errIncorrectSnapshotIndex, server, lastIncludedIndex, actualLastIncludedIndex)
+	}
+
+	// Make sure last included term returned by server matches with the last included term in the snapshot bytes.
+	if actualLastIncludedTerm != lastIncludedTerm {
+		tc.t.Fatalf(errIncorrectSnapshotTerm, server, lastIncludedTerm, actualLastIncludedTerm)
+	}
+
+	// Make sure last included index in snapshot matches with the last included index in the snapshot bytes.
+	if actualLastIncludedIndex != snapshot.LastIncludedIndex {
+		tc.t.Fatalf(errIncorrectSnapshotIndex, server, snapshot.LastIncludedIndex, actualLastIncludedIndex)
+	}
+
+	// Make sure last included term in snapshot matches with the last included term in the snapshot bytes.
+	if actualLastIncludedTerm != snapshot.LastIncludedTerm {
+		tc.t.Fatalf(errIncorrectSnapshotTerm, server, snapshot.LastIncludedTerm, actualLastIncludedTerm)
 	}
 }

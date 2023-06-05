@@ -56,9 +56,9 @@ type SnapshotStorage interface {
 	ListSnapshots() []Snapshot
 }
 
-// PersistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
-// and persists them to durable storage.
-type PersistentSnapshotStorage struct {
+// persistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
+// and persists them to durable storage. Not concurrent safe.
+type persistentSnapshotStorage struct {
 	// All snapshots that have been saved to this storage. Empty if no snapshots
 	// have been saved or if the snapshot store is not open.
 	snapshots []Snapshot
@@ -68,22 +68,15 @@ type PersistentSnapshotStorage struct {
 
 	// The file associated with the snapshot storage, nil if snapshot storage is closed.
 	file *os.File
-
-	// The encoder used to encode the snapshots associated with this snapshot storage.
-	encoder SnapshotEncoder
-
-	// The decoder used to decode the snapshots associated with this snapshot storage.
-	decoder SnapshotDecoder
 }
 
-// NewPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage at the
-// provided path. Snapshots will be encoded using the provided SnapshotEncoder, and decoded
-// using the provided SnapshotDecoder.
-func NewPersistentSnapshotStorage(path string, encoder SnapshotEncoder, decoder SnapshotDecoder) *PersistentSnapshotStorage {
-	return &PersistentSnapshotStorage{path: path, encoder: encoder, decoder: decoder}
+// newPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage at the
+// provided path.
+func newPersistentSnapshotStorage(path string) *persistentSnapshotStorage {
+	return &persistentSnapshotStorage{path: path}
 }
 
-func (p *PersistentSnapshotStorage) Open() error {
+func (p *persistentSnapshotStorage) Open() error {
 	if p.file != nil {
 		return nil
 	}
@@ -99,15 +92,16 @@ func (p *PersistentSnapshotStorage) Open() error {
 	return nil
 }
 
-func (p *PersistentSnapshotStorage) Replay() error {
+func (p *persistentSnapshotStorage) Replay() error {
 	if p.file == nil {
 		return errors.WrapError(nil, errSnapshotStoreNotOpen, p.path)
 	}
 
 	reader := bufio.NewReader(p.file)
+	snapshotDecoder := snapshotDecoder{}
 
 	for {
-		snapshot, err := p.decoder.Decode(reader)
+		snapshot, err := snapshotDecoder.decode(reader)
 		if err == io.EOF {
 			break
 		}
@@ -120,7 +114,7 @@ func (p *PersistentSnapshotStorage) Replay() error {
 	return nil
 }
 
-func (p *PersistentSnapshotStorage) Close() error {
+func (p *persistentSnapshotStorage) Close() error {
 	if p.file == nil {
 		return nil
 	}
@@ -132,27 +126,28 @@ func (p *PersistentSnapshotStorage) Close() error {
 	return nil
 }
 
-func (p *PersistentSnapshotStorage) LastSnapshot() (Snapshot, bool) {
+func (p *persistentSnapshotStorage) LastSnapshot() (Snapshot, bool) {
 	if len(p.snapshots) == 0 {
 		return Snapshot{}, false
 	}
 	return p.snapshots[len(p.snapshots)-1], true
 }
 
-func (p *PersistentSnapshotStorage) ListSnapshots() []Snapshot {
+func (p *persistentSnapshotStorage) ListSnapshots() []Snapshot {
 	if len(p.snapshots) == 0 {
 		return []Snapshot{}
 	}
 	return p.snapshots
 }
 
-func (p *PersistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
+func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
 	if p.file == nil {
 		return errors.WrapError(nil, errSnapshotStoreNotOpen, p.path)
 	}
 
 	writer := bufio.NewWriter(p.file)
-	if err := p.encoder.Encode(writer, snapshot); err != nil {
+	snapshotEncoder := snapshotEncoder{}
+	if err := snapshotEncoder.encode(writer, snapshot); err != nil {
 		return errors.WrapError(err, errFailedSnapshotEncode, err.Error())
 	}
 	if err := writer.Flush(); err != nil {

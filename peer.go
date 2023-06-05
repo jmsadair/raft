@@ -27,19 +27,10 @@ type Peer interface {
 	ID() string
 
 	// Address returns the network address of the peer.
-	Address() net.Addr
-
-	// Clone creates a new instance of Peer with the same ID and network address.
-	Clone() Peer
-
-	// Connect establishes a connection with the peer.
 	Connect() error
 
-	// Disconnect terminates the connection with the peer.
+	// Connect establishes a connection with the peer.
 	Disconnect() error
-
-	// Connected indicates whether a connection has been established with the peer.
-	Connected() bool
 
 	// AppendEntries sends an AppendEntriesRequest to the peer and returns an AppendEntriesResponse and an error
 	// if the request was unsuccessful.
@@ -52,63 +43,42 @@ type Peer interface {
 	// InstallSnapshot sends a InstallSnapshotRequest to the peer and returns a InstallSnapshotResponse and an error
 	// if the request was unsuccessful.
 	InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error)
-
-	// SetNextIndex sets the next log index associated with the peer.
-	SetNextIndex(nextIndex uint64)
-
-	// NextIndex gets the next log index associated with the peer.
-	NextIndex() uint64
-
-	// SetMatchIndex sets the log match index associated with the peer.
-	SetMatchIndex(matchIndex uint64)
-
-	// MatchIndex gets the log match index associated with the peer.
-	MatchIndex() uint64
 }
 
-// ProtobufPeer is an implementation of Peer that is responsible for establishing
-// a connection with a server using protobuf.
-type ProtobufPeer struct {
+// peer is an implementation of the Peer interface that is responsible for establishing
+// a connection with a remote server using gRPC.
+type peer struct {
+	// The gRPC client for making Raft protocol calls to the peer.
+	client pb.RaftClient
+
 	// The ID of this peer.
 	id string
 
 	// The network address of this peer.
 	address net.Addr
 
-	// The index of the next log entry this peer expects.
-	nextIndex uint64
-
-	// The highest index log entry that matches with leader.
-	matchIndex uint64
-
 	// The gRPC client connection to communicate with the peer.
 	conn *grpc.ClientConn
 
-	// The gRPC client for making Raft protocol calls to the peer.
-	client pb.RaftClient
-
-	mu sync.Mutex
+	// Prevents a race condition bewteen disconnect/connect and the RPCs.
+	mu sync.RWMutex
 }
 
-// NewProtobufPeer creates a new instance of a ProtobufPeer with
+// newPeer creates a new instance of a peer with
 // the provided ID and network address.
-func NewProtobufPeer(id string, address net.Addr) *ProtobufPeer {
-	return &ProtobufPeer{id: id, address: address}
+func newPeer(id string, address net.Addr) *peer {
+	return &peer{id: id, address: address}
 }
 
-func (p *ProtobufPeer) ID() string {
+func (p *peer) ID() string {
 	return p.id
 }
 
-func (p *ProtobufPeer) Address() net.Addr {
+func (p *peer) Address() net.Addr {
 	return p.address
 }
 
-func (p *ProtobufPeer) Clone() Peer {
-	return NewProtobufPeer(p.id, p.address)
-}
-
-func (p *ProtobufPeer) Connect() error {
+func (p *peer) Connect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -127,7 +97,7 @@ func (p *ProtobufPeer) Connect() error {
 	return nil
 }
 
-func (p *ProtobufPeer) Disconnect() error {
+func (p *peer) Disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -145,16 +115,9 @@ func (p *ProtobufPeer) Disconnect() error {
 	return nil
 }
 
-func (p *ProtobufPeer) Connected() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.client != nil
-}
-
-func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	if p.client == nil {
 		return AppendEntriesResponse{}, errors.WrapError(nil, errNoConn, p.id)
@@ -169,9 +132,9 @@ func (p *ProtobufPeer) AppendEntries(request AppendEntriesRequest) (AppendEntrie
 	return makeAppendEntriesResponse(pbResponse), nil
 }
 
-func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	if p.client == nil {
 		return RequestVoteResponse{}, errors.WrapError(nil, errNoConn, p.id)
@@ -186,9 +149,9 @@ func (p *ProtobufPeer) RequestVote(request RequestVoteRequest) (RequestVoteRespo
 	return makeRequestVoteResponse(pbResponse), nil
 }
 
-func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	if p.client == nil {
 		return InstallSnapshotResponse{}, errors.WrapError(nil, errNoConn, p.id)
@@ -201,32 +164,4 @@ func (p *ProtobufPeer) InstallSnapshot(request InstallSnapshotRequest) (InstallS
 	}
 
 	return makeInstallSnapshotResponse(pbResponse), nil
-}
-
-func (p *ProtobufPeer) SetNextIndex(index uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.nextIndex = index
-}
-
-func (p *ProtobufPeer) NextIndex() uint64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.nextIndex
-}
-
-func (p *ProtobufPeer) SetMatchIndex(index uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.matchIndex = index
-}
-
-func (p *ProtobufPeer) MatchIndex() uint64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.matchIndex
 }

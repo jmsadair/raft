@@ -10,51 +10,53 @@ import (
 	"google.golang.org/grpc"
 )
 
-// ProtobufServer is a wrapper for a Raft instance. It serves requests
+// Server is a wrapper for a RaftCore instance. It serves requests
 // for Raft using protobuf and gRPC.
-type ProtobufServer struct {
+type Server struct {
 	pb.UnimplementedRaftServer
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            *Raft
+	raft            *RaftCore
 	wg              sync.WaitGroup
 }
 
-// NewProtobufServer creates a new instance of ProtobufServer.
-func NewProtobufServer(
-	id string,
-	peers []*ProtobufPeer,
-	log Log, storage Storage,
-	snapshotStorage SnapshotStorage,
-	fsm StateMachine,
-	listenInterface net.Addr,
-	responseCh chan<- CommandResponse,
-	opts ...Option) (*ProtobufServer, error) {
-	// Convert the array of ProtobufPeer instances to an array abstract Peer instances.
-	raftPeers := make([]Peer, len(peers))
-	for i := 0; i < len(peers); i++ {
-		raftPeers[i] = peers[i]
+// NewServer creates a new instance of a Server.
+func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
+	responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
+	// Create gRPC peers
+	grpcPeers := make(map[string]Peer, len(peers))
+	for id, address := range peers {
+		grpcPeers[id] = newPeer(id, address)
 	}
 
-	raft, err := NewRaft(id, raftPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
+	// Create log with protobuf encoding and decoding at the provided path.
+	log := newPersistentLog(logPath)
+
+	// Create storage with protobuf encoding and decoding at the provided path.
+	storage := newPersistentStorage(storagePath)
+
+	// Create snapshot storage with protobuf encoding and decoding at the provided path.
+	snapshotStorage := newPersistentSnapshotStorage(snapshotPath)
+
+	raft, err := NewRaftCore(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}
 
-	server := &ProtobufServer{
-		listenInterface: listenInterface,
+	server := &Server{
+		listenInterface: peers[id],
 		raft:            raft,
 	}
 
 	return server, nil
 }
 
-// Start starts the ProtobufServer. It listens for incoming connections on the configured
+// Start starts the server. It listens for incoming connections on the configured
 // network address and starts the Raft instance. It also starts serving gRPC requests on the
 // listener. The provided channel is used to signal to the server that it should start serving
 // requests.
-func (s *ProtobufServer) Start(ready <-chan interface{}) error {
+func (s *Server) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
 		return errors.WrapError(err, "failed to start server: %s", err.Error())
@@ -76,9 +78,9 @@ func (s *ProtobufServer) Start(ready <-chan interface{}) error {
 	return nil
 }
 
-// Stop stops the ProtobufServer.
+// Stop stops the server.
 // It gracefully stops the gRPC server, stops the Raft instance, and closes the listener.
-func (s *ProtobufServer) Stop() {
+func (s *Server) Stop() {
 	if s.server == nil {
 		return
 	}
@@ -90,30 +92,43 @@ func (s *ProtobufServer) Stop() {
 	s.server = nil
 }
 
-// Status returns the status of the ProtobufServer.
+// Status returns the status of the server.
 // It retrieves the status from the underlying Raft instance.
-func (s *ProtobufServer) Status() Status {
+func (s *Server) Status() Status {
 	return s.raft.Status()
 }
 
-// IsStarted checks if the ProtobufServer is started.
+// IsStarted checks if the server is started.
 // It returns true if the server is started, false otherwise.
-func (s *ProtobufServer) IsStarted() bool {
+func (s *Server) IsStarted() bool {
 	return s.server != nil
 }
 
-// SubmitCommand submits a command to the ProtobufServer for processing.
-// It forwards the command to the underlying Raft instance for handling
+// SubmitCommand submits a command to the server for processing.
+// It forwards the command to the underlying RaftCore instance for handling
 // and returns the index and term assigned to the command, as well as
 // an error if submitting the command failed.
-func (s *ProtobufServer) SubmitCommand(command Command) (uint64, uint64, error) {
+func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
 	return s.raft.SubmitCommand(command)
 }
 
+// TakeSnapshot manually takes a snapshot of the state machine and
+// returns the last included log index and last included term of the
+// snapshot.
+func (s *Server) TakeSnapshot() (uint64, uint64) {
+	return s.raft.TakeSnapshot()
+}
+
+// ListSnapshots returns an array of all the snapshots that the underlying
+// RaftCore instance has taken.
+func (s *Server) ListSnapshots() []Snapshot {
+	return s.raft.ListSnapshots()
+}
+
 // AppendEntries handles the AppendEntries gRPC request.
-// It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
+// It converts the request to the internal representation, invokes the AppendEntries function on the RaftCore instance,
 // and returns the response.
-func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
 	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
@@ -123,9 +138,9 @@ func (s *ProtobufServer) AppendEntries(ctx context.Context, request *pb.AppendEn
 }
 
 // RequestVote handles the RequestVote gRPC request.
-// It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
+// It converts the request to the internal representation, invokes the RequestVote function on the RaftCore instance,
 // and returns the response.
-func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
 	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
@@ -135,9 +150,9 @@ func (s *ProtobufServer) RequestVote(ctx context.Context, request *pb.RequestVot
 }
 
 // InstallSnapshot handles the InstallSnapshot gRPC request.
-// It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
+// It converts the request to the internal representation, invokes the InstallSnapshot function on the RaftCore instance,
 // and returns the response.
-func (s *ProtobufServer) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
 	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {

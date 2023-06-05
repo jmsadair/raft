@@ -59,7 +59,7 @@ type options struct {
 	maxEntriesPerSnapshot int
 
 	// Indicates whether raft should use snapshots.
-	snapshottingEnabled bool
+	autoSnapshottingEnabled bool
 
 	// A logger for debugging and important events.
 	logger Logger
@@ -83,7 +83,8 @@ func WithHeartbeatInterval(time time.Duration) Option {
 	}
 }
 
-// WithMaxLogEntriesPerSnapshot sets the maximum log entries per snapshot for the Raft server.
+// WithMaxLogEntriesPerSnapshot sets the maximum log entries per snapshot for the Raft server
+// for when auto snashotting is enabled.
 func WithMaxLogEntriesPerSnapshot(maxEntriesPerSnapshot int) Option {
 	return func(options *options) error {
 		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
@@ -91,10 +92,12 @@ func WithMaxLogEntriesPerSnapshot(maxEntriesPerSnapshot int) Option {
 	}
 }
 
-// WithSnapshotting is used to indicate whether the Raft server should use
-func WithSnapshotting(snaphottingEnabled bool) Option {
+// WithAutoSnapshotting is used to indicate whether the Raft server should
+// automatically take snapshots once a predefined number of log entries
+// have been applied.
+func WithAutoSnapshotting(autoSnaphottingEnabled bool) Option {
 	return func(options *options) error {
-		options.snapshottingEnabled = snaphottingEnabled
+		options.autoSnapshottingEnabled = autoSnaphottingEnabled
 		return nil
 	}
 }

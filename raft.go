@@ -10,32 +10,17 @@ import (
 )
 
 const (
-	// Occurs when there was an isssue creating the logger provided in the options.
-	errFailedRaftLog = "failed to create a logger for raft: %s"
-
-	// Occurs when applying one of the options resulted in some error.
-	errFailedRaftOption = "failed to apply provided option: %s"
-
-	// Occurs when a storage implementation cannot be openened.
-	errFailedRaftStorageOpen       = "failed to open raft storage: %s"
-	errFailedRaftLogOpen           = "failed to open raft log: %s"
-	errFailedRaftSnapshotStoreOpen = "failed to open raft snapshot storage: %s"
-
-	// Occurs when there was an issue reading persisted state into memory.
-	errFailedRaftLogRecover      = "failed to recover persisted state from raft log: %s"
-	errFailedRaftSnapshotRecover = "failed to recover persisted raft snapshot data: %s"
-	errFailedRaftStorageRecover  = "failed to recover raft persisted state: %s"
-
-	// Occurs when something went wrong with resotring the state machine using the
-	// provided snapshot.
+	errFailedRaftLog                 = "failed to create a logger for raft: %s"
+	errFailedRaftOption              = "failed to apply provided option: %s"
+	errFailedRaftStorageOpen         = "failed to open raft storage: %s"
+	errFailedRaftLogOpen             = "failed to open raft log: %s"
+	errFailedRaftSnapshotStoreOpen   = "failed to open raft snapshot storage: %s"
+	errFailedRaftLogRecover          = "failed to recover persisted state from raft log: %s"
+	errFailedRaftSnapshotRecover     = "failed to recover persisted raft snapshot data: %s"
+	errFailedRaftStorageRecover      = "failed to recover raft persisted state: %s"
 	errFailedRaftRestoreStateMachine = "failed to restore state machine: %s"
-
-	// Occurs when a command is submitted to a server that is not leader.
-	// Only the leader may replicate commands.
-	errRaftNotLeader = "server %s is not the leader"
-
-	// Occurs when the server recieves a request and it is not online.
-	RaftShutdown = "server %s is shutdown"
+	errRaftNotLeader                 = "server %s is not the leader"
+	errRaftShutdown                  = "server %s is shutdown"
 )
 
 // State represents the current state of a Raft server.
@@ -43,8 +28,17 @@ const (
 type State uint32
 
 const (
+	// Leader is a state indicating that a server is responsible for replicating and
+	// committing log entries. Typically, only one server in a cluster will be the leader.
+	// However, if there are partitions or other failures, it is possible there is more than
+	// one leader.
 	Leader State = iota
+
+	// Follower is a state indicating that a server is responsible for accepting log entries replicated
+	// by the leader. A server is in the follower state may not accept commands for replication.
 	Follower
+
+	// Shutdown is a state indicating that the server is currently offline.
 	Shutdown
 )
 
@@ -90,10 +84,28 @@ type CommandResponse struct {
 	Snapshot Snapshot
 }
 
-// RaftCore implements the consensus module in the Raft architecture.
+// Status is the status of a Raft instance.
+type Status struct {
+	// The ID of the Raft instance.
+	ID string
+
+	// The current term.
+	Term uint64
+
+	// The current commit index.
+	CommitIndex uint64
+
+	// The index of the last log entry applied to the state machine.
+	LastApplied uint64
+
+	// The current state of Raft instance: leader, follower, shutdown.
+	State State
+}
+
+// Raft implements the consensus module in the Raft architecture.
 // This implementation should be used as the internal logic for an actual server
 // and cannot act as a complete server alone.
-type RaftCore struct {
+type Raft struct {
 	// The ID of this Raft instance.
 	id string
 
@@ -165,9 +177,9 @@ type RaftCore struct {
 	mu sync.Mutex
 }
 
-// NewRaftCore creates a new instance of Raft that is configured with the provided options.
-func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
-	fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*RaftCore, error) {
+// NewRaft creates a new instance of Raft that is configured with the provided options.
+func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
+	fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*Raft, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
@@ -234,7 +246,7 @@ func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, sna
 		matchIndex[peer.ID()] = 0
 	}
 
-	raft := &RaftCore{
+	raft := &Raft{
 		id:                id,
 		options:           options,
 		peers:             peers,
@@ -273,7 +285,7 @@ func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, sna
 }
 
 // Start starts the Raft instance.
-func (r *RaftCore) Start() error {
+func (r *Raft) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -304,7 +316,7 @@ func (r *RaftCore) Start() error {
 }
 
 // Stop stops the Raft instance.
-func (r *RaftCore) Stop() error {
+func (r *Raft) Stop() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -348,7 +360,7 @@ func (r *RaftCore) Stop() error {
 // returns the log index assigned to the command, the term assigned to the
 // command, and an error if this server is not the leader. Note that submitting
 // a command for replication does not guarantee replication if there are failures.
-func (r *RaftCore) SubmitCommand(command Command) (uint64, uint64, error) {
+func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -365,7 +377,9 @@ func (r *RaftCore) SubmitCommand(command Command) (uint64, uint64, error) {
 	return entry.Index, entry.Term, nil
 }
 
-func (r *RaftCore) Status() Status {
+// Status returns the status of the Raft instance. The status includes
+// the ID, term, commit index, last applied index, and state.
+func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -379,12 +393,12 @@ func (r *RaftCore) Status() Status {
 }
 
 // AppendEntries is invoked by the leader to replicate log entries.
-func (r *RaftCore) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
+func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, RaftShutdown, r.id)
+		return errors.WrapError(nil, errRaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
@@ -499,12 +513,12 @@ func (r *RaftCore) AppendEntries(request *AppendEntriesRequest, response *Append
 }
 
 // RequestVote is invoked by the candidate server to gather a vote from this server.
-func (r *RaftCore) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
+func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, RaftShutdown, r.id)
+		return errors.WrapError(nil, errRaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
@@ -552,12 +566,12 @@ func (r *RaftCore) RequestVote(request *RequestVoteRequest, response *RequestVot
 }
 
 // InstallSnapshot is invoked by the leader to send a snapshot to a follower.
-func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
+func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, RaftShutdown, r.id)
+		return errors.WrapError(nil, errRaftShutdown, r.id)
 	}
 
 	r.options.logger.Debugf("server %s recieved InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
@@ -627,7 +641,7 @@ func (r *RaftCore) InstallSnapshot(request *InstallSnapshotRequest, response *In
 // persists the snapshot, compacts the log up to and including the
 // last included index of the snapshot, and retursn the both the last included
 // index and term of the snapshot.
-func (r *RaftCore) TakeSnapshot() (uint64, uint64) {
+func (r *Raft) TakeSnapshot() (uint64, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -659,13 +673,13 @@ func (r *RaftCore) TakeSnapshot() (uint64, uint64) {
 }
 
 // ListSnapshots returns an array of all the snapshots that have been taken.
-func (r *RaftCore) ListSnapshots() []Snapshot {
+func (r *Raft) ListSnapshots() []Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.snapshotStorage.ListSnapshots()
 }
 
-func (r *RaftCore) sendAppendEntries() {
+func (r *Raft) sendAppendEntries() {
 	for _, peer := range r.peers {
 		if peer.ID() == r.id {
 			continue
@@ -748,7 +762,7 @@ func (r *RaftCore) sendAppendEntries() {
 	}
 }
 
-func (r *RaftCore) sendRequestVote(votes *int) {
+func (r *Raft) sendRequestVote(votes *int) {
 	for _, peer := range r.peers {
 		if peer.ID() == r.id {
 			continue
@@ -794,7 +808,7 @@ func (r *RaftCore) sendRequestVote(votes *int) {
 	}
 }
 
-func (r *RaftCore) sendInstallSnapshot(peer Peer) {
+func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -835,7 +849,7 @@ func (r *RaftCore) sendInstallSnapshot(peer Peer) {
 	r.matchIndex[peer.ID()] = request.lastIncludedIndex
 }
 
-func (r *RaftCore) heartbeatLoop() {
+func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
 	// If this server is the leader, broadcast heartbeat messages to peers
@@ -860,7 +874,7 @@ func (r *RaftCore) heartbeatLoop() {
 	}
 }
 
-func (r *RaftCore) electionLoop() {
+func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
 	for {
@@ -881,7 +895,7 @@ func (r *RaftCore) electionLoop() {
 	}
 }
 
-func (r *RaftCore) election() {
+func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -897,7 +911,7 @@ func (r *RaftCore) election() {
 	r.sendRequestVote(&votesReceived)
 }
 
-func (r *RaftCore) commitLoop() {
+func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
@@ -949,7 +963,7 @@ func (r *RaftCore) commitLoop() {
 	}
 }
 
-func (r *RaftCore) applyLoop() {
+func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
@@ -977,7 +991,7 @@ func (r *RaftCore) applyLoop() {
 	}
 }
 
-func (r *RaftCore) fsmLoop() {
+func (r *Raft) fsmLoop() {
 	defer r.wg.Done()
 	defer close(r.commandResponseCh)
 
@@ -1003,14 +1017,14 @@ func (r *RaftCore) fsmLoop() {
 	}
 }
 
-func (r *RaftCore) becomeCandidate() {
+func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
 	r.persistTermAndVote()
 	r.options.logger.Infof("server %s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *RaftCore) becomeLeader() {
+func (r *Raft) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
 		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
@@ -1020,7 +1034,7 @@ func (r *RaftCore) becomeLeader() {
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *RaftCore) becomeFollower(term uint64) {
+func (r *Raft) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
 	r.votedFor = ""
@@ -1028,18 +1042,18 @@ func (r *RaftCore) becomeFollower(term uint64) {
 	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
 }
 
-func (r *RaftCore) hasQuorum(count int) bool {
+func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }
 
-func (r *RaftCore) persistTermAndVote() {
+func (r *Raft) persistTermAndVote() {
 	persistentState := &PersistentState{Term: r.currentTerm, VotedFor: r.votedFor}
 	if err := r.storage.SetState(persistentState); err != nil {
 		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", err.Error())
 	}
 }
 
-func (r *RaftCore) disconnectPeer(id string) error {
+func (r *Raft) disconnectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.peers[id].Disconnect(); err != nil {
@@ -1048,7 +1062,7 @@ func (r *RaftCore) disconnectPeer(id string) error {
 	return nil
 }
 
-func (r *RaftCore) connectPeer(id string) error {
+func (r *Raft) connectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.peers[id].Connect(); err != nil {

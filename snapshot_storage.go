@@ -9,18 +9,11 @@ import (
 )
 
 const (
-	// Occurs if the the snapshot storage has not been opened.
 	errSnapshotStoreNotOpen = "snapshot storage is not open: path = %s"
-
-	// Occurs if there was some issue persisting the snapshot to disk.
-	errFailedSnapshotSave  = "failed to save snapshot to snapshot storage: %s"
-	errFailedSnapshotSync  = "failed to sync snapshot storage file: %s"
-	errFailedSnapshotFlush = "failed flushing data from snapshot storage file writer: %s"
-
-	// Occurs if there was some issue opening the file associated with the snapshot storage.
-	errFailedSnapshotOpen = "failed to open snapshot storage file: path = %s, err = %s"
-
-	// Occur if the encoding or decoding of a snapshot instance failed.
+	errFailedSnapshotSave   = "failed to save snapshot to snapshot storage: %s"
+	errFailedSnapshotSync   = "failed to sync snapshot storage file: %s"
+	errFailedSnapshotFlush  = "failed flushing data from snapshot storage file writer: %s"
+	errFailedSnapshotOpen   = "failed to open snapshot storage file: path = %s, err = %s"
 	errFailedSnapshotEncode = "failed to encode snapshot: %s"
 	errFailedSnapshotDecode = "failed to decode snapshot: %s"
 )
@@ -68,7 +61,7 @@ type SnapshotStorage interface {
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
 // and persists them to durable storage. This implementation is not concurrent safe and should only be used
-// within the RaftCore implementation.
+// within the Raft implementation.
 type persistentSnapshotStorage struct {
 	// All snapshots that have been saved to this storage. Empty if no snapshots
 	// have been saved or if the snapshot store is not open.

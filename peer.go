@@ -46,7 +46,8 @@ type Peer interface {
 }
 
 // peer is an implementation of the Peer interface that is responsible for establishing
-// a connection with a remote server using gRPC.
+// a connection with a remote server using gRPC. This is implementation is concurrent
+// safe.
 type peer struct {
 	// The gRPC client for making Raft protocol calls to the peer.
 	client pb.RaftClient

@@ -10,21 +10,22 @@ import (
 const (
 	errStorageNotOpen              = "storage is not open: path = %s"
 	errFailedStorageOpen           = "failed to open storage file: path = %s, err = %s"
-	errFailedPersistentStateEncode = "storage failed to encode persistent state: %s"
-	errFailedPeristentStateDecode  = "storage failed to decode persistent state: %s"
+	errFailedStorageClose          = "failed to close storage file: path = %s, err = %s"
 	errFailedStorageSync           = "failed to sync storage file: %s"
 	errFailedStorageFlush          = "failed flushing data from storage file writer: %s"
-	errFailedStorageClose          = "failed to close storage file: path = %s, err = %s"
 	errFailedStorageCreateTempFile = "failed to create temporary storage file: %s"
 	errFailedStorageRename         = "failed to rename temporary storage file: %s"
+	errFailedPersistentStateEncode = "storage failed to encode persistent state: %s"
+	errFailedPeristentStateDecode  = "storage failed to decode persistent state: %s"
 )
 
-// Storage is an interface representing a storage object that can persist state.
+// Storage is an interface representing the internal component of Raft that is responsible
+// for durably storing the vote and term.
 type Storage interface {
 	// Open opens the storage for reading and writing persisting state.
 	Open() error
 
-	// Close closes the storage. After Close is called, SetState and GetState should not be called.
+	// Close closes the storage.
 	Close() error
 
 	// SetState persists the provided state in the storage. Storage must be open.
@@ -34,15 +35,18 @@ type Storage interface {
 	GetState() (PersistentState, error)
 }
 
-// PersistentState contains the state that must be persisted
-// in the Raft protocol that is not a part of the log.
+// PersistentState is the state that must be persisted in Raft.
 type PersistentState struct {
-	Term     uint64
+	// Term is the term of the associated with Raft instance.
+	Term uint64
+
+	// votedFor is the vote associated with a Raft instance.
 	VotedFor string
 }
 
-// persistentStorage is a type that implements the Storage interface and persists
-// state to a file. Not concurrent safe.
+// persistentStorage is an implementation of the Storage interface that manages durable storage of the persitent
+// state associated with a Raft instance. This implementation is not concurrent safe and should only be used
+// within the Raft implementation.
 type persistentStorage struct {
 	// The path to the file where the storage is persisted.
 	path string
@@ -51,7 +55,7 @@ type persistentStorage struct {
 	file *os.File
 }
 
-// newPersistentStorage creates a new instance of PersistentStorage with the provided path.
+// newPersistentStorage creates a new instance of persistentStorage with the provided path.
 func newPersistentStorage(path string) *persistentStorage {
 	return &persistentStorage{path: path}
 }
@@ -76,6 +80,10 @@ func (p *persistentStorage) Close() error {
 }
 
 func (p *persistentStorage) SetState(persistentState *PersistentState) error {
+	if p.file == nil {
+		return errors.WrapError(nil, errStorageNotOpen, p.path)
+	}
+
 	// Create a temporary file that will replace the file currently associated with storage.
 	tmpFile, err := os.CreateTemp("", "persistent-storage")
 	if err != nil {
@@ -107,6 +115,10 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 }
 
 func (p *persistentStorage) GetState() (PersistentState, error) {
+	if p.file == nil {
+		return PersistentState{}, errors.WrapError(nil, errStorageNotOpen, p.path)
+	}
+
 	// Read the contents of the file associated with the storage.
 	reader := io.Reader(p.file)
 	storageDecoder := storageDecoder{}

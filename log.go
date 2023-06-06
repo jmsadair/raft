@@ -12,6 +12,7 @@ const (
 	errIndexDoesNotExist       = "index %d does not exist"
 	errLogNotOpen              = "log is not open: path = %s"
 	errFailedLogCreateTempFile = "failed to create temporary log file: %s"
+	errFailedLogRename         = "failed to rename temporary log file: %s"
 	errFailedLogSync           = "failed to sync log file: %s"
 	errFailedLogFlush          = "failed flushing data from log file writer: %s"
 	errFailedLogEncode         = "failed to encode log entry: %s"
@@ -19,10 +20,10 @@ const (
 	errFailedLogOpen           = "failed to open log file: path = %s"
 	errFailedLogSeek           = "failed to seek to offset in log file: offset = %d, err = %s"
 	errFailedLogTruncate       = "failed to truncate log file: size = %d, err = %s"
-	errFailedLogRename         = "failed to rename temporary log file: %s"
 )
 
-// Log supports appending and retrieving log entries in a durable manner.
+// Log is an interface representing the internal component of RaftCore that is responsible
+// for durably storing and retrieving log entries.
 type Log interface {
 	// Open opens the log for reading and writing.
 	Open() error
@@ -112,6 +113,8 @@ type persistentLog struct {
 }
 
 // newPersistentLog creates a new instance of PersistentLog at the provided path.
+// This implementation is not concurrent safe and should only be used within the
+// RaftCore implementation.
 func newPersistentLog(path string) *persistentLog {
 	return &persistentLog{path: path}
 }

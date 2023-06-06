@@ -85,24 +85,6 @@ type InstallSnapshotResponse struct {
 	term uint64
 }
 
-// Status is the status of a Raft instance.
-type Status struct {
-	// The ID of the Raft instance.
-	ID string
-
-	// The current term.
-	Term uint64
-
-	// The current commit index.
-	CommitIndex uint64
-
-	// The index of the last log entry applied to the state machine.
-	LastApplied uint64
-
-	// The current state of Raft instance.
-	State State
-}
-
 // makeProtoEntries converts an array of LogEntry instances to an array of protobuf LogEntry instances.
 func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 	protoEntries := make([]*pb.LogEntry, len(entries))

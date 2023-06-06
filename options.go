@@ -65,6 +65,7 @@ type options struct {
 	logger Logger
 }
 
+// Option is a function that updates the options associated with Raft.
 type Option func(options *options) error
 
 // WithElectionTimeout sets the election timeout for the Raft server.

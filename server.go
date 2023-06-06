@@ -10,14 +10,14 @@ import (
 	"google.golang.org/grpc"
 )
 
-// Server is a wrapper for a RaftCore instance. It serves requests
+// Server is a wrapper for a Raft instance. It serves requests
 // for Raft using protobuf and gRPC.
 type Server struct {
 	pb.UnimplementedRaftServer
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            *RaftCore
+	raft            *Raft
 	wg              sync.WaitGroup
 }
 
@@ -39,7 +39,7 @@ func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath s
 	// Create snapshot storage with protobuf encoding and decoding at the provided path.
 	snapshotStorage := newPersistentSnapshotStorage(snapshotPath)
 
-	raft, err := NewRaftCore(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
+	raft, err := NewRaft(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
 		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
 	}
@@ -105,7 +105,7 @@ func (s *Server) IsStarted() bool {
 }
 
 // SubmitCommand submits a command to the server for processing.
-// It forwards the command to the underlying RaftCore instance for handling
+// It forwards the command to the underlying Raft instance for handling
 // and returns the index and term assigned to the command, as well as
 // an error if submitting the command failed.
 func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
@@ -120,13 +120,13 @@ func (s *Server) TakeSnapshot() (uint64, uint64) {
 }
 
 // ListSnapshots returns an array of all the snapshots that the underlying
-// RaftCore instance has taken.
+// Raft instance has taken.
 func (s *Server) ListSnapshots() []Snapshot {
 	return s.raft.ListSnapshots()
 }
 
 // AppendEntries handles the AppendEntries gRPC request.
-// It converts the request to the internal representation, invokes the AppendEntries function on the RaftCore instance,
+// It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
@@ -138,7 +138,7 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 }
 
 // RequestVote handles the RequestVote gRPC request.
-// It converts the request to the internal representation, invokes the RequestVote function on the RaftCore instance,
+// It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
 // and returns the response.
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
@@ -150,7 +150,7 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 }
 
 // InstallSnapshot handles the InstallSnapshot gRPC request.
-// It converts the request to the internal representation, invokes the InstallSnapshot function on the RaftCore instance,
+// It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
 // and returns the response.
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)

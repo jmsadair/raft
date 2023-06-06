@@ -29,8 +29,10 @@ const (
 type Snapshot struct {
 	// Last index included in snapshot
 	LastIncludedIndex uint64
+
 	// Last term included in snapshot.
 	LastIncludedTerm uint64
+
 	// State of replicated state machine.
 	Data []byte
 }
@@ -66,7 +68,7 @@ type SnapshotStorage interface {
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
 // and persists them to durable storage. This implementation is not concurrent safe and should only be used
-// within the Raft implementation.
+// within the RaftCore implementation.
 type persistentSnapshotStorage struct {
 	// All snapshots that have been saved to this storage. Empty if no snapshots
 	// have been saved or if the snapshot store is not open.

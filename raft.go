@@ -10,18 +10,32 @@ import (
 )
 
 const (
-	errFailedRaftLog                 = "failed to create a log for raft: %s"
-	errFailedRaftOption              = "failed to apply provided option: %s"
-	errFailedRaftStorageOpen         = "failed to open raft storage: %s"
-	errFailedRaftSnapshotStoreOpen   = "failed to open raft snapshot storage: %s"
-	errFailedRaftLogOpen             = "failed to open raft log: %s"
-	errFailedRaftLogReplay           = "failed to recover persisted state from raft log: %s"
-	errFailedRaftSnapshotReplay      = "failed to recover persisted raft snapshot data: %s"
-	errFailedRaftStorageRecover      = "failed to recover raft persisted state: %s"
+	// Occurs when there was an isssue creating the logger provided in the options.
+	errFailedRaftLog = "failed to create a logger for raft: %s"
+
+	// Occurs when applying one of the options resulted in some error.
+	errFailedRaftOption = "failed to apply provided option: %s"
+
+	// Occurs when a storage implementation cannot be openened.
+	errFailedRaftStorageOpen       = "failed to open raft storage: %s"
+	errFailedRaftLogOpen           = "failed to open raft log: %s"
+	errFailedRaftSnapshotStoreOpen = "failed to open raft snapshot storage: %s"
+
+	// Occurs when there was an issue reading persisted state into memory.
+	errFailedRaftLogRecover      = "failed to recover persisted state from raft log: %s"
+	errFailedRaftSnapshotRecover = "failed to recover persisted raft snapshot data: %s"
+	errFailedRaftStorageRecover  = "failed to recover raft persisted state: %s"
+
+	// Occurs when something went wrong with resotring the state machine using the
+	// provided snapshot.
 	errFailedRaftRestoreStateMachine = "failed to restore state machine: %s"
-	errRaftNotLeader                 = "server %s is not the leader"
-	errRaftSnapshotsDisabled         = "server %s does not have snapshot enabled"
-	RaftShutdown                     = "server %s is shutdown"
+
+	// Occurs when a command is submitted to a server that is not leader.
+	// Only the leader may replicate commands.
+	errRaftNotLeader = "server %s is not the leader"
+
+	// Occurs when the server recieves a request and it is not online.
+	RaftShutdown = "server %s is shutdown"
 )
 
 // State represents the current state of a Raft server.
@@ -200,7 +214,7 @@ func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, sna
 
 	// Replay the persisted state of the log into memory.
 	if err := log.Replay(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftLogReplay, err.Error())
+		return nil, errors.WrapError(err, errFailedRaftLogRecover, err.Error())
 	}
 
 	// Open the snapshot storage for new operations.
@@ -210,7 +224,7 @@ func NewRaftCore(id string, peers map[string]Peer, log Log, storage Storage, sna
 
 	// Replay the persisted snapshots into memory.
 	if err := snapshotStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftSnapshotReplay, err.Error())
+		return nil, errors.WrapError(err, errFailedRaftSnapshotRecover, err.Error())
 	}
 
 	nextIndex := make(map[string]uint64)
@@ -755,13 +769,9 @@ func (r *RaftCore) sendRequestVote(votes *int) {
 			response, err := peer.RequestVote(request)
 			r.mu.Lock()
 
-			if err != nil {
-				return
-			}
-
 			// Ensure this response is not stale. It is possible that this
 			// server has started another election.
-			if r.currentTerm != request.term {
+			if err != nil || r.currentTerm != request.term {
 				return
 			}
 
@@ -779,7 +789,6 @@ func (r *RaftCore) sendRequestVote(votes *int) {
 			// If we have received votes from the majority of peers, become a leader.
 			if r.hasQuorum(*votes) && r.state == Follower {
 				r.becomeLeader()
-				return
 			}
 		}(peer)
 	}

@@ -11,8 +11,7 @@ example of how to do this. Note that this code omits many details for clarity an
 package main
 
 import (
-    "net"
-
+	"net"
 	"github.com/jmsadair/raft"
 )
 
@@ -20,11 +19,11 @@ const (
 	// The ID of this raft server.
 	raftID = "raft-1"
 
-    // The IP addess of your server.
-    raftIP = "172.0.0.1"
+	// The IP addess of your server.
+	raftIP = "172.0.0.1"
 
-    // The port of your server.
-    raftPort = 8080
+	// The port of your server.
+	raftPort = 8080
 
 	// The paths to the files that this raft server will use for persisting its state.
 	// If the files exists, then the raft server will read it into memory and initialize
@@ -38,7 +37,7 @@ const (
 // This state machine must implement the raft.StateMachine interface.
 // This state machine must also be concurrent safe.
 type StateMachine struct {
-    // ...
+	// ...
 }
 
 func (sm *StateMachine) Apply(entry *raft.LogEntry) interface{} {
@@ -46,20 +45,19 @@ func (sm *StateMachine) Apply(entry *raft.LogEntry) interface{} {
 }
 
 func (sm *StateMachine) Snapshot() (raft.Snapshot, error) {
-    // ...
+	// ...
 }
 
 func (sm *StateMachine) Restore(snapshot *raft.Snapshot) error {
-    // ...
+	// ...
 }
 
 func main() {
-	// The peers that form the raft cluster. This mapping
-    // must include this server as well.
+	// The peers that form the raft cluster. This mapping must include this server as well.
 	peers := map[string]net.Addr{
 		raftID: &net.TCPAddr{IP: net.ParseIP(raftIP), Port: raftPort},
 		// Any other peers in the cluster.
-        // ...
+		// ...
 	}
 
 	// The state machine we are replicating.

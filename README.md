@@ -6,7 +6,7 @@ First, make sure you have Go `1.19` or a higher version installed on your system
 
 Next, write a package that encapsulates a state machine that you would like to replicate.
 
-```
+```go
 package fsm
 
 import (
@@ -154,7 +154,7 @@ func (sm *StateMachine) Restore(snapshot *raft.Snapshot) error {
 
 Now, you can create your own server using Raft and the state machine you defined in the above package.
 
-```
+```go
 package server
 
 import (
@@ -301,7 +301,7 @@ func (s *Server) responseLoop() {
 ```
 
 Finally, you can create a new `Server` in your application code as so:
-```
+```go
 package main
 
 import (

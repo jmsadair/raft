@@ -20,7 +20,7 @@ const (
     raftID = "raft-1"
 
     // The IP addess of your server.
-    raftIP = "172.0.0.1
+    raftIP = "172.0.0.1"
     
     // The port of your server.
     raftPort = 8080

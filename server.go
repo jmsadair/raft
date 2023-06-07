@@ -21,7 +21,11 @@ type Server struct {
 	wg              sync.WaitGroup
 }
 
-// NewServer creates a new instance of a Server.
+// NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, and must
+// include the ID and network address of this server. The log path, storage path, and snapshot path are the paths to where the underlying Raft
+// instance will persist its state. If persisted state already exists at these paths, then it will be read into memory and Raft will be initialized
+// with that state. Otherwise, new files will be created at those paths. Responses from the state machine after applying a command will be sent over
+// the provided response channel. The response channel must be monitored otherwise the server may be blocked.
 func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
 	responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
 	// Create gRPC peers
@@ -94,6 +98,8 @@ func (s *Server) Stop() {
 
 // Status returns the status of the server.
 // It retrieves the status from the underlying Raft instance.
+// The status includes the ID, commit index, last applied index,
+// term, and state of the Raft instance.
 func (s *Server) Status() Status {
 	return s.raft.Status()
 }
@@ -131,7 +137,7 @@ func (s *Server) ListSnapshots() []Snapshot {
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
-	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
+	if err := s.raft.appendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoAppendEntriesResponse(*appendEntriesResponse), nil
@@ -143,7 +149,7 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
-	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
+	if err := s.raft.requestVote(&requestVoteRequest, requestVoteResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoRequestVoteResponse(*requestVoteResponse), nil
@@ -155,7 +161,7 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
-	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
+	if err := s.raft.installSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoInstallSnapshotResponse(*installSnapshotResponse), nil

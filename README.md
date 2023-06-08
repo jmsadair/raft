@@ -1,11 +1,11 @@
 # Raft
-This library provides a simple, easy-to-understand, and reliable implementation of [Raft](https://en.wikipedia.org/wiki/Raft_(algorithm)) using Go. Raft is a [consensus](https://en.wikipedia.org/wiki/Consensus_(computer_science)) protocol designed to manage replicated logs in a distributed system. Its purpose is to ensure fault-tolerant coordination and consistency among a group of nodes, making it suitable for building reliable systems. Potential use case include distributed file systems, consistent key-value stores, and service discovery.
+This library provides a simple, easy-to-understand, and reliable implementation of [Raft](https://en.wikipedia.org/wiki/Raft_(algorithm)) using Go. Raft is a [consensus](https://en.wikipedia.org/wiki/Consensus_(computer_science)) protocol designed to manage replicated logs in a distributed system. Its purpose is to ensure fault-tolerant coordination and consistency among a group of nodes, making it suitable for building reliable systems. Potential use cases include distributed file systems, consistent key-value stores, and service discovery.
 
 # Getting Started
 First, make sure you have Go `1.19` or a higher version installed on your system. You can download and install Go from the official Go website: https://golang.org/. Then, install the Raft library by running `go get -u github.com/jmsadair/raft`.
 
 Once you have the library installed, you can create a Raft server for your application (or write your own server using the `Raft` implementation). Below is a basic
-example of how to do this. Note that this code omits many details for clarity and is far from complete. It is only a basic example of how you might use the library.
+example of how you may do this. Note that this code omits many details for clarity.
 
 ```go
 package main

@@ -435,8 +435,8 @@ func (r *Raft) ListSnapshots() []Snapshot {
 	return r.snapshotStorage.ListSnapshots()
 }
 
-// appendEntries is invoked by the leader to replicate log entries.
-func (r *Raft) appendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
+// AppendEntries is invoked by the leader to replicate log entries.
+func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -555,8 +555,8 @@ func (r *Raft) appendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
-// requestVote is invoked by the candidate server to gather a vote from this server.
-func (r *Raft) requestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
+// RequestVote is invoked by the candidate server to gather a vote from this server.
+func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -608,8 +608,8 @@ func (r *Raft) requestVote(request *RequestVoteRequest, response *RequestVoteRes
 	return nil
 }
 
-// installSnapshot is invoked by the leader to send a snapshot to a follower.
-func (r *Raft) installSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
+// InstallSnapshot is invoked by the leader to send a snapshot to a follower.
+func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

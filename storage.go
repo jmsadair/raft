@@ -85,15 +85,14 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	}
 
 	// Create a temporary file that will replace the file currently associated with storage.
-	tmpFile, err := os.CreateTemp("", "persistent-storage")
+	tmpFile, err := os.CreateTemp("", "raft-storage-tmp")
 	if err != nil {
 		return errors.WrapError(err, errFailedStorageCreateTempFile, err.Error())
 	}
 
 	// Write the new state to the temporary file.
-	writer := io.Writer(tmpFile)
 	storageEncoder := storageEncoder{}
-	if err := storageEncoder.encode(writer, persistentState); err != nil {
+	if err := storageEncoder.encode(tmpFile, persistentState); err != nil {
 		return errors.WrapError(err, errFailedPersistentStateEncode, err.Error())
 	}
 	if err := tmpFile.Sync(); err != nil {
@@ -102,12 +101,11 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 
 	// Perform atomic rename to swap the newly persisted state with the old.
 	oldFile := p.file
-	if err := os.Rename(tmpFile.Name(), p.path); err != nil {
+	if err := os.Rename(tmpFile.Name(), oldFile.Name()); err != nil {
 		return errors.WrapError(err, errFailedStorageRename, err.Error())
 	}
 
 	p.file = tmpFile
-
 	// Close the previous file.
 	oldFile.Close()
 

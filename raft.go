@@ -371,7 +371,7 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, command.Bytes)
 	r.log.AppendEntry(entry)
-	r.sendAppendEntries()
+	r.sendAppendEntriesToPeers()
 
 	r.options.logger.Debugf("server %s submitted command: logEntry = %v", r.id, entry)
 
@@ -680,135 +680,158 @@ func (r *Raft) installSnapshot(request *InstallSnapshotRequest, response *Instal
 	return nil
 }
 
-func (r *Raft) sendAppendEntries() {
+// sendAppendEntriesToPeers sends an AppendEntries RPC to all peers concurrently.
+// Expects lock to be held.
+func (r *Raft) sendAppendEntriesToPeers() {
 	for _, peer := range r.peers {
-		if peer.ID() == r.id {
-			continue
-		}
-
-		go func(peer Peer) {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-
-			if r.state != Leader {
-				return
-			}
-
-			nextIndex := r.nextIndex[peer.ID()]
-			prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
-			prevLogTerm := r.lastIncludedTerm
-
-			if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
-				prevEntry, err := r.log.GetEntry(prevLogIndex)
-				if err != nil {
-					r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
-				}
-				prevLogTerm = prevEntry.Term
-			}
-
-			// Retrieve the log entries that need to be replicated to the peer. Ensure that next index
-			// for the peer is contained in the log - the log may have been compacted due to a snapshot.
-			entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
-			for index := nextIndex; index < r.log.NextIndex() && index > r.lastIncludedIndex; index++ {
-				entry, err := r.log.GetEntry(index)
-				if err != nil {
-					r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
-				}
-				entries = append(entries, entry)
-			}
-
-			request := AppendEntriesRequest{
-				Term:         r.currentTerm,
-				LeaderID:     r.id,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      entries,
-				LeaderCommit: r.commitIndex,
-			}
-
-			r.mu.Unlock()
-			response, err := peer.AppendEntries(request)
-			r.mu.Lock()
-
-			// Ensure that we did not transition out of the leader state after
-			// releasing the lock.
-			if err != nil || r.state != Leader {
-				return
-			}
-
-			// Become a follower if a peer has a more up-to-date term.
-			if response.Term > r.currentTerm {
-				r.becomeFollower(response.Term)
-				return
-			}
-
-			if !response.Success {
-				r.nextIndex[peer.ID()] = util.Max(1, util.Min(r.log.NextIndex(), response.Index))
-
-				// The log has been compacted and no longer contains the entries the peer needs.
-				// Send the peer a snapshot to catch them up.
-				if r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
-					go r.sendInstallSnapshot(peer)
-				}
-
-				return
-			}
-
-			if request.PrevLogIndex+uint64(len(entries)) >= r.nextIndex[peer.ID()] {
-				r.nextIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries)) + 1
-				r.matchIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries))
-				r.commitCond.Broadcast()
-			}
-		}(peer)
+		go r.sendAppendEntries(peer)
 	}
 }
 
-func (r *Raft) sendRequestVote(votes *int) {
-	for _, peer := range r.peers {
-		if peer.ID() == r.id {
-			continue
+// sendAppendEntries sends an AppendEntries RPC to the provided peer.
+func (r *Raft) sendAppendEntries(peer Peer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return
+	}
+
+	// Handle the single server case.
+	if peer.ID() == r.id {
+		if len(r.peers) == 1 && r.log.LastIndex() > r.commitIndex {
+			r.commitCond.Broadcast()
+		}
+		return
+	}
+
+	nextIndex := r.nextIndex[peer.ID()]
+	prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
+	prevLogTerm := r.lastIncludedTerm
+
+	if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
+		prevEntry, err := r.log.GetEntry(prevLogIndex)
+		if err != nil {
+			r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
+		}
+		prevLogTerm = prevEntry.Term
+	}
+
+	// Retrieve the log entries that need to be replicated to the peer. Ensure that next index
+	// for the peer is contained in the log - the log may have been compacted due to a snapshot.
+	entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
+	for index := nextIndex; index < r.log.NextIndex() && index > r.lastIncludedIndex; index++ {
+		entry, err := r.log.GetEntry(index)
+		if err != nil {
+			r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
+		}
+		entries = append(entries, entry)
+	}
+
+	request := AppendEntriesRequest{
+		Term:         r.currentTerm,
+		LeaderID:     r.id,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      entries,
+		LeaderCommit: r.commitIndex,
+	}
+
+	r.mu.Unlock()
+	response, err := peer.AppendEntries(request)
+	r.mu.Lock()
+
+	// Ensure that we did not transition out of the leader state after
+	// releasing the lock.
+	if err != nil || r.state != Leader {
+		return
+	}
+
+	// Become a follower if a peer has a more up-to-date term.
+	if response.Term > r.currentTerm {
+		r.becomeFollower(response.Term)
+		return
+	}
+
+	if !response.Success {
+		r.nextIndex[peer.ID()] = util.Max(1, util.Min(r.log.NextIndex(), response.Index))
+
+		// The log has been compacted and no longer contains the entries the peer needs.
+		// Send the peer a snapshot to catch them up.
+		if r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
+			go r.sendInstallSnapshot(peer)
 		}
 
-		go func(peer Peer) {
-			r.mu.Lock()
-			defer r.mu.Unlock()
+		return
+	}
 
-			request := RequestVoteRequest{
-				CandidateID:  r.id,
-				Term:         r.currentTerm,
-				LastLogIndex: r.log.LastIndex(),
-				LastLogTerm:  r.log.LastTerm(),
-			}
-
-			r.mu.Unlock()
-			response, err := peer.RequestVote(request)
-			r.mu.Lock()
-
-			// Ensure this response is not stale. It is possible that this
-			// server has started another election.
-			if err != nil || r.currentTerm != request.Term {
-				return
-			}
-
-			// Increment vote count if vote is granted.
-			if response.VoteGranted {
-				*votes++
-			}
-
-			// Become a follower if a peer has a more up-to-date term.
-			if response.Term > r.currentTerm {
-				r.becomeFollower(response.Term)
-				return
-			}
-
-			// If we have received votes from the majority of peers, become a leader.
-			if r.hasQuorum(*votes) && r.state == Follower {
-				r.becomeLeader()
-			}
-		}(peer)
+	if request.PrevLogIndex+uint64(len(entries)) >= r.nextIndex[peer.ID()] {
+		r.nextIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries)) + 1
+		r.matchIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries))
+		r.commitCond.Broadcast()
 	}
 }
 
+// sendRequestVoteToPeers sends a RequestVote RPC to all peers concurrenty. Expects
+// lock to be held.
+func (r *Raft) sendRequestVoteToPeers(votes *int) {
+	for _, peer := range r.peers {
+		go r.sendRequestVote(peer, votes)
+	}
+}
+
+// sendRequestVote sends a RequestVote RPC to the provided peer.
+func (r *Raft) sendRequestVote(peer Peer, votes *int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// The candidate will vote for itself.
+	if peer.ID() == r.id {
+		*votes++
+
+		// Handle the single server case.
+		if r.hasQuorum(*votes) {
+			r.becomeLeader()
+		}
+
+		return
+	}
+
+	request := RequestVoteRequest{
+		CandidateID:  r.id,
+		Term:         r.currentTerm,
+		LastLogIndex: r.log.LastIndex(),
+		LastLogTerm:  r.log.LastTerm(),
+	}
+
+	r.mu.Unlock()
+	response, err := peer.RequestVote(request)
+	r.mu.Lock()
+
+	// Ensure this response is not stale. It is possible that this
+	// server has started another election.
+	if err != nil || r.currentTerm != request.Term {
+		return
+	}
+
+	// Increment vote count if vote is granted.
+	if response.VoteGranted {
+		*votes++
+	}
+
+	// Become a follower if a peer has a more up-to-date term.
+	if response.Term > r.currentTerm {
+		r.becomeFollower(response.Term)
+		return
+	}
+
+	// If we have received votes from the majority of peers, become a leader.
+	if r.hasQuorum(*votes) && r.state == Follower {
+		r.becomeLeader()
+	}
+}
+
+// sendInstallSnapshot sends an InstallSnapshot RPC to the provided peer.
 func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -850,6 +873,9 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.matchIndex[peer.ID()] = request.LastIncludedIndex
 }
 
+// heartbeatLoop is a long running loop that periodically sends AppendEntries RPCs
+// to all of the peers if this server is the leader. This function should be called
+// when the Raft instance is started and should be ran as a separate go routine.
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
@@ -870,11 +896,14 @@ func (r *Raft) heartbeatLoop() {
 			continue
 		}
 
-		r.sendAppendEntries()
+		r.sendAppendEntriesToPeers()
 		r.mu.Unlock()
 	}
 }
 
+// electionLoop is a long running loop that kick off an election if this server
+// has not heard from the leader within the election timeout. This should be called
+// when the Raft instance is started and should be ran as a separate go routine.
 func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
@@ -896,6 +925,7 @@ func (r *Raft) electionLoop() {
 	}
 }
 
+// election makes this server a candidate and sends RequestVote RPCs to all peers.
 func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -906,12 +936,15 @@ func (r *Raft) election() {
 		return
 	}
 
-	// This server votes for itself and then requests votes from all of its peers.
-	votesReceived := 1
+	var votesReceived int
 	r.becomeCandidate()
-	r.sendRequestVote(&votesReceived)
+	r.sendRequestVoteToPeers(&votesReceived)
 }
 
+// commitLoop is a long running loop that updates the commit index when signaled. If the commit
+// index has been updated, this loop will signal to the apply loop that entries may be applied
+// to the state machine. This should be called when the Raft instance is started and should be
+// ran as a separate go routine.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -949,21 +982,23 @@ func (r *Raft) commitLoop() {
 				if matchIndex >= index {
 					matches++
 				}
-				if r.hasQuorum(matches) {
-					r.commitIndex = index
-					committed = true
-					break
-				}
+			}
+
+			if r.hasQuorum(matches) {
+				r.commitIndex = index
+				committed = true
 			}
 		}
 
 		if committed {
 			r.applyCond.Broadcast()
-			r.sendAppendEntries()
+			r.sendAppendEntriesToPeers()
 		}
 	}
 }
 
+// applyLoop is a long running loop that sends log entries to the state machine loop to applied when
+// signalled. This should be called when the Raft instance is started and ran as a separate go routine.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -992,6 +1027,10 @@ func (r *Raft) applyLoop() {
 	}
 }
 
+// fsmLoop is a long running loop that applies log entries to the state machine and sends responses to
+// commands over the response channel. If auto snapshotting is enabled, it will take a snapshot once
+// enough entries have been applied. This should be called when the Raft instance is started and ran
+// as a separate go routine.
 func (r *Raft) fsmLoop() {
 	defer r.wg.Done()
 	defer close(r.commandResponseCh)
@@ -1018,6 +1057,8 @@ func (r *Raft) fsmLoop() {
 	}
 }
 
+// becomeCandidate transitions this server to the candidate state. It increments the term and sets this
+// server's vote as itself. Expects lock to be held.
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
@@ -1025,16 +1066,20 @@ func (r *Raft) becomeCandidate() {
 	r.options.logger.Infof("server %s has entered the candidate state: term = %d", r.id, r.currentTerm)
 }
 
+// becomeLeader transitions this server to the leader state. It sets the next index for all peers to the index
+// following the last log index and sets the match index for all peers to zero. Expects lock to be held.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	for _, peer := range r.peers {
 		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
 		r.matchIndex[peer.ID()] = 0
 	}
-	r.sendAppendEntries()
+	r.sendAppendEntriesToPeers()
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
+// becomeFollower transitions this server to the follower state. It clears the vote and sets the term to
+// the provided term. Expects lock to be held.
 func (r *Raft) becomeFollower(term uint64) {
 	r.state = Follower
 	r.currentTerm = term
@@ -1043,17 +1088,23 @@ func (r *Raft) becomeFollower(term uint64) {
 	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
 }
 
+// hasQuorum indicates whether the provided count constitutes a majority
+// of the cluster. Expects lock to held.
 func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }
 
+// persistTermAndVote writes the term and vote to the provided storage mechanism.
+// Expects lock to be held.
 func (r *Raft) persistTermAndVote() {
 	persistentState := &PersistentState{Term: r.currentTerm, VotedFor: r.votedFor}
 	if err := r.storage.SetState(persistentState); err != nil {
-		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", err.Error())
+		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", r.id, err.Error())
 	}
 }
 
+// disconnectPeer disconnects the peer with the provided ID from this server. This
+// is primarily for testing purposes.
 func (r *Raft) disconnectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1063,6 +1114,8 @@ func (r *Raft) disconnectPeer(id string) error {
 	return nil
 }
 
+// connectPeer connects the peer with the provided ID from this server. This
+// is primarily for testing purposes.
 func (r *Raft) connectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -676,13 +676,18 @@ func (tc *testCluster) takeAndValidateSnapshot(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	oldSnaphsots := tc.servers[server].ListSnapshots()
+	oldSnapshots := tc.servers[server].ListSnapshots()
 	lastIncludedIndex, lastIncludedTerm := tc.servers[server].TakeSnapshot()
 	newSnapshots := tc.servers[server].ListSnapshots()
 
+	// Some tests may cause a snapshot to be taken when there is nothing new to snapshot.
+	if len(oldSnapshots) > 0 && oldSnapshots[len(oldSnapshots)-1].LastIncludedIndex == lastIncludedIndex {
+		return
+	}
+
 	// A snapshot was just taken so there should be one additional snapshot in the snapshot store.
-	if len(newSnapshots) != len(oldSnaphsots)+1 {
-		tc.t.Fatalf(errIncorrectNumberSnapshots, server, len(oldSnaphsots)+1, len(newSnapshots))
+	if len(newSnapshots) != len(oldSnapshots)+1 {
+		tc.t.Fatalf(errIncorrectNumberSnapshots, server, len(oldSnapshots)+1, len(newSnapshots))
 	}
 
 	// The most recent snapshot.

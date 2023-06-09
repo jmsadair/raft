@@ -401,10 +401,15 @@ func (r *Raft) TakeSnapshot() (uint64, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// There is nothing to snapshot if this is true.
+	if r.lastIncludedIndex >= r.log.LastIndex() {
+		return r.lastIncludedIndex, r.lastIncludedTerm
+	}
+
 	// Retrieve current state of state machine.
 	snapshot, err := r.fsm.Snapshot()
 	if err != nil {
-		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", err.Error())
+		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", r.id, err.Error())
 	}
 
 	// Persist the snapshot.
@@ -416,7 +421,7 @@ func (r *Raft) TakeSnapshot() (uint64, uint64) {
 
 	// Compact the log up to the last log entry that was applied to the state machine.
 	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed compacting log: %s", err.Error())
+		r.options.logger.Fatalf("server %s failed compacting log: %s", r.id, err.Error())
 	}
 
 	r.lastIncludedIndex = snapshot.LastIncludedIndex
@@ -663,7 +668,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	// discard the log and reset the state machine with the data from the snapshot.
 	if entry == nil || entry.Term != request.LastIncludedTerm {
 		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
-			r.options.logger.Fatalf("server %s failed to discard log entries: %s", err.Error())
+			r.options.logger.Fatalf("server %s failed to discard log entries: %s", r.id, err.Error())
 		}
 		if err := r.fsm.Restore(snapshot); err != nil {
 			r.options.logger.Fatalf("server %s failed to reset state machine with snapshot: %s", r.id, err.Error())
@@ -674,7 +679,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	// Otherwise, if the log has an entry at last included index with a term that matches the last included
 	// term, then compact the log up to and including that entry.
 	if err := r.log.Compact(request.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed to compact log: %s", err.Error())
+		r.options.logger.Fatalf("server %s failed to compact log: %s", r.id, err.Error())
 	}
 
 	return nil

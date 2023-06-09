@@ -655,7 +655,7 @@ func TestManualSnapshotConcurrent(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
 	// Make sure auto snapshots are not enabled.
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, false, 0)
 
 	// A go routine to take snapshots every so often.
 	done := int32(0)

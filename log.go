@@ -275,7 +275,7 @@ func (l *persistentLog) Compact(index uint64) error {
 	copy(newEntries[:], l.entries[logIndex:])
 
 	// Create a temporary file to write the compacted log to.
-	compactedFile, err := os.CreateTemp("", "raft-log")
+	compactedFile, err := os.CreateTemp("", "raft-log-tmp")
 	if err != nil {
 		return errors.WrapError(err, errFailedLogCreateTempFile, err.Error())
 	}
@@ -320,7 +320,7 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	}
 
 	// Create a temporary file for the new log.
-	newLogFile, err := os.CreateTemp("", "raft-log")
+	newLogFile, err := os.CreateTemp("", "raft-log-tmp")
 	if err != nil {
 		return errors.WrapError(err, errFailedLogCreateTempFile, err.Error())
 	}

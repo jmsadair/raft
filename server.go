@@ -10,10 +10,17 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	errServerFailedResolveAddress = "server %s failed to resolve address: address = %s, err = %s"
+	errServerFailedStart          = "server %s failed to start: %s"
+	errServerFailedCreate         = "failed to create server: ID = %s, err = %s"
+)
+
 // Server is a wrapper for a Raft instance. It serves requests
 // for Raft using protobuf and gRPC.
 type Server struct {
 	pb.UnimplementedRaftServer
+	id              string
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
@@ -26,12 +33,21 @@ type Server struct {
 // instance will persist its state. If persisted state already exists at these paths, then it will be read into memory and Raft will be initialized
 // with that state. Otherwise, new files will be created at those paths. Responses from the state machine after applying a command will be sent over
 // the provided response channel. The response channel must be monitored otherwise the server may be blocked.
-func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
+func NewServer(id string, peers map[string]string, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
 	responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
+	var listenInterface net.Addr
+
 	// Create gRPC peers
 	grpcPeers := make(map[string]Peer, len(peers))
-	for id, address := range peers {
-		grpcPeers[id] = newPeer(id, address)
+	for peer, address := range peers {
+		tcpAddr, err := net.ResolveTCPAddr("tcp", address)
+		if err != nil {
+			return nil, errors.WrapError(err, errServerFailedResolveAddress, peer, address, err.Error())
+		}
+		grpcPeers[peer] = newPeer(peer, tcpAddr)
+		if peer == id {
+			listenInterface = tcpAddr
+		}
 	}
 
 	// Create log with protobuf encoding and decoding at the provided path.
@@ -45,11 +61,12 @@ func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath s
 
 	raft, err := NewRaft(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
-		return nil, errors.WrapError(err, "failed to create new server: %s", err.Error())
+		return nil, errors.WrapError(err, errServerFailedCreate, id, err.Error())
 	}
 
 	server := &Server{
-		listenInterface: peers[id],
+		id:              id,
+		listenInterface: listenInterface,
 		raft:            raft,
 	}
 
@@ -63,7 +80,7 @@ func NewServer(id string, peers map[string]net.Addr, fsm StateMachine, logPath s
 func (s *Server) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
-		return errors.WrapError(err, "failed to start server: %s", err.Error())
+		return errors.WrapError(err, errServerFailedStart, s.id, err.Error())
 	}
 
 	s.listener = listener
@@ -137,7 +154,7 @@ func (s *Server) ListSnapshots() []Snapshot {
 func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
-	if err := s.raft.appendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
+	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoAppendEntriesResponse(*appendEntriesResponse), nil
@@ -149,7 +166,7 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
-	if err := s.raft.requestVote(&requestVoteRequest, requestVoteResponse); err != nil {
+	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoRequestVoteResponse(*requestVoteResponse), nil
@@ -161,7 +178,7 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
-	if err := s.raft.installSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
+	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {
 		return nil, err
 	}
 	return makeProtoInstallSnapshotResponse(*installSnapshotResponse), nil

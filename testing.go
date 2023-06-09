@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"net"
 	"strconv"
 	"sync"
 	"testing"
@@ -56,15 +55,14 @@ func makeCommands(numCommands int) []Command {
 	return commands
 }
 
-func makePeerMaps(numServers int) []map[string]net.Addr {
-	port := 8080
-	clusterPeers := make([]map[string]net.Addr, numServers)
+func makePeerMaps(numServers int) []map[string]string {
+	clusterPeers := make([]map[string]string, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make(map[string]net.Addr, numServers)
+		clusterPeers[i] = make(map[string]string, numServers)
 		for j := 0; j < numServers; j++ {
-			ip := fmt.Sprintf("127.0.0.%d", j)
+			address := fmt.Sprintf("127.0.0.%d:8080", j)
 			peerID := fmt.Sprint(j)
-			clusterPeers[i][peerID] = &net.TCPAddr{IP: net.ParseIP(ip), Port: port}
+			clusterPeers[i][peerID] = address
 		}
 	}
 
@@ -165,7 +163,7 @@ type testCluster struct {
 
 	// The peers fore each server, where peers[i] is the peers
 	// for servers[i].
-	peers []map[string]net.Addr
+	peers []map[string]string
 
 	// The associated storage paths for each server, where
 	// paths[i] is the paths for servers[i].

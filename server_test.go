@@ -29,6 +29,19 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
+// TestSingleServerElection checks whether a cluster consisting of
+// a single server can elect a leader.
+func TestSingleServerElection(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 1, autoSnapshotting, autoSnapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	cluster.checkLeaders(false)
+}
+
 // TestBasicElection checks whether a cluster can elect a leader
 // when there are no failures.
 func TestBasicElection(t *testing.T) {
@@ -80,6 +93,21 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 	// Check if the server can elect itself as the leader.
 	// This should not be successful.
 	cluster.checkLeaders(true)
+}
+
+// TestSingleServerSubmit checks whether a cluster consisting of
+// a single server can commit a command.
+func TestSingleServerSubmit(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 1, autoSnapshotting, autoSnapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	cluster.checkLeaders(false)
+	commands := makeCommands(1)
+	cluster.submit(commands[0], false, false, 1)
 }
 
 // TestSingleSubmit checks whether the cluster can successfully

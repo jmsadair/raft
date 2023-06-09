@@ -61,7 +61,7 @@ func newPersistentStorage(path string) *persistentStorage {
 }
 
 func (p *persistentStorage) Open() error {
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0777)
+	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return errors.WrapError(err, errFailedStorageOpen, p.path, err.Error())
 	}
@@ -85,7 +85,7 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	}
 
 	// Create a temporary file that will replace the file currently associated with storage.
-	tmpFile, err := os.CreateTemp("", "raft-storage-tmp")
+	tmpFile, err := os.Create(p.path + ".tmp")
 	if err != nil {
 		return errors.WrapError(err, errFailedStorageCreateTempFile, err.Error())
 	}
@@ -106,6 +106,7 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	}
 
 	p.file = tmpFile
+
 	// Close the previous file.
 	oldFile.Close()
 

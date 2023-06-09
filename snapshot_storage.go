@@ -85,7 +85,7 @@ func (p *persistentSnapshotStorage) Open() error {
 		return nil
 	}
 
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0777)
+	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return errors.WrapError(err, errFailedSnapshotOpen, p.path, err.Error())
 	}

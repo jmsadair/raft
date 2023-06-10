@@ -37,10 +37,10 @@ type Storage interface {
 
 // PersistentState is the state that must be persisted in Raft.
 type PersistentState struct {
-	// Term is the term of the associated with Raft instance.
+	// The term of the associated with Raft instance.
 	Term uint64
 
-	// votedFor is the vote associated with a Raft instance.
+	// The vote of the associated Raft instance.
 	VotedFor string
 }
 

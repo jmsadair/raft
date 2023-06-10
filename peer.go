@@ -26,10 +26,10 @@ type Peer interface {
 	// ID returns the ID of the peer.
 	ID() string
 
-	// Address returns the network address of the peer.
+	// Connect establishes a connection with the peer.
 	Connect() error
 
-	// Connect establishes a connection with the peer.
+	// Disconnect tears down a connection with the peer.
 	Disconnect() error
 
 	// AppendEntries sends an AppendEntriesRequest to the peer and returns an AppendEntriesResponse and an error

@@ -16,8 +16,9 @@ const (
 	errServerFailedCreate         = "failed to create server: ID = %s, err = %s"
 )
 
-// Server is a wrapper for a Raft instance. It serves requests
-// for Raft using protobuf and gRPC.
+// Server is a wrapper for a Raft instance that implements the logic of the Raft consensus algorithm.
+// It serves requests for Raft using protobuf and gRPC, making it capable of providing replication
+// and fault tolerance.
 type Server struct {
 	pb.UnimplementedRaftServer
 	id              string
@@ -28,16 +29,16 @@ type Server struct {
 	wg              sync.WaitGroup
 }
 
-// NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, and must
-// include the ID and network address of this server. The log path, storage path, and snapshot path are the paths to where the underlying Raft
-// instance will persist its state. If persisted state already exists at these paths, then it will be read into memory and Raft will be initialized
-// with that state. Otherwise, new files will be created at those paths. Responses from the state machine after applying a command will be sent over
-// the provided response channel. The response channel must be monitored otherwise the server may be blocked.
+// NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, including
+// the ID and network address of this server. The log path, storage path, and snapshot path specify the locations where the underlying Raft
+// instance persists its state. If state is already persisted at these paths, it will be read into memory and Raft will be initialized with that state.
+// Otherwise, new files will be created at those paths. Responses from the state machine after applying a command will be sent over the provided
+// response channel. The response channel must be monitored; otherwise, the server may be blocked.
 func NewServer(id string, peers map[string]string, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
 	responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
 	var listenInterface net.Addr
 
-	// Create gRPC peers
+	// Create peers.
 	grpcPeers := make(map[string]Peer, len(peers))
 	for peer, address := range peers {
 		tcpAddr, err := net.ResolveTCPAddr("tcp", address)
@@ -73,10 +74,8 @@ func NewServer(id string, peers map[string]string, fsm StateMachine, logPath str
 	return server, nil
 }
 
-// Start starts the server. It listens for incoming connections on the configured
-// network address and starts the Raft instance. It also starts serving gRPC requests on the
-// listener. The provided channel is used to signal to the server that it should start serving
-// requests.
+// Start starts the server. It listens for incoming connections on the configured network address, starts the Raft instance,
+// and serves gRPC requests on the listener. The provided channel is used to signal the server to start serving requests.
 func (s *Server) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {

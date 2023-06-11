@@ -7,17 +7,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestProtoLogEncoderDecoder(t *testing.T) {
+func TestLogEncoderDecoder(t *testing.T) {
 	entry := NewLogEntry(1, 1, []byte("test"))
 	buf := new(bytes.Buffer)
 
-	encoder := new(logEncoder)
-	if err := encoder.encode(buf, entry); err != nil {
+	if err := encodeLogEntry(buf, entry); err != nil {
 		t.Fatalf("failed to encode log entry: %s", err.Error())
 	}
 
-	decoder := new(logDecoder)
-	decodedEntry, err := decoder.decode(buf)
+	decodedEntry, err := decodeLogEntry(buf)
 	if err != nil {
 		t.Fatalf("failed to decode log entry: %s", err.Error())
 	}
@@ -27,17 +25,15 @@ func TestProtoLogEncoderDecoder(t *testing.T) {
 	assert.Equal(t, entry.Data, decodedEntry.Data, "decoded log entry has incorrect data")
 }
 
-func TestProtoStorageEncoderDecoder(t *testing.T) {
+func TestStorageEncoderDecoder(t *testing.T) {
 	persistentState := PersistentState{Term: 1, VotedFor: "test"}
 	buf := new(bytes.Buffer)
 
-	encoder := new(storageEncoder)
-	if err := encoder.encode(buf, &persistentState); err != nil {
+	if err := encodePersistentState(buf, &persistentState); err != nil {
 		t.Fatalf("failed to encode persistent state : %s", err.Error())
 	}
 
-	decoder := new(storageDecoder)
-	decodedState, err := decoder.decode(buf)
+	decodedState, err := decodePersistentState(buf)
 	if err != nil {
 		t.Fatalf("failed to decode persistent state: %s", err.Error())
 	}
@@ -46,17 +42,15 @@ func TestProtoStorageEncoderDecoder(t *testing.T) {
 	assert.Equal(t, persistentState.VotedFor, decodedState.VotedFor, "decoded state has incorrect votedFor")
 }
 
-func TestProtoSnapshotEncoderDecoder(t *testing.T) {
+func TestSnapshotEncoderDecoder(t *testing.T) {
 	snapshot := Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Data: []byte("test")}
 	buf := new(bytes.Buffer)
 
-	encoder := new(snapshotEncoder)
-	if err := encoder.encode(buf, &snapshot); err != nil {
+	if err := encodeSnapshot(buf, &snapshot); err != nil {
 		t.Fatalf("failed to encode persistent state : %s", err.Error())
 	}
 
-	decoder := new(snapshotDecoder)
-	decodedSnapshot, err := decoder.decode(buf)
+	decodedSnapshot, err := decodeSnapshot(buf)
 	if err != nil {
 		t.Fatalf("failed to decode persistent state: %s", err.Error())
 	}

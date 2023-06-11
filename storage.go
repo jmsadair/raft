@@ -12,11 +12,10 @@ const (
 	errFailedStorageOpen           = "failed to open storage file: path = %s, err = %s"
 	errFailedStorageClose          = "failed to close storage file: path = %s, err = %s"
 	errFailedStorageSync           = "failed to sync storage file: %s"
-	errFailedStorageFlush          = "failed flushing data from storage file writer: %s"
 	errFailedStorageCreateTempFile = "failed to create temporary storage file: %s"
 	errFailedStorageRename         = "failed to rename temporary storage file: %s"
 	errFailedPersistentStateEncode = "storage failed to encode persistent state: %s"
-	errFailedPeristentStateDecode  = "storage failed to decode persistent state: %s"
+	failedPersistentStateDecode    = "storage failed to decode persistent state: %s"
 )
 
 // Storage is an interface representing the internal component of Raft that is responsible
@@ -91,8 +90,7 @@ func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	}
 
 	// Write the new state to the temporary file.
-	storageEncoder := storageEncoder{}
-	if err := storageEncoder.encode(tmpFile, persistentState); err != nil {
+	if err := encodePersistentState(tmpFile, persistentState); err != nil {
 		return errors.WrapError(err, errFailedPersistentStateEncode, err.Error())
 	}
 	if err := tmpFile.Sync(); err != nil {
@@ -120,11 +118,10 @@ func (p *persistentStorage) GetState() (PersistentState, error) {
 
 	// Read the contents of the file associated with the storage.
 	reader := io.Reader(p.file)
-	storageDecoder := storageDecoder{}
-	persistentState, err := storageDecoder.decode(reader)
+	persistentState, err := decodePersistentState(reader)
 
 	if err != nil && err != io.EOF {
-		return persistentState, errors.WrapError(err, errFailedPeristentStateDecode, err.Error())
+		return persistentState, errors.WrapError(err, failedPersistentStateDecode, err.Error())
 	}
 
 	return persistentState, nil

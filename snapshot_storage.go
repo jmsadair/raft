@@ -102,10 +102,9 @@ func (p *persistentSnapshotStorage) Replay() error {
 	}
 
 	reader := bufio.NewReader(p.file)
-	snapshotDecoder := snapshotDecoder{}
 
 	for {
-		snapshot, err := snapshotDecoder.decode(reader)
+		snapshot, err := decodeSnapshot(reader)
 		if err == io.EOF {
 			break
 		}
@@ -150,8 +149,7 @@ func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
 	}
 
 	writer := bufio.NewWriter(p.file)
-	snapshotEncoder := snapshotEncoder{}
-	if err := snapshotEncoder.encode(writer, snapshot); err != nil {
+	if err := encodeSnapshot(writer, snapshot); err != nil {
 		return errors.WrapError(err, errFailedSnapshotEncode, err.Error())
 	}
 	if err := writer.Flush(); err != nil {

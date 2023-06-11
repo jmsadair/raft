@@ -8,9 +8,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type snapshotEncoder struct{}
-
-func (p snapshotEncoder) encode(w io.Writer, snapshot *Snapshot) error {
+func encodeSnapshot(w io.Writer, snapshot *Snapshot) error {
 	pbSnapshot := &pb.Snapshot{LastIncludedIndex: snapshot.LastIncludedIndex, LastIncludedTerm: snapshot.LastIncludedTerm, Data: snapshot.Data}
 	buf, err := proto.Marshal(pbSnapshot)
 	if err != nil {
@@ -26,9 +24,7 @@ func (p snapshotEncoder) encode(w io.Writer, snapshot *Snapshot) error {
 	return nil
 }
 
-type snapshotDecoder struct{}
-
-func (p snapshotDecoder) decode(r io.Reader) (Snapshot, error) {
+func decodeSnapshot(r io.Reader) (Snapshot, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return Snapshot{}, err
@@ -53,9 +49,7 @@ func (p snapshotDecoder) decode(r io.Reader) (Snapshot, error) {
 	return snapshot, nil
 }
 
-type storageEncoder struct{}
-
-func (p storageEncoder) encode(w io.Writer, persistentState *PersistentState) error {
+func encodePersistentState(w io.Writer, persistentState *PersistentState) error {
 	pbState := &pb.StorageState{Term: persistentState.Term, VotedFor: persistentState.VotedFor}
 	buf, err := proto.Marshal(pbState)
 	if err != nil {
@@ -71,9 +65,7 @@ func (p storageEncoder) encode(w io.Writer, persistentState *PersistentState) er
 	return nil
 }
 
-type storageDecoder struct{}
-
-func (p storageDecoder) decode(r io.Reader) (PersistentState, error) {
+func decodePersistentState(r io.Reader) (PersistentState, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return PersistentState{}, err
@@ -97,9 +89,7 @@ func (p storageDecoder) decode(r io.Reader) (PersistentState, error) {
 	return persistentState, nil
 }
 
-type logEncoder struct{}
-
-func (p logEncoder) encode(w io.Writer, entry *LogEntry) error {
+func encodeLogEntry(w io.Writer, entry *LogEntry) error {
 	pbEntry := &pb.LogEntry{
 		Index:  entry.Index,
 		Term:   entry.Term,
@@ -124,9 +114,7 @@ func (p logEncoder) encode(w io.Writer, entry *LogEntry) error {
 	return nil
 }
 
-type logDecoder struct{}
-
-func (p logDecoder) decode(r io.Reader) (LogEntry, error) {
+func decodeLogEntry(r io.Reader) (LogEntry, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
 		return LogEntry{}, err

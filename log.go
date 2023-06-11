@@ -14,7 +14,6 @@ const (
 	errFailedLogCreateTempFile = "failed to create temporary log file: %s"
 	errFailedLogRename         = "failed to rename temporary log file: %s"
 	errFailedLogSync           = "failed to sync log file: %s"
-	errFailedLogFlush          = "failed flushing data from log file writer: %s"
 	errFailedLogEncode         = "failed to encode log entry: %s"
 	errFailedLogDecode         = "failed to decode log entry: %s"
 	errFailedLogOpen           = "failed to open log file: path = %s"
@@ -131,10 +130,9 @@ func (l *persistentLog) Open() error {
 
 func (l *persistentLog) Replay() error {
 	reader := bufio.NewReader(l.file)
-	logDecoder := logDecoder{}
 
 	for {
-		entry, err := logDecoder.decode(reader)
+		entry, err := decodeLogEntry(reader)
 		if err == io.EOF {
 			break
 		}
@@ -144,17 +142,12 @@ func (l *persistentLog) Replay() error {
 		l.entries = append(l.entries, &entry)
 	}
 
-	// The log must always contain atleast one entry.
+	// The log must always contain at least one entry.
 	// The first entry is a dummy entry used for indexing into the log.
 	if len(l.entries) == 0 {
 		entry := NewLogEntry(0, 0, nil)
-		writer := bufio.NewWriter(l.file)
-		logEncoder := logEncoder{}
-		if err := logEncoder.encode(writer, entry); err != nil {
+		if err := encodeLogEntry(l.file, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
-		}
-		if err := writer.Flush(); err != nil {
-			return errors.WrapError(err, errFailedLogFlush, err.Error())
 		}
 		if err := l.file.Sync(); err != nil {
 			return errors.WrapError(err, errFailedLogSync, err.Error())
@@ -206,19 +199,14 @@ func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 		return errors.WrapError(nil, errLogNotOpen, l.path)
 	}
 
-	writer := bufio.NewWriter(l.file)
-	logEncoder := logEncoder{}
 	for _, entry := range entries {
 		offset, err := l.file.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
 		entry.Offset = offset
-		if err := logEncoder.encode(writer, entry); err != nil {
+		if err := encodeLogEntry(l.file, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
-		}
-		if err := writer.Flush(); err != nil {
-			return errors.WrapError(err, errFailedLogFlush, err.Error())
 		}
 	}
 
@@ -282,21 +270,15 @@ func (l *persistentLog) Compact(index uint64) error {
 
 	// Write the entries contained in the compacted log to the
 	// temporary file.
-	writer := bufio.NewWriter(compactedFile)
-	logEncoder := logEncoder{}
 	for _, entry := range newEntries {
 		offset, err := compactedFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, errFailedLogSeek, offset, err.Error())
 		}
 		entry.Offset = offset
-		if err := logEncoder.encode(writer, entry); err != nil {
+		if err := encodeLogEntry(compactedFile, entry); err != nil {
 			return errors.WrapError(err, errFailedLogEncode, err.Error())
 		}
-	}
-
-	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, errFailedLogFlush, err.Error())
 	}
 
 	if err := compactedFile.Sync(); err != nil {
@@ -325,16 +307,10 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 		return errors.WrapError(err, errFailedLogCreateTempFile, err.Error())
 	}
 
-	// Write a dummy entry to the temporary file with the provided
-	// term and index.
-	writer := bufio.NewWriter(newLogFile)
-	logEncoder := logEncoder{}
+	// Write a dummy entry to the temporary file with the provided term and index.
 	entry := &LogEntry{Index: index, Term: term}
-	if err := logEncoder.encode(writer, entry); err != nil {
+	if err := encodeLogEntry(newLogFile, entry); err != nil {
 		return errors.WrapError(err, errFailedLogEncode, err.Error())
-	}
-	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, errFailedLogFlush, err.Error())
 	}
 	if err := newLogFile.Sync(); err != nil {
 		return errors.WrapError(err, errFailedLogSync, err.Error())

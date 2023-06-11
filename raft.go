@@ -115,10 +115,10 @@ type Raft struct {
 	// This contains the highest log entry known to be replicated on each sever.
 	matchIndex map[string]uint64
 
-	// This stores and retreives log entries in a durable manner.
+	// This stores and retrieves log entries in a durable manner.
 	log Log
 
-	// This stores and retreives the vote and term in a durable manner.
+	// This stores and retrieves the vote and term in a durable manner.
 	storage Storage
 
 	// This stores and retrieves snapshots in a durable manner.
@@ -133,7 +133,7 @@ type Raft struct {
 	// A channel for notifying the commit loop that new log entries may be ready to be committed.
 	commitCond *sync.Cond
 
-	// A channel for transfering applied log entries from the apply loop to the fsm loop for
+	// A channel for transferring applied log entries from the apply loop to the fsm loop for
 	// actual application to the state machine.
 	fsmCh chan *LogEntry
 
@@ -283,7 +283,7 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 
 // Start starts the Raft instance if it is not already started. Once started,
 // the Raft instance transitions to the follower state and is ready to start
-// sending and recieving RPCs.
+// sending and receiving RPCs.
 func (r *Raft) Start() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -395,7 +395,7 @@ func (r *Raft) Status() Status {
 
 // TakeSnapshot takes a snapshot of the current state of the state machine,
 // persists the snapshot, compacts the log up to and including the
-// last included index of the snapshot, and retursn the both the last included
+// last included index of the snapshot, and return the both the last included
 // index and term of the snapshot.
 func (r *Raft) TakeSnapshot() (uint64, uint64) {
 	r.mu.Lock()
@@ -549,7 +549,9 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		break
 	}
 
-	r.log.AppendEntries(toAppend)
+	if err := r.log.AppendEntries(toAppend); err != nil {
+		r.options.logger.Fatalf("server %s failed to append entries to log: %s", r.id, err.Error())
+	}
 
 	// Update the commit index.
 	if request.LeaderCommit > r.commitIndex {
@@ -595,7 +597,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	// Reject any requests with out-date-log.
 	// To determine which log is more up-to-date:
-	// 1. If the logs have last entries with different terms, than the log with the
+	// 1. If the logs have last entries with different terms, then the log with the
 	//    greater term is more up-to-date.
 	// 2. If the logs end with the same term, the longer log is more up-to-date.
 	if request.LastLogTerm < r.log.LastTerm() ||
@@ -622,7 +624,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 		return errors.WrapError(nil, errRaftShutdown, r.id)
 	}
 
-	r.options.logger.Debugf("server %s recieved InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
+	r.options.logger.Debugf("server %s received InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
 		r.id, request.LeaderID, request.Term, request.LastIncludedIndex, request.LastIncludedTerm)
 
 	response.Term = r.currentTerm
@@ -777,7 +779,7 @@ func (r *Raft) sendAppendEntries(peer Peer) {
 	}
 }
 
-// sendRequestVoteToPeers sends a RequestVote RPC to all peers concurrenty. Expects
+// sendRequestVoteToPeers sends a RequestVote RPC to all peers concurrent. Expects
 // lock to be held.
 func (r *Raft) sendRequestVoteToPeers(votes *int) {
 	for _, peer := range r.peers {
@@ -878,9 +880,9 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.matchIndex[peer.ID()] = request.LastIncludedIndex
 }
 
-// heartbeatLoop is a long running loop that periodically sends AppendEntries RPCs
-// to all of the peers if this server is the leader. This function should be called
-// when the Raft instance is started and should be ran as a separate go routine.
+// heartbeatLoop is a long-running loop that periodically sends AppendEntries RPCs
+// to all the peers if this server is the leader. This function should be called
+// when the Raft instance is started and should be run as a separate go routine.
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
@@ -906,9 +908,9 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-// electionLoop is a long running loop that kick off an election if this server
+// electionLoop is a long-running loop that kick off an election if this server
 // has not heard from the leader within the election timeout. This should be called
-// when the Raft instance is started and should be ran as a separate go routine.
+// when the Raft instance is started and should be run as a separate go routine.
 func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
@@ -935,7 +937,7 @@ func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// If we have already been elected the leaser or we have been contacted by the leader
+	// If we have already been elected the leaser, or we have been contacted by the leader
 	// since the last election timeout, an election is not needed.
 	if r.state != Follower || time.Since(r.lastContact) < r.options.electionTimeout {
 		return
@@ -946,10 +948,10 @@ func (r *Raft) election() {
 	r.sendRequestVoteToPeers(&votesReceived)
 }
 
-// commitLoop is a long running loop that updates the commit index when signaled. If the commit
+// commitLoop is a long-running loop that updates the commit index when signaled. If the commit
 // index has been updated, this loop will signal to the apply loop that entries may be applied
 // to the state machine. This should be called when the Raft instance is started and should be
-// ran as a separate go routine.
+// run as a separate go routine.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -968,7 +970,7 @@ func (r *Raft) commitLoop() {
 
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
 			// It is NOT safe for the leader to commit an entry with a term
-			// different than the current term. It is possible for a log entry
+			// different from the current term. It is possible for a log entry
 			// to be agreed upon by the majority of servers in the cluster, but
 			// be overwritten by a future leader.
 			if entry, err := r.log.GetEntry(index); err != nil {
@@ -1002,7 +1004,7 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-// applyLoop is a long running loop that sends log entries to the state machine loop to applied when
+// applyLoop is a long-running loop that sends log entries to the state machine loop to applied when
 // signalled. This should be called when the Raft instance is started and ran as a separate go routine.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
@@ -1032,7 +1034,7 @@ func (r *Raft) applyLoop() {
 	}
 }
 
-// fsmLoop is a long running loop that applies log entries to the state machine and sends responses to
+// fsmLoop is a long-running loop that applies log entries to the state machine and sends responses to
 // commands over the response channel. If auto snapshotting is enabled, it will take a snapshot once
 // enough entries have been applied. This should be called when the Raft instance is started and ran
 // as a separate go routine.

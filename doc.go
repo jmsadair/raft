@@ -1,3 +1,5 @@
+package raft
+
 /*
 This library provides a simple, easy-to-understand, and reliable implementation of Raft using Go. Raft is a consensus protocol designed to manage replicated logs
 in a distributed system. Its purpose is to ensure fault-tolerant coordination and consistency among a group of nodes, making it suitable for building reliable
@@ -7,7 +9,7 @@ There are two ways that this library can be used. The first way is to use the Ra
 use a different communication protocol or the provided storage implementations are not sufficient for your use case. The second way is to use the provided Server
 implementation. This is covered below.
 
-To setup a server, the first step is to define the state machine that is to be replicated. This state machine must implement that StateMachine interface and it must be concurrent safe.
+To set up a server, the first step is to define the state machine that is to be replicated. This state machine must implement that StateMachine interface, and it must be concurrent safe.
 Here is an example of a type that implements the StateMachine interface.
 
 	// Op represents an operation on the state machine.
@@ -137,7 +139,7 @@ its term and vote. The snapshot path specifies where the server will persist any
 	snapshotPath := "raft-1-snapshots"
 
 Now, create the channel that responses from the state machine will be relayed over. Note that, when the server is started, it is important that
-this channel is always being monitored. Otherwise, the internal Raft implemenatation will become blocked.
+this channel is always being monitored. Otherwise, the internal Raft implementation will become blocked.
 
 	responseCh := make(chan raft.CommandResponse)
 
@@ -154,7 +156,7 @@ Here is how to start the server.
 	// This sends a signal to the Raft implementation to start.
 	readyCh := make(chan interface)
 
-	// Once Start is called, the server is prepared to start recieiving RPCs.
+	// Once Start is called, the server is prepared to start receiving RPCs.
 	err := server.Start(readyCh)
 	if err != nil {
 	    panic(err)
@@ -170,4 +172,3 @@ Here is how to start the server.
 	// Start Raft.
 	close(readyCh)
 */
-package raft

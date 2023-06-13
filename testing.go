@@ -69,9 +69,7 @@ func makePeerMaps(numServers int) []map[string]string {
 	return clusterPeers
 }
 
-type stateMachineEncoderMock struct{}
-
-func (s *stateMachineEncoderMock) encode(entries []*LogEntry) ([]byte, error) {
+func encodeLogEntries(entries []*LogEntry) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(entries); err != nil {
@@ -80,9 +78,7 @@ func (s *stateMachineEncoderMock) encode(entries []*LogEntry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-type stateMachineDecoderMock struct{}
-
-func (s *stateMachineDecoderMock) decode(data []byte) ([]*LogEntry, error) {
+func decodeLogEntries(data []byte) ([]*LogEntry, error) {
 	var commands []*LogEntry
 	buf := bytes.NewBuffer(data)
 	dec := gob.NewDecoder(buf)
@@ -93,13 +89,15 @@ func (s *stateMachineDecoderMock) decode(data []byte) ([]*LogEntry, error) {
 }
 
 type stateMachineMock struct {
-	commands []*LogEntry
-	mu       sync.Mutex
+	commands     []*LogEntry
+	snapshotting bool
+	snapshotSize int
+	mu           sync.Mutex
 }
 
-func newStateMachineMock() *stateMachineMock {
+func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
 	gob.Register(LogEntry{})
-	return &stateMachineMock{commands: make([]*LogEntry, 0)}
+	return &stateMachineMock{commands: make([]*LogEntry, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
 }
 
 func (s *stateMachineMock) Apply(entry *LogEntry) interface{} {
@@ -114,8 +112,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	encoder := stateMachineEncoderMock{}
-	bytes, err := encoder.encode(s.commands)
+	bytes, err := encodeLogEntries(s.commands)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf(errStateMachineEncode, err.Error())
 	}
@@ -137,8 +134,7 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	decoder := stateMachineDecoderMock{}
-	entries, err := decoder.decode(snapshot.Data)
+	entries, err := decodeLogEntries(snapshot.Data)
 	if err != nil {
 		return fmt.Errorf(errStateMachineDecode, err.Error())
 	}
@@ -146,6 +142,13 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	s.commands = entries
 
 	return nil
+}
+
+func (s *stateMachineMock) NeedSnapshot() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.snapshotting && len(s.commands) >= s.snapshotSize
 }
 
 type storagePaths struct {
@@ -202,10 +205,9 @@ type testCluster struct {
 	lastApplied []uint64
 
 	// Indicates whether auto snapshotting will be used.
-	autoSnapshotting bool
+	snapshotting bool
 
-	// The maximum number of log entries per snapshot if auto
-	// snapshotting is enabled.
+	// The maximum number of log entries per snapshot if snapshotting is enabled.
 	snapshotSize int
 
 	mu sync.Mutex
@@ -213,7 +215,7 @@ type testCluster struct {
 	wg sync.WaitGroup
 }
 
-func newCluster(t *testing.T, numServers int, autoSnapshotting bool, snapshotSize int) *testCluster {
+func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
 	servers := make([]*Server, numServers)
 	fsm := make([]*stateMachineMock, numServers)
 	replicateCh := make([]chan CommandResponse, numServers)
@@ -234,14 +236,13 @@ func newCluster(t *testing.T, numServers int, autoSnapshotting bool, snapshotSiz
 
 	for i := 0; i < numServers; i++ {
 		replicateCh[i] = make(chan CommandResponse)
-		fsm[i] = newStateMachineMock()
+		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
 		responses[i] = make(map[uint64]CommandResponse)
 		paths[i] = storagePaths{logPath: fmt.Sprintf(logFileFmt, i), storagePath: fmt.Sprintf(storageFileFmt, i),
 			snapshotStoragePath: fmt.Sprintf(snapshotFileFmt, i)}
 		id := fmt.Sprint(i)
 
-		server, err := NewServer(id, peers[i], fsm[i], paths[i].logPath, paths[i].storagePath, paths[i].snapshotStoragePath, replicateCh[i],
-			WithAutoSnapshotting(autoSnapshotting), WithMaxLogEntriesPerSnapshot(snapshotSize))
+		server, err := NewServer(id, peers[i], fsm[i], paths[i].logPath, paths[i].storagePath, paths[i].snapshotStoragePath, replicateCh[i])
 		if err != nil {
 			t.Fatalf(errCreateClusterServer, i, err.Error())
 		}
@@ -261,7 +262,7 @@ func newCluster(t *testing.T, numServers int, autoSnapshotting bool, snapshotSiz
 		serverErrors:     serverErrors,
 		lastApplied:      lastApplied,
 		shutdownCh:       make(chan interface{}),
-		autoSnapshotting: autoSnapshotting,
+		snapshotting:     snapshotting,
 		snapshotSize:     snapshotSize,
 	}
 }
@@ -426,8 +427,7 @@ func (tc *testCluster) checkSnapshot(index int, response CommandResponse) {
 	for _, snapshot := range snapshots {
 		if snapshot.LastIncludedIndex+1 == response.Index {
 			// Decode the snapshot data into entries.
-			decoder := stateMachineDecoderMock{}
-			appliedEntries, err := decoder.decode(snapshot.Data)
+			appliedEntries, err := decodeLogEntries(snapshot.Data)
 			if err != nil {
 				tc.serverErrors[index] = err.Error()
 				return
@@ -522,11 +522,10 @@ func (tc *testCluster) restartServer(server int) {
 	serverID := fmt.Sprint(server)
 
 	tc.responseCh[server] = make(chan CommandResponse)
-	tc.fsm[server] = newStateMachineMock()
+	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
 	newServer, err := NewServer(serverID, tc.peers[server], tc.fsm[server], tc.paths[server].logPath,
-		tc.paths[server].storagePath, tc.paths[server].snapshotStoragePath, tc.responseCh[server],
-		WithAutoSnapshotting(tc.autoSnapshotting), WithMaxLogEntriesPerSnapshot(tc.snapshotSize))
+		tc.paths[server].storagePath, tc.paths[server].snapshotStoragePath, tc.responseCh[server])
 	if err != nil {
 		tc.t.Fatalf(errStartingClusterServer, server, err.Error())
 	}
@@ -670,63 +669,4 @@ func (tc *testCluster) disconnectServer(server int) {
 	}
 
 	tc.disconnected[server] = true
-}
-
-func (tc *testCluster) takeAndValidateSnapshot(server int) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	oldSnapshots := tc.servers[server].ListSnapshots()
-	lastIncludedIndex, lastIncludedTerm := tc.servers[server].TakeSnapshot()
-	newSnapshots := tc.servers[server].ListSnapshots()
-
-	// Some tests may cause a snapshot to be taken when there is nothing new to snapshot.
-	if len(oldSnapshots) > 0 && oldSnapshots[len(oldSnapshots)-1].LastIncludedIndex == lastIncludedIndex {
-		return
-	}
-
-	// A snapshot was just taken so there should be one additional snapshot in the snapshot store.
-	if len(newSnapshots) != len(oldSnapshots)+1 {
-		tc.t.Fatalf(errIncorrectNumberSnapshots, server, len(oldSnapshots)+1, len(newSnapshots))
-	}
-
-	// The most recent snapshot.
-	snapshot := newSnapshots[len(newSnapshots)-1]
-
-	// Decode the snapshot data into entries.
-	decoder := stateMachineDecoderMock{}
-	appliedEntries, err := decoder.decode(snapshot.Data)
-	if err != nil {
-		tc.t.Fatal(err)
-		return
-	}
-
-	// Snapshots should never be empty.
-	if len(appliedEntries) == 0 {
-		tc.t.Fatalf(errEmptySnapshot, server)
-		return
-	}
-
-	actualLastIncludedIndex := appliedEntries[len(appliedEntries)-1].Index
-	actualLastIncludedTerm := appliedEntries[len(appliedEntries)-1].Term
-
-	// Make sure last included index returned by server matches with the last included index in the snapshot bytes.
-	if actualLastIncludedIndex != lastIncludedIndex {
-		tc.t.Fatalf(errIncorrectSnapshotIndex, server, lastIncludedIndex, actualLastIncludedIndex)
-	}
-
-	// Make sure last included term returned by server matches with the last included term in the snapshot bytes.
-	if actualLastIncludedTerm != lastIncludedTerm {
-		tc.t.Fatalf(errIncorrectSnapshotTerm, server, lastIncludedTerm, actualLastIncludedTerm)
-	}
-
-	// Make sure last included index in snapshot matches with the last included index in the snapshot bytes.
-	if actualLastIncludedIndex != snapshot.LastIncludedIndex {
-		tc.t.Fatalf(errIncorrectSnapshotIndex, server, snapshot.LastIncludedIndex, actualLastIncludedIndex)
-	}
-
-	// Make sure last included term in snapshot matches with the last included term in the snapshot bytes.
-	if actualLastIncludedTerm != snapshot.LastIncludedTerm {
-		tc.t.Fatalf(errIncorrectSnapshotTerm, server, snapshot.LastIncludedTerm, actualLastIncludedTerm)
-	}
 }

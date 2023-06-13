@@ -134,13 +134,6 @@ func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
 	return s.raft.SubmitCommand(command)
 }
 
-// TakeSnapshot manually takes a snapshot of the state machine and
-// returns the last included log index and last included term of the
-// snapshot.
-func (s *Server) TakeSnapshot() (uint64, uint64) {
-	return s.raft.TakeSnapshot()
-}
-
 // ListSnapshots returns an array of all the snapshots that the underlying
 // Raft instance has taken.
 func (s *Server) ListSnapshots() []Snapshot {

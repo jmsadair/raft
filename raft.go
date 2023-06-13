@@ -199,9 +199,6 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 	if options.electionTimeout == 0 {
 		options.electionTimeout = defaultElectionTimeout
 	}
-	if options.maxEntriesPerSnapshot == 0 {
-		options.maxEntriesPerSnapshot = defaultMaxEntriesPerSnapshot
-	}
 
 	// Open the storage to recover persisted state.
 	if err := storage.Open(); err != nil {
@@ -308,8 +305,8 @@ func (r *Raft) Start() error {
 	go r.heartbeatLoop()
 	go r.commitLoop()
 
-	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v snapshotsEnabled = %v, snapshotSize = %v",
-		r.id, r.options.electionTimeout, r.options.heartbeatInterval, r.options.autoSnapshottingEnabled, r.options.maxEntriesPerSnapshot)
+	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v",
+		r.id, r.options.electionTimeout, r.options.heartbeatInterval)
 
 	return nil
 }
@@ -393,51 +390,57 @@ func (r *Raft) Status() Status {
 	}
 }
 
-// TakeSnapshot takes a snapshot of the current state of the state machine,
-// persists the snapshot, compacts the log up to and including the
-// last included index of the snapshot, and return the both the last included
-// index and term of the snapshot.
-func (r *Raft) TakeSnapshot() (uint64, uint64) {
+// RequestVote is invoked by the candidate server to gather a vote from this server.
+func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// There is nothing to snapshot if this is true.
-	if r.lastIncludedIndex >= r.log.LastIndex() {
-		return r.lastIncludedIndex, r.lastIncludedTerm
+	if r.state == Shutdown {
+		return errors.WrapError(nil, errRaftShutdown, r.id)
 	}
 
-	// Retrieve current state of state machine.
-	snapshot, err := r.fsm.Snapshot()
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", r.id, err.Error())
+	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
+		r.id, request.CandidateID, request.Term, request.LastLogIndex, request.LastLogTerm)
+
+	response.Term = r.currentTerm
+	response.VoteGranted = false
+
+	// Reject the request if the term is out-of-date.
+	if request.Term < r.currentTerm {
+		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.Term)
+		return nil
 	}
 
-	// Persist the snapshot.
-	if err := r.snapshotStorage.SaveSnapshot(&snapshot); err != nil {
-		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
+	// If the request has a more up-to-date term, update current term and become a follower.
+	if request.Term > r.currentTerm {
+		r.becomeFollower(request.Term)
+		response.Term = r.currentTerm
 	}
 
-	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, snapshot.LastIncludedIndex)
-
-	// Compact the log up to the last log entry that was applied to the state machine.
-	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed compacting log: %s", r.id, err.Error())
+	// Reject the request if this server has already voted.
+	if r.votedFor != "" && r.votedFor != request.CandidateID {
+		r.options.logger.Debugf("server %s rejecting RequestVote RPC: already voted: votedFor = %s", r.id, r.votedFor)
+		return nil
 	}
 
-	r.lastIncludedIndex = snapshot.LastIncludedIndex
-	r.lastIncludedTerm = snapshot.LastIncludedTerm
+	// Reject any requests with out-date-log.
+	// To determine which log is more up-to-date:
+	// 1. If the logs have last entries with different terms, then the log with the
+	//    greater term is more up-to-date.
+	// 2. If the logs end with the same term, the longer log is more up-to-date.
+	if request.LastLogTerm < r.log.LastTerm() ||
+		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
+		return nil
+	}
 
-	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
-		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
+	r.lastContact = time.Now()
+	response.VoteGranted = true
 
-	return snapshot.LastIncludedIndex, snapshot.LastIncludedTerm
-}
+	// Update this server's vote and write it to disk.
+	r.votedFor = request.CandidateID
+	r.persistTermAndVote()
 
-// ListSnapshots returns an array of all the snapshots that have been taken.
-func (r *Raft) ListSnapshots() []Snapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.snapshotStorage.ListSnapshots()
+	return nil
 }
 
 // AppendEntries is invoked by the leader to replicate log entries.
@@ -562,59 +565,6 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
-// RequestVote is invoked by the candidate server to gather a vote from this server.
-func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.state == Shutdown {
-		return errors.WrapError(nil, errRaftShutdown, r.id)
-	}
-
-	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
-		r.id, request.CandidateID, request.Term, request.LastLogIndex, request.LastLogTerm)
-
-	response.Term = r.currentTerm
-	response.VoteGranted = false
-
-	// Reject the request if the term is out-of-date.
-	if request.Term < r.currentTerm {
-		r.options.logger.Debugf("server %s rejecting RequestVote RPC: out of date term: %d > %d", r.id, r.currentTerm, request.Term)
-		return nil
-	}
-
-	// If the request has a more up-to-date term, update current term and become a follower.
-	if request.Term > r.currentTerm {
-		r.becomeFollower(request.Term)
-		response.Term = r.currentTerm
-	}
-
-	// Reject the request if this server has already voted.
-	if r.votedFor != "" && r.votedFor != request.CandidateID {
-		r.options.logger.Debugf("server %s rejecting RequestVote RPC: already voted: votedFor = %s", r.id, r.votedFor)
-		return nil
-	}
-
-	// Reject any requests with out-date-log.
-	// To determine which log is more up-to-date:
-	// 1. If the logs have last entries with different terms, then the log with the
-	//    greater term is more up-to-date.
-	// 2. If the logs end with the same term, the longer log is more up-to-date.
-	if request.LastLogTerm < r.log.LastTerm() ||
-		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
-		return nil
-	}
-
-	r.lastContact = time.Now()
-	response.VoteGranted = true
-
-	// Update this server's vote and write it to disk.
-	r.votedFor = request.CandidateID
-	r.persistTermAndVote()
-
-	return nil
-}
-
 // InstallSnapshot is invoked by the leader to send a snapshot to a follower.
 func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error {
 	r.mu.Lock()
@@ -685,6 +635,13 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	}
 
 	return nil
+}
+
+// ListSnapshots returns an array of all the snapshots that have been taken.
+func (r *Raft) ListSnapshots() []Snapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.snapshotStorage.ListSnapshots()
 }
 
 // sendAppendEntriesToPeers sends an AppendEntries RPC to all peers concurrently.
@@ -836,6 +793,46 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 	if r.hasQuorum(*votes) && r.state == Follower {
 		r.becomeLeader()
 	}
+}
+
+// takeSnapshot takes a snapshot of the current state of the state machine,
+// persists the snapshot, compacts the log up to and including the
+// last included index of the snapshot, and return the both the last included
+// index and term of the snapshot.
+func (r *Raft) takeSnapshot() (uint64, uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// There is nothing to snapshot if this is true.
+	if r.lastIncludedIndex >= r.log.LastIndex() {
+		return r.lastIncludedIndex, r.lastIncludedTerm
+	}
+
+	// Retrieve current state of state machine.
+	snapshot, err := r.fsm.Snapshot()
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to take snapshot of state machine: %s", r.id, err.Error())
+	}
+
+	// Persist the snapshot.
+	if err := r.snapshotStorage.SaveSnapshot(&snapshot); err != nil {
+		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
+	}
+
+	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, snapshot.LastIncludedIndex)
+
+	// Compact the log up to the last log entry that was applied to the state machine.
+	if err := r.log.Compact(snapshot.LastIncludedIndex); err != nil {
+		r.options.logger.Fatalf("server %s failed compacting log: %s", r.id, err.Error())
+	}
+
+	r.lastIncludedIndex = snapshot.LastIncludedIndex
+	r.lastIncludedTerm = snapshot.LastIncludedTerm
+
+	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
+		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
+
+	return snapshot.LastIncludedIndex, snapshot.LastIncludedTerm
 }
 
 // sendInstallSnapshot sends an InstallSnapshot RPC to the provided peer.
@@ -1058,8 +1055,8 @@ func (r *Raft) fsmLoop() {
 			r.id, entry.Index, entry.Term)
 
 		// Take a snapshot of the state machine if necessary.
-		if r.options.autoSnapshottingEnabled && entry.Index%uint64(r.options.maxEntriesPerSnapshot) == 0 {
-			r.TakeSnapshot()
+		if r.fsm.NeedSnapshot() {
+			r.takeSnapshot()
 		}
 	}
 }

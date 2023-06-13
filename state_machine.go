@@ -14,4 +14,8 @@ type StateMachine interface {
 	// Restore recovers the state of the state machine given a snapshot that was produced
 	// by Snapshot.
 	Restore(snapshot *Snapshot) error
+
+	// NeedSnapshot returns true if a snapshot should be taken of the state machine and false
+	// otherwise.
+	NeedSnapshot() bool
 }

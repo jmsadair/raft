@@ -5,9 +5,8 @@ import (
 )
 
 const (
-	defaultElectionTimeout       = time.Duration(300 * time.Millisecond)
-	defaultHeartbeat             = time.Duration(50 * time.Millisecond)
-	defaultMaxEntriesPerSnapshot = 100
+	defaultElectionTimeout = time.Duration(300 * time.Millisecond)
+	defaultHeartbeat       = time.Duration(50 * time.Millisecond)
 )
 
 // Logger supports logging messages at the debug, info, warn, error, and fatal level.
@@ -53,14 +52,6 @@ type options struct {
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
 
-	// The maximum number of log entries before a snapshot is triggered.
-	// If the number of log entries since the last snapshot meets or
-	// exceeds maxEntriesPerSnapshot, a snapshot will be taken.
-	maxEntriesPerSnapshot int
-
-	// Indicates whether raft should use snapshots.
-	autoSnapshottingEnabled bool
-
 	// A logger for debugging and important events.
 	logger Logger
 }
@@ -80,25 +71,6 @@ func WithElectionTimeout(time time.Duration) Option {
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		options.heartbeatInterval = time
-		return nil
-	}
-}
-
-// WithMaxLogEntriesPerSnapshot sets the maximum log entries per snapshot for the Raft server
-// for when auto snashotting is enabled.
-func WithMaxLogEntriesPerSnapshot(maxEntriesPerSnapshot int) Option {
-	return func(options *options) error {
-		options.maxEntriesPerSnapshot = maxEntriesPerSnapshot
-		return nil
-	}
-}
-
-// WithAutoSnapshotting is used to indicate whether the Raft server should
-// automatically take snapshots once a predefined number of log entries
-// have been applied.
-func WithAutoSnapshotting(autoSnaphottingEnabled bool) Option {
-	return func(options *options) error {
-		options.autoSnapshottingEnabled = autoSnaphottingEnabled
 		return nil
 	}
 }

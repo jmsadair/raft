@@ -1,5 +1,3 @@
-package raft
-
 /*
 This library provides a simple, easy-to-understand, and reliable implementation of Raft using Go. Raft is a consensus protocol designed to manage replicated logs
 in a distributed system. Its purpose is to ensure fault-tolerant coordination and consistency among a group of nodes, making it suitable for building reliable
@@ -84,14 +82,14 @@ Here is an example of a type that implements the StateMachine interface.
 	    var buf bytes.Buffer
 	    enc := gob.NewEncoder(&buf)
 	    if err := enc.Encode(sm.count); err != nil {
-		    return raft.Snapshot{}, err
+	        return raft.Snapshot{}, err
 	    }
 
 	    // Create the snapshot.
 	    snapshot := raft.Snapshot{
-		    LastIncludedIndex: sm.lastIndex,
-		    LastIncludedTerm:  sm.lastTerm,
-		    Data:              buf.Bytes(),
+	        LastIncludedIndex: sm.lastIndex,
+	        LastIncludedTerm:  sm.lastTerm,
+	        Data:              buf.Bytes(),
 	    }
 
 	    return snapshot, nil
@@ -118,6 +116,15 @@ Here is an example of a type that implements the StateMachine interface.
 	    sm.lastTerm = snapshot.LastIncludedTerm
 
 	    return nil
+	}
+
+	func (sm *StateMachine) NeedSnapshot() bool {
+	    s.mu.Lock()
+	    defer s.mu.Unlock()
+
+	    // This probably is not a realisitic condition for needing a snapshot, but
+	    // this state machine is only a counter.
+	    return s.lastIndex % 100 == 0
 	}
 
 Now, create a map that maps server IDs to their respective address. This map should contain the ID and address
@@ -172,3 +179,4 @@ Here is how to start the server.
 	// Start Raft.
 	close(readyCh)
 */
+package raft

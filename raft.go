@@ -199,6 +199,9 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 	if options.electionTimeout == 0 {
 		options.electionTimeout = defaultElectionTimeout
 	}
+	if options.maxEntriesPerRPC == 0 {
+		options.maxEntriesPerRPC = defaultMaxEntriesPerRPC
+	}
 
 	// Open the storage to recover persisted state.
 	if err := storage.Open(); err != nil {
@@ -681,14 +684,20 @@ func (r *Raft) sendAppendEntries(peer Peer) {
 		prevLogTerm = prevEntry.Term
 	}
 
-	// Retrieve the log entries that need to be replicated to the peer. Ensure that next index
-	// for the peer is contained in the log - the log may have been compacted due to a snapshot.
+	// Retrieve the log entries that need to be replicated to the peer.
 	entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
-	for index := nextIndex; index < r.log.NextIndex() && index > r.lastIncludedIndex; index++ {
+	for index := nextIndex; index < r.log.NextIndex(); index++ {
+		// Make sure that the index is in bounds since the log may have been compacted.
+		// Make sure the max entries per RPC is not exceeded.
+		if index <= r.lastIncludedIndex || len(entries) >= r.options.maxEntriesPerRPC {
+			break
+		}
+
 		entry, err := r.log.GetEntry(index)
 		if err != nil {
 			r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 		}
+
 		entries = append(entries, entry)
 	}
 
@@ -729,6 +738,7 @@ func (r *Raft) sendAppendEntries(peer Peer) {
 		return
 	}
 
+	// Update the next and match index of the peer.
 	if request.PrevLogIndex+uint64(len(entries)) >= r.nextIndex[peer.ID()] {
 		r.nextIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries)) + 1
 		r.matchIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries))

@@ -5,8 +5,9 @@ import (
 )
 
 const (
-	defaultElectionTimeout = time.Duration(300 * time.Millisecond)
-	defaultHeartbeat       = time.Duration(50 * time.Millisecond)
+	defaultElectionTimeout  = time.Duration(300 * time.Millisecond)
+	defaultHeartbeat        = time.Duration(50 * time.Millisecond)
+	defaultMaxEntriesPerRPC = 100
 )
 
 // Logger supports logging messages at the debug, info, warn, error, and fatal level.
@@ -52,6 +53,10 @@ type options struct {
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
 
+	// The maximum number of log entries that will be transmitted via
+	// an AppendEntries RPC.
+	maxEntriesPerRPC int
+
 	// A logger for debugging and important events.
 	logger Logger
 }
@@ -71,6 +76,15 @@ func WithElectionTimeout(time time.Duration) Option {
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		options.heartbeatInterval = time
+		return nil
+	}
+}
+
+// WithMaxEntriesPerRPC sets the maximum number of log entries that can be
+// transmitted via an AppendEntries RPC.
+func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
+	return func(options *options) error {
+		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil
 	}
 }

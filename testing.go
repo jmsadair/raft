@@ -148,7 +148,7 @@ func (s *stateMachineMock) NeedSnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.snapshotting && len(s.commands) >= s.snapshotSize
+	return s.snapshotting && len(s.commands)%s.snapshotSize == 0
 }
 
 type storagePaths struct {

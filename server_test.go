@@ -12,19 +12,19 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-// Set by environment variable. Indicates whether auto
-// snapshotting is on or off. If auto snapshotting is on,
-// all tests (exclusing the manual snapshot tests) will be
-// ran with auto snapshotting enabled.
-var autoSnapshotting bool
+// Set by environment variable. Indicates whether snapshotting
+// is on or off. If auto snapshotting is on, all tests
+// (exclusing the manual snapshot tests) will be ran with snapshotting
+// enabled.
+var snapshotting bool
 
-// The size of snapshots if auto snapshotting is enabled.
-var autoSnapshotSize int
+// The size of snapshots if snapshotting is enabled.
+var snapshotSize int
 
 // TestMain sets up the Raft tests.
 func TestMain(m *testing.M) {
-	autoSnapshotting = os.Getenv("SNAPSHOTS") == "true"
-	autoSnapshotSize, _ = strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
+	snapshotting = os.Getenv("SNAPSHOTS") == "true"
+	snapshotSize, _ = strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
 	exitCode := m.Run()
 	os.Exit(exitCode)
 }
@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 func TestSingleServerElection(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 1, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -47,7 +47,7 @@ func TestSingleServerElection(t *testing.T) {
 func TestBasicElection(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -60,7 +60,7 @@ func TestBasicElection(t *testing.T) {
 func TestElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -78,7 +78,7 @@ func TestElectLeaderDisconnect(t *testing.T) {
 func TestFailElectLeaderDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -100,7 +100,7 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 func TestSingleServerSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 1, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -115,7 +115,7 @@ func TestSingleServerSubmit(t *testing.T) {
 func TestBasicSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -130,7 +130,7 @@ func TestBasicSubmit(t *testing.T) {
 func TestMultipleSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -148,7 +148,7 @@ func TestMultipleSubmit(t *testing.T) {
 func TestConcurrentSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -197,7 +197,7 @@ func TestConcurrentSubmit(t *testing.T) {
 func TestSubmitDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 3, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -217,7 +217,7 @@ func TestSubmitDisconnect(t *testing.T) {
 func TestSubmitDisconnectRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -266,7 +266,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 func TestSubmitDisconnectFail(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -292,7 +292,7 @@ func TestSubmitDisconnectFail(t *testing.T) {
 func TestUnreliableNetwork(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	done := int32(0)
 	wg := sync.WaitGroup{}
@@ -342,7 +342,7 @@ func TestUnreliableNetwork(t *testing.T) {
 func TestBasicPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -371,7 +371,7 @@ func TestBasicPartition(t *testing.T) {
 func TestMultiPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -418,7 +418,7 @@ func TestMultiPartition(t *testing.T) {
 func TestBasicCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -443,7 +443,7 @@ func TestBasicCrash(t *testing.T) {
 func TestCrashRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -475,7 +475,7 @@ func TestCrashRejoin(t *testing.T) {
 func TestMultiCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -526,7 +526,7 @@ func TestMultiCrash(t *testing.T) {
 func TestDisconnectCrashPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash, disconnect, and partition random servers every so often.
 	done := int32(0)
@@ -591,7 +591,7 @@ func TestDisconnectCrashPartition(t *testing.T) {
 func TestAllCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
-	cluster := newCluster(t, 5, autoSnapshotting, autoSnapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()

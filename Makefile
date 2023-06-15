@@ -1,13 +1,13 @@
-test-raft-snapshotting:
+test-snapshotting:
 	SNAPSHOTS=true SNAPSHOT_SIZE=25 go test . -count=1 -failfast -v -race -timeout=10m
 
-test-raft-snapshotting-cov:
+test-snapshotting-cov:
 	SNAPSHOTS=true SNAPSHOT_SIZE=25 go test . -count=1 -failfast -v -race -timeout=10m -coverprofile=coverage.out
 
-test-raft: 
+test: 
 	SNAPSHOTS=false go test . -count=1 -failfast -v -race -timeout=10m
 
-test-raft-cov:
+test-cov:
 	SNAPSHOTS=false go test . -count=1 -failfast -v -race -timeout=10m -coverprofile=coverage.out
 
 proto:

@@ -35,13 +35,14 @@ const (
 	Leader State = iota
 
 	// Follower is a state indicating that a server is responsible for accepting log entries replicated
-	// by the leader. A server is in the follower state may not accept commands for replication.
+	// by the leader. A server is in the follower state may not accept operations for replication.
 	Follower
 
 	// Shutdown is a state indicating that the server is currently offline.
 	Shutdown
 )
 
+// String converts the a state into a string.
 func (s State) String() string {
 	switch s {
 	case Leader:
@@ -55,25 +56,27 @@ func (s State) String() string {
 	}
 }
 
-// Command is an operation that will be applied to the state machine.
-type Command struct {
-	// The bytes of the operation.
+// Operation is an operation that will be applied to the state machine.
+// An operation must be deterministic.
+type Operation struct {
+	// The operation as bytes. The provided state machine should be capable
+	// of decoding these bytes.
 	Bytes []byte
 }
 
-// CommandResponse is the response that is generated after applying
-// a command to the state machine.
-type CommandResponse struct {
-	// The term of the log entry containing the applied command.
+// OperationResponse is the response that is generated after applying
+// an operation to the state machine.
+type OperationResponse struct {
+	// The term of the log entry containing the applied operation.
 	Term uint64
 
-	// The index of the log entry containing the applied command.
+	// The index of the log entry containing the applied operation.
 	Index uint64
 
 	// The bytes of the operation applied to the state machine.
-	Command []byte
+	Operation []byte
 
-	// The response returned by the state machine after applying the command.
+	// The response returned by the state machine after applying the operation.
 	Response interface{}
 }
 
@@ -124,7 +127,7 @@ type Raft struct {
 	// This stores and retrieves snapshots in a durable manner.
 	snapshotStorage SnapshotStorage
 
-	// The state machine provided by the client that commands will be applied to.
+	// The state machine provided by the client that operations will be applied to.
 	fsm StateMachine
 
 	// A channel for notifying the apply loop that the commit index has been updated.
@@ -137,8 +140,8 @@ type Raft struct {
 	// actual application to the state machine.
 	fsmCh chan *LogEntry
 
-	// Notifies receivers that command has been applied.
-	commandResponseCh chan<- CommandResponse
+	// Notifies receivers that operation has been applied.
+	operationResponseCh chan<- OperationResponse
 
 	// The current state of this raft instance: leader, follower, or shutdown.
 	state State
@@ -172,11 +175,11 @@ type Raft struct {
 }
 
 // NewRaft creates a new instance of Raft that is configured with the provided options. Responses from
-// applying commands to the state machine will be sent over the provided response channel. If the log,
+// applying operations to the state machine will be sent over the provided response channel. If the log,
 // storage, or snapshot storage contain any persisted state, it will be read and this Raft instance will
 // be initialized with that state.
 func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
-	fsm StateMachine, responseCh chan<- CommandResponse, opts ...Option) (*Raft, error) {
+	fsm StateMachine, responseCh chan<- OperationResponse, opts ...Option) (*Raft, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
@@ -244,22 +247,22 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 	}
 
 	raft := &Raft{
-		id:                id,
-		options:           options,
-		peers:             peers,
-		nextIndex:         nextIndex,
-		matchIndex:        matchIndex,
-		log:               log,
-		storage:           storage,
-		snapshotStorage:   snapshotStorage,
-		fsm:               fsm,
-		fsmCh:             make(chan *LogEntry, 100),
-		commandResponseCh: responseCh,
-		currentTerm:       currentTerm,
-		votedFor:          votedFor,
-		state:             Shutdown,
-		commitIndex:       0,
-		lastApplied:       0,
+		id:                  id,
+		options:             options,
+		peers:               peers,
+		nextIndex:           nextIndex,
+		matchIndex:          matchIndex,
+		log:                 log,
+		storage:             storage,
+		snapshotStorage:     snapshotStorage,
+		fsm:                 fsm,
+		fsmCh:               make(chan *LogEntry, 100),
+		operationResponseCh: responseCh,
+		currentTerm:         currentTerm,
+		votedFor:            votedFor,
+		state:               Shutdown,
+		commitIndex:         0,
+		lastApplied:         0,
 	}
 
 	raft.applyCond = sync.NewCond(&raft.mu)
@@ -355,13 +358,13 @@ func (r *Raft) Stop() error {
 	return nil
 }
 
-// SubmitCommand accepts a command from a client for replication and
-// returns the log index assigned to the command, the term assigned to the
-// command, and an error if this server is not the leader. Note that submitting
-// a command for replication does not guarantee replication if there are failures.
-// Once the command has been replicated and applied to the state machine, the response
+// SubmitOperation accepts a operation from a client for replication and
+// returns the log index assigned to the operation, the term assigned to the
+// operation, and an error if this server is not the leader. Note that submitting
+// a operation for replication does not guarantee replication if there are failures.
+// Once the operation has been replicated and applied to the state machine, the response
 // will be sent over the provided response channel.
-func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
+func (r *Raft) SubmitOperation(operation Operation) (uint64, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -369,11 +372,11 @@ func (r *Raft) SubmitCommand(command Command) (uint64, uint64, error) {
 		return 0, 0, errors.WrapError(nil, errRaftNotLeader, r.id)
 	}
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, command.Bytes)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operation.Bytes)
 	r.log.AppendEntry(entry)
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Debugf("server %s submitted command: logEntry = %v", r.id, entry)
+	r.options.logger.Debugf("server %s submitted operation: logEntry = %v", r.id, entry)
 
 	return entry.Index, entry.Term, nil
 }
@@ -1042,26 +1045,26 @@ func (r *Raft) applyLoop() {
 }
 
 // fsmLoop is a long-running loop that applies log entries to the state machine and sends responses to
-// commands over the response channel. If auto snapshotting is enabled, it will take a snapshot once
+// operations over the response channel. If auto snapshotting is enabled, it will take a snapshot once
 // enough entries have been applied. This should be called when the Raft instance is started and ran
 // as a separate go routine.
 func (r *Raft) fsmLoop() {
 	defer r.wg.Done()
-	defer close(r.commandResponseCh)
+	defer close(r.operationResponseCh)
 
 	for entry := range r.fsmCh {
 		// Apply the log entry to the state machine.
-		response := CommandResponse{
-			Index:    entry.Index,
-			Term:     entry.Term,
-			Command:  entry.Data,
-			Response: r.fsm.Apply(entry),
+		response := OperationResponse{
+			Index:     entry.Index,
+			Term:      entry.Term,
+			Operation: entry.Data,
+			Response:  r.fsm.Apply(entry),
 		}
 
 		// Notify client of result.
-		r.commandResponseCh <- response
+		r.operationResponseCh <- response
 
-		r.options.logger.Debugf("server %s applied command: index = %d, term = %d",
+		r.options.logger.Debugf("server %s applied operation: index = %d, term = %d",
 			r.id, entry.Index, entry.Term)
 
 		// Take a snapshot of the state machine if necessary.

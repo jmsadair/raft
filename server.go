@@ -32,10 +32,10 @@ type Server struct {
 // NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, including
 // the ID and network address of this server. The log path, storage path, and snapshot path specify the locations where the underlying Raft
 // instance persists its state. If state is already persisted at these paths, it will be read into memory and Raft will be initialized with that state.
-// Otherwise, new files will be created at those paths. Responses from the state machine after applying a command will be sent over the provided
+// Otherwise, new files will be created at those paths. Responses from the state machine after applying a operation will be sent over the provided
 // response channel. The response channel must be monitored; otherwise, the server may be blocked.
 func NewServer(id string, peers map[string]string, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
-	responseCh chan<- CommandResponse, opts ...Option) (*Server, error) {
+	responseCh chan<- OperationResponse, opts ...Option) (*Server, error) {
 	var listenInterface net.Addr
 
 	// Create peers.
@@ -126,12 +126,12 @@ func (s *Server) IsStarted() bool {
 	return s.server != nil
 }
 
-// SubmitCommand submits a command to the server for processing.
-// It forwards the command to the underlying Raft instance for handling
-// and returns the index and term assigned to the command, as well as
-// an error if submitting the command failed.
-func (s *Server) SubmitCommand(command Command) (uint64, uint64, error) {
-	return s.raft.SubmitCommand(command)
+// SubmitOperation submits a operation to the server for processing.
+// It forwards the operation to the underlying Raft instance for handling
+// and returns the index and term assigned to the operation, as well as
+// an error if submitting the operation failed.
+func (s *Server) SubmitOperation(operation Operation) (uint64, uint64, error) {
+	return s.raft.SubmitOperation(operation)
 }
 
 // ListSnapshots returns an array of all the snapshots that the underlying

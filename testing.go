@@ -14,24 +14,24 @@ import (
 )
 
 const (
-	errCreateClusterServer       = "failed to create cluster server: server = %d, err = %s"
-	errStoppingClusterServer     = "failed to stop cluster server: server = %d, err = %s"
-	errStartingClusterServer     = "failed to start cluster server: server = %d, err = %s"
-	errMultipleLeaders           = "cluster has more than one leader: leaders = %v"
-	errNoLeader                  = "cluster failed to elect a leader"
-	errUnexpectedLeader          = "cluster elected leader without quorum: leaders = %v"
-	errUnexpectedApply           = "cluster applied a command without quorum: command = %s"
-	errFailApply                 = "cluster failed to apply command: command = %s"
-	errOutOfOrder                = "cluster applied commands out of order: server = %d, expectedIndex = %d, actualIndex = %d"
-	errEmptySnapshot             = "cluster took snapshot that was empty: server = %d"
-	errIncorrectNumberSnapshots  = "cluster has incorrrect number of snapshots: server = %d, expectedNumberSnapshots = %d, actualNumberSnapshots = %d"
-	errIncorrectSnapshotIndex    = "cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d"
-	errIncorrectSnapshotTerm     = "cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d"
-	errDifferentCommandSameIndex = "cluster applied different commands at the same index: index = %d, command1 = %s, command2 = %s"
-	errReconnectingPeer          = "error reconnecting peer: peer = %d, connectingTo = %d, err = %s"
-	errDisconnectingPeer         = "error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s"
-	errStateMachineEncode        = "error encoding state machine state: %s"
-	errStateMachineDecode        = "error decoding state machine state: %s"
+	errCreateClusterServer         = "failed to create cluster server: server = %d, err = %s"
+	errStoppingClusterServer       = "failed to stop cluster server: server = %d, err = %s"
+	errStartingClusterServer       = "failed to start cluster server: server = %d, err = %s"
+	errMultipleLeaders             = "cluster has more than one leader: leaders = %v"
+	errNoLeader                    = "cluster failed to elect a leader"
+	errUnexpectedLeader            = "cluster elected leader without quorum: leaders = %v"
+	errUnexpectedApply             = "cluster applied a operation without quorum: operation = %s"
+	errFailApply                   = "cluster failed to apply Operation: operation = %s"
+	errOutOfOrder                  = "cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d"
+	errEmptySnapshot               = "cluster took snapshot that was empty: server = %d"
+	errIncorrectNumberSnapshots    = "cluster has incorrrect number of snapshots: server = %d, expectedNumberSnapshots = %d, actualNumberSnapshots = %d"
+	errIncorrectSnapshotIndex      = "cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d"
+	errIncorrectSnapshotTerm       = "cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d"
+	errDifferentOperationSameIndex = "cluster applied different Operations at the same index: index = %d, Operation1 = %s, Operation2 = %s"
+	errReconnectingPeer            = "error reconnecting peer: peer = %d, connectingTo = %d, err = %s"
+	errDisconnectingPeer           = "error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s"
+	errStateMachineEncode          = "error encoding state machine state: %s"
+	errStateMachineDecode          = "error decoding state machine state: %s"
 )
 
 func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
@@ -46,13 +46,13 @@ func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
 	assert.Equal(t, expected.Data, actual.Data, "data does not match")
 }
 
-func makeCommands(numCommands int) []Command {
-	commands := make([]Command, numCommands)
-	for i := 1; i <= numCommands; i++ {
-		commands[i-1] = Command{Bytes: []byte(fmt.Sprintf("command %d", i))}
+func makeOperations(numOperations int) []Operation {
+	operations := make([]Operation, numOperations)
+	for i := 1; i <= numOperations; i++ {
+		operations[i-1] = Operation{Bytes: []byte(fmt.Sprintf("operation %d", i))}
 	}
 
-	return commands
+	return operations
 }
 
 func makePeerMaps(numServers int) []map[string]string {
@@ -79,17 +79,17 @@ func encodeLogEntries(entries []*LogEntry) ([]byte, error) {
 }
 
 func decodeLogEntries(data []byte) ([]*LogEntry, error) {
-	var commands []*LogEntry
+	var operations []*LogEntry
 	buf := bytes.NewBuffer(data)
 	dec := gob.NewDecoder(buf)
-	if err := dec.Decode(&commands); err != nil {
-		return commands, err
+	if err := dec.Decode(&operations); err != nil {
+		return operations, err
 	}
-	return commands, nil
+	return operations, nil
 }
 
 type stateMachineMock struct {
-	commands     []*LogEntry
+	operations   []*LogEntry
 	snapshotting bool
 	snapshotSize int
 	mu           sync.Mutex
@@ -97,34 +97,34 @@ type stateMachineMock struct {
 
 func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
 	gob.Register(LogEntry{})
-	return &stateMachineMock{commands: make([]*LogEntry, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
+	return &stateMachineMock{operations: make([]*LogEntry, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
 }
 
 func (s *stateMachineMock) Apply(entry *LogEntry) interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.commands = append(s.commands, entry)
-	return len(s.commands)
+	s.operations = append(s.operations, entry)
+	return len(s.operations)
 }
 
 func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bytes, err := encodeLogEntries(s.commands)
+	bytes, err := encodeLogEntries(s.operations)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf(errStateMachineEncode, err.Error())
 	}
 
 	var lastIncludedIndex uint64
 	var lastIncludedTerm uint64
-	if len(s.commands) == 0 {
+	if len(s.operations) == 0 {
 		lastIncludedIndex = 0
 		lastIncludedTerm = 0
 	} else {
-		lastIncludedIndex = s.commands[len(s.commands)-1].Index
-		lastIncludedTerm = s.commands[len(s.commands)-1].Term
+		lastIncludedIndex = s.operations[len(s.operations)-1].Index
+		lastIncludedTerm = s.operations[len(s.operations)-1].Term
 	}
 
 	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: bytes}, nil
@@ -139,7 +139,7 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 		return fmt.Errorf(errStateMachineDecode, err.Error())
 	}
 
-	s.commands = entries
+	s.operations = entries
 
 	return nil
 }
@@ -148,7 +148,7 @@ func (s *stateMachineMock) NeedSnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.snapshotting && len(s.commands)%s.snapshotSize == 0
+	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
 }
 
 type storagePaths struct {
@@ -183,16 +183,16 @@ type testCluster struct {
 	// The response channel associated with each server, where
 	// responseCh[i] corresponds to the response channel for
 	// servers[i]
-	responseCh []chan CommandResponse
+	responseCh []chan OperationResponse
 
 	// A channel to signal the shutdown of the cluster.
 	shutdownCh chan interface{}
 
-	// The command responses associated with each server, where
-	// commandResponses[i] corresponds to the responses for
-	// servers[i]. The map maps indices to the associated command
+	// The operation responses associated with each server, where
+	// operationResponses[i] corresponds to the responses for
+	// servers[i]. The map maps indices to the associated operation
 	// response.
-	commandResponses []map[uint64]CommandResponse
+	operationResponses []map[uint64]OperationResponse
 
 	// Errors encountered during the execution of a background go
 	// routine. Provides a means of shuttling the error from the background
@@ -218,8 +218,8 @@ type testCluster struct {
 func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
 	servers := make([]*Server, numServers)
 	fsm := make([]*stateMachineMock, numServers)
-	replicateCh := make([]chan CommandResponse, numServers)
-	responses := make([]map[uint64]CommandResponse, numServers)
+	replicateCh := make([]chan OperationResponse, numServers)
+	responses := make([]map[uint64]OperationResponse, numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
 	disconnected := make([]bool, numServers)
@@ -235,9 +235,9 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	peers := makePeerMaps(numServers)
 
 	for i := 0; i < numServers; i++ {
-		replicateCh[i] = make(chan CommandResponse)
+		replicateCh[i] = make(chan OperationResponse)
 		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
-		responses[i] = make(map[uint64]CommandResponse)
+		responses[i] = make(map[uint64]OperationResponse)
 		paths[i] = storagePaths{logPath: fmt.Sprintf(logFileFmt, i), storagePath: fmt.Sprintf(storageFileFmt, i),
 			snapshotStoragePath: fmt.Sprintf(snapshotFileFmt, i)}
 		id := fmt.Sprint(i)
@@ -251,19 +251,19 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	}
 
 	return &testCluster{
-		t:                t,
-		servers:          servers,
-		disconnected:     disconnected,
-		peers:            peers,
-		paths:            paths,
-		fsm:              fsm,
-		responseCh:       replicateCh,
-		commandResponses: responses,
-		serverErrors:     serverErrors,
-		lastApplied:      lastApplied,
-		shutdownCh:       make(chan interface{}),
-		snapshotting:     snapshotting,
-		snapshotSize:     snapshotSize,
+		t:                  t,
+		servers:            servers,
+		disconnected:       disconnected,
+		peers:              peers,
+		paths:              paths,
+		fsm:                fsm,
+		responseCh:         replicateCh,
+		operationResponses: responses,
+		serverErrors:       serverErrors,
+		lastApplied:        lastApplied,
+		shutdownCh:         make(chan interface{}),
+		snapshotting:       snapshotting,
+		snapshotSize:       snapshotSize,
 	}
 }
 
@@ -287,7 +287,7 @@ func (tc *testCluster) stopCluster() {
 	tc.wg.Wait()
 }
 
-func (tc *testCluster) submit(command Command, retry bool, expectFail bool, expectedApplied int) {
+func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, expectedApplied int) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
@@ -300,24 +300,24 @@ func (tc *testCluster) submit(command Command, retry bool, expectFail bool, expe
 			server := tc.servers[j]
 			tc.mu.Unlock()
 
-			// Submit a command to a server. It might be a leader.
-			index, term, err := server.SubmitCommand(command)
+			// Submit a operation to a server. It might be a leader.
+			index, term, err := server.SubmitOperation(operation)
 			if err != nil {
 				continue
 			}
 
-			// See if the command is applied.
+			// See if the operation is applied.
 			for k := 0; k < 10; k++ {
 				time.Sleep(25 * time.Millisecond)
 				successful := tc.checkApplied(index, expectedApplied)
 				if successful {
 					if expectFail {
-						tc.t.Fatalf(errUnexpectedApply, string(command.Bytes))
+						tc.t.Fatalf(errUnexpectedApply, string(operation.Bytes))
 					}
 					return
 				}
 
-				// If the server's term changed then the command
+				// If the server's term changed then the operation
 				// is definitely not going to be applied.
 				status := server.Status()
 				if status.Term != term {
@@ -334,7 +334,7 @@ func (tc *testCluster) submit(command Command, retry bool, expectFail bool, expe
 	}
 
 	if !expectFail {
-		tc.t.Fatalf(errFailApply, string(command.Bytes))
+		tc.t.Fatalf(errFailApply, string(operation.Bytes))
 	}
 }
 
@@ -403,7 +403,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	return leaders[0]
 }
 
-func (tc *testCluster) checkLogs(index int, response CommandResponse) {
+func (tc *testCluster) checkLogs(index int, response OperationResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -414,11 +414,11 @@ func (tc *testCluster) checkLogs(index int, response CommandResponse) {
 		return
 	}
 
-	tc.commandResponses[index][response.Index] = response
+	tc.operationResponses[index][response.Index] = response
 	tc.lastApplied[index]++
 }
 
-func (tc *testCluster) checkSnapshot(index int, response CommandResponse) {
+func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
@@ -451,12 +451,12 @@ func (tc *testCluster) checkSnapshot(index int, response CommandResponse) {
 				tc.serverErrors[index] = fmt.Sprintf(errIncorrectSnapshotTerm, index, snapshot.LastIncludedTerm, actualLastIncludedTerm)
 			}
 
-			// Update this server's responses with the commands included in the snapshot.
+			// Update this server's responses with the operations included in the snapshot.
 			for _, entry := range appliedEntries {
-				tc.commandResponses[index][entry.Index] = CommandResponse{Index: entry.Index, Term: entry.Term, Command: entry.Data}
+				tc.operationResponses[index][entry.Index] = OperationResponse{Index: entry.Index, Term: entry.Term, Operation: entry.Data}
 			}
 
-			tc.commandResponses[index][response.Index] = response
+			tc.operationResponses[index][response.Index] = response
 			tc.lastApplied[index] = response.Index
 			return
 		}
@@ -469,12 +469,12 @@ func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// The expected command response from all of the servers.
-	// All servers should have the same command response at a
+	// The expected operation response from all of the servers.
+	// All servers should have the same operation response at a
 	// given index.
-	var expectedCommandResponse CommandResponse
+	var expectedOperationResponse OperationResponse
 
-	// The number of servers that have applied the command at the provided index.
+	// The number of servers that have applied the operation at the provided index.
 	hasApplied := 0
 
 	for i := 0; i < len(tc.servers); i++ {
@@ -482,12 +482,12 @@ func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 			tc.t.Fatalf(tc.serverErrors[i])
 		}
 
-		if commandResponse, ok := tc.commandResponses[i][index]; ok {
-			// Ensure the commands match.
-			if hasApplied != 0 && string(commandResponse.Command) != string(expectedCommandResponse.Command) {
-				tc.t.Fatalf(errDifferentCommandSameIndex, index, string(expectedCommandResponse.Command), string(commandResponse.Command))
+		if operationResponse, ok := tc.operationResponses[i][index]; ok {
+			// Ensure the Operations match.
+			if hasApplied != 0 && string(operationResponse.Operation) != string(expectedOperationResponse.Operation) {
+				tc.t.Fatalf(errDifferentOperationSameIndex, index, string(expectedOperationResponse.Operation), string(operationResponse.Operation))
 			}
-			expectedCommandResponse = commandResponse
+			expectedOperationResponse = operationResponse
 			hasApplied++
 		}
 	}
@@ -521,7 +521,7 @@ func (tc *testCluster) restartServer(server int) {
 
 	serverID := fmt.Sprint(server)
 
-	tc.responseCh[server] = make(chan CommandResponse)
+	tc.responseCh[server] = make(chan OperationResponse)
 	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
 	newServer, err := NewServer(serverID, tc.peers[server], tc.fsm[server], tc.paths[server].logPath,
@@ -533,7 +533,7 @@ func (tc *testCluster) restartServer(server int) {
 	snapshot, _ := tc.servers[server].raft.snapshotStorage.LastSnapshot()
 	tc.lastApplied[server] = snapshot.LastIncludedIndex
 	tc.servers[server] = newServer
-	tc.commandResponses[server] = make(map[uint64]CommandResponse)
+	tc.operationResponses[server] = make(map[uint64]OperationResponse)
 
 	tc.wg.Add(1)
 	go tc.applyLoop(server)

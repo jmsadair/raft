@@ -106,8 +106,8 @@ func TestSingleServerSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := makeCommands(1)
-	cluster.submit(commands[0], false, false, 1)
+	operations := makeOperations(1)
+	cluster.submit(operations[0], false, false, 1)
 }
 
 // TestSingleSubmit checks whether the cluster can successfully
@@ -121,12 +121,12 @@ func TestBasicSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := makeCommands(1)
-	cluster.submit(commands[0], false, false, 3)
+	operations := makeOperations(1)
+	cluster.submit(operations[0], false, false, 3)
 }
 
 // TestMultipleSubmit checks whether a cluster can successfully
-// commit multiple commands when there are no failures.
+// commit multiple operations when there are no failures.
 func TestMultipleSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -136,14 +136,14 @@ func TestMultipleSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := makeCommands(200)
-	for _, command := range commands {
+	operations := makeOperations(200)
+	for _, command := range operations {
 		cluster.submit(command, false, false, 5)
 	}
 }
 
-// TestConcurrentSubmit test whether commands are correctly
-// applied when there are multiple clients submitting commands
+// TestConcurrentSubmit test whether operations are correctly
+// applied when there are multiple clients submitting operations
 // at the same time.
 func TestConcurrentSubmit(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -154,33 +154,33 @@ func TestConcurrentSubmit(t *testing.T) {
 	defer cluster.stopCluster()
 
 	cluster.checkLeaders(false)
-	commands := makeCommands(200)
+	operations := makeOperations(200)
 
 	var wg sync.WaitGroup
 
-	// Simulates a client submitting commands.
-	client := func(commands []Command, readyCh chan interface{}) {
+	// Simulates a client submitting operations.
+	client := func(operations []Operation, readyCh chan interface{}) {
 		defer wg.Done()
 		<-readyCh
-		for _, command := range commands {
+		for _, command := range operations {
 			cluster.submit(command, false, false, 5)
 		}
 	}
 
-	// The number of clients submitting commands concurrently.
+	// The number of clients submitting operations concurrently.
 	numClients := 10
 
 	// The number of command each client will submit.
-	commandsPerClient := len(commands) / numClients
+	operationsPerClient := len(operations) / numClients
 
-	// Signals to the clients that they can start submitting commands.
+	// Signals to the clients that they can start submitting operations.
 	readyCh := make(chan interface{})
 
-	// Spin up the clients with their respective commands.
+	// Spin up the clients with their respective operations.
 	for i := 0; i < numClients; i++ {
-		clientCommands := commands[i*commandsPerClient : (i+1)*commandsPerClient]
+		clientOperations := operations[i*operationsPerClient : (i+1)*operationsPerClient]
 		wg.Add(1)
-		go client(clientCommands, readyCh)
+		go client(clientOperations, readyCh)
 	}
 
 	// Allow clients to start and wait until they are done.
@@ -193,7 +193,7 @@ func TestConcurrentSubmit(t *testing.T) {
 }
 
 // TestSubmitDisconnect checks that a cluster can still
-// commit commands after the leader is disconnected.
+// commit operations after the leader is disconnected.
 func TestSubmitDisconnect(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -202,17 +202,17 @@ func TestSubmitDisconnect(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Disconnect the leader and see if commands are still committed.
+	// Disconnect the leader and see if operations are still committed.
 	leader := cluster.checkLeaders(false)
 	cluster.disconnectServer(leader)
-	commands := makeCommands(20)
-	for _, command := range commands {
+	operations := makeOperations(20)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 2)
 	}
 }
 
 // TestSubmitDisconnectRejoin checks that a cluster correctly
-// handles leaders being disconnected and rejoining after commands
+// handles leaders being disconnected and rejoining after operations
 // are submitted.
 func TestSubmitDisconnectRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -225,43 +225,43 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Disconnect the first leader.
 	leader1 := cluster.checkLeaders(false)
 
-	// Submit some commands with this leader.
-	commands := makeCommands(80)
+	// Submit some operations with this leader.
+	operations := makeOperations(80)
 	for i := 0; i < 20; i++ {
-		cluster.submit(commands[i], false, false, 5)
+		cluster.submit(operations[i], false, false, 5)
 	}
 
 	// Disconnect the leader.
 	cluster.disconnectServer(leader1)
 
-	// Submit some more commands. Note that we only expect
+	// Submit some more operations. Note that we only expect
 	// 4 servers to apply the command.
 	for i := 20; i < 40; i++ {
-		cluster.submit(commands[i], true, false, 4)
+		cluster.submit(operations[i], true, false, 4)
 	}
 
 	// Disconnect the second leader.
 	leader2 := cluster.checkLeaders(false)
 
-	// Submit some more commands. Note that we only expect
+	// Submit some more operations. Note that we only expect
 	// 3 servers to apply the command.
 	for i := 40; i < 60; i++ {
-		cluster.submit(commands[i], true, false, 3)
+		cluster.submit(operations[i], true, false, 3)
 	}
 
 	// Allow the old leaders to rejoin.
 	cluster.reconnectServer(leader1)
 	cluster.reconnectServer(leader2)
 
-	// Submit some more commands. All servers should apply the
+	// Submit some more operations. All servers should apply the
 	// command now.
 	for i := 60; i < 80; i++ {
-		cluster.submit(commands[i], true, false, 5)
+		cluster.submit(operations[i], true, false, 5)
 	}
 }
 
 // TestSubmitDisconnectFail checks that a cluster is unable to
-// commit commands when a majority of the servers are completely
+// commit operations when a majority of the servers are completely
 // disconnected from the cluster but still online.
 func TestSubmitDisconnectFail(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -278,17 +278,17 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.disconnectServer((leader + 1) % 5)
 	cluster.disconnectServer((leader + 2) % 5)
 
-	// Try to submit some commands. This should be unsuccessful
+	// Try to submit some operations. This should be unsuccessful
 	// since only a minority of the cluster can communicate.
-	commands := makeCommands(20)
-	for _, command := range commands {
+	operations := makeOperations(20)
+	for _, command := range operations {
 		cluster.submit(command, false, true, 1)
 	}
 }
 
 // TestUnreliableNetwork tests whether a cluster can still make
-// progress submitting multiple commands when multiple servers
-// become disconnected from the rest of the clutster.
+// progress submitting multiple operations when multiple servers
+// become disconnected from the rest of the cluster.
 func TestUnreliableNetwork(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -326,9 +326,9 @@ func TestUnreliableNetwork(t *testing.T) {
 	wg.Add(1)
 	go unreliableNetRoutine()
 
-	// See if we can commit commands in the face of recurring partitions.
-	commands := makeCommands(300)
-	for _, command := range commands {
+	// See if we can commit operations in the face of recurring partitions.
+	operations := makeOperations(300)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 3)
 	}
 
@@ -337,7 +337,7 @@ func TestUnreliableNetwork(t *testing.T) {
 }
 
 // TestBasicPartition checks that a cluster can still make
-// progress submitting multiple commands when there is a single
+// progress submitting multiple operations when there is a single
 // partition.
 func TestBasicPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -356,8 +356,8 @@ func TestBasicPartition(t *testing.T) {
 	// Wait for a leader.
 	cluster.checkLeaders(false)
 
-	commands := makeCommands(50)
-	for _, command := range commands {
+	operations := makeOperations(50)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 3)
 	}
 
@@ -366,7 +366,7 @@ func TestBasicPartition(t *testing.T) {
 }
 
 // TestMultiPartition checks whether a cluster can still make
-// progress submitting multiple commands in the prescence of
+// progress submitting multiple operations in the prescence of
 // multiple and changing partitions.
 func TestMultiPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -403,9 +403,9 @@ func TestMultiPartition(t *testing.T) {
 	wg.Add(1)
 	go partitionRoutine()
 
-	// See if we can commit commands in the face of recurring partitions.
-	commands := makeCommands(300)
-	for _, command := range commands {
+	// See if we can commit operations in the face of recurring partitions.
+	operations := makeOperations(300)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 3)
 	}
 
@@ -423,23 +423,23 @@ func TestBasicCrash(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Wait for a leader and submit some commands.
+	// Wait for a leader and submit some operations.
 	leader := cluster.checkLeaders(false)
-	commands := makeCommands(200)
+	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(commands[i], false, false, 5)
+		cluster.submit(operations[i], false, false, 5)
 	}
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
-	for i := 25; i < len(commands); i++ {
-		cluster.submit(commands[i], true, false, 4)
+	for i := 25; i < len(operations); i++ {
+		cluster.submit(operations[i], true, false, 4)
 	}
 }
 
 // TestCrashRejoin checks that a cluster correctly
 // handles a server crashing and coming back online
-// after commands are submitted.
+// after operations are submitted.
 func TestCrashRejoin(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -448,29 +448,29 @@ func TestCrashRejoin(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Wait for a leader and submit some commands.
+	// Wait for a leader and submit some operations.
 	leader := cluster.checkLeaders(false)
-	commands := makeCommands(200)
+	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(commands[i], false, false, 5)
+		cluster.submit(operations[i], false, false, 5)
 	}
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
 	for i := 25; i < 150; i++ {
-		cluster.submit(commands[i], true, false, 4)
+		cluster.submit(operations[i], true, false, 4)
 	}
 
 	// Allow the leader to rejoin and see if we can make progress
-	// committing commands.
+	// committing operations.
 	cluster.restartServer(leader)
-	for i := 150; i < len(commands); i++ {
-		cluster.submit(commands[i], true, false, 5)
+	for i := 150; i < len(operations); i++ {
+		cluster.submit(operations[i], true, false, 5)
 	}
 }
 
 // TestMultiCrash checks if a cluster can still make
-// progress committing commands in the face of multiple
+// progress committing operations in the face of multiple
 // crashes.
 func TestMultiCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -511,9 +511,9 @@ func TestMultiCrash(t *testing.T) {
 	wg.Add(1)
 	go crashRoutine()
 
-	// See if we can commit commands in the face of multiple crashes.
-	commands := makeCommands(300)
-	for _, command := range commands {
+	// See if we can commit operations in the face of multiple crashes.
+	operations := makeOperations(300)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 3)
 	}
 
@@ -574,10 +574,10 @@ func TestDisconnectCrashPartition(t *testing.T) {
 	wg.Add(1)
 	go failureRoutine()
 
-	// See if we can commit commands in the face of random network and server failures.
-	// Submit enough commands to ensure that a variety of failures occur.
-	commands := makeCommands(500)
-	for _, command := range commands {
+	// See if we can commit operations in the face of random network and server failures.
+	// Submit enough operations to ensure that a variety of failures occur.
+	operations := makeOperations(500)
+	for _, command := range operations {
 		cluster.submit(command, true, false, 3)
 	}
 
@@ -586,7 +586,7 @@ func TestDisconnectCrashPartition(t *testing.T) {
 }
 
 // TestAllCrash checks that a cluster can still make
-// progress committing commands after all the servers
+// progress committing operations after all the servers
 // crash and come back online.
 func TestAllCrash(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
@@ -596,11 +596,11 @@ func TestAllCrash(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Wait for a leader and submit some commands.
+	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
-	commands := makeCommands(50)
+	operations := makeOperations(50)
 	for i := 0; i < 25; i++ {
-		cluster.submit(commands[i], false, false, 5)
+		cluster.submit(operations[i], false, false, 5)
 	}
 
 	// Crash all servers.
@@ -613,9 +613,9 @@ func TestAllCrash(t *testing.T) {
 		cluster.restartServer(i)
 	}
 
-	// Wait for another leader and submit more commands.
+	// Wait for another leader and submit more operations.
 	cluster.checkLeaders(false)
-	for i := 25; i < len(commands); i++ {
-		cluster.submit(commands[i], true, false, 5)
+	for i := 25; i < len(operations); i++ {
+		cluster.submit(operations[i], true, false, 5)
 	}
 }

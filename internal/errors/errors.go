@@ -2,6 +2,8 @@ package errors
 
 import (
 	"fmt"
+
+	"github.com/pkg/errors"
 )
 
 type RaftError struct {
@@ -9,10 +11,21 @@ type RaftError struct {
 	Message string
 }
 
-func WrapError(inner error, messagef string, messageArgs ...interface{}) error {
-	return &RaftError{Inner: inner, Message: fmt.Sprintf(messagef, messageArgs...)}
+func New(text string) *RaftError {
+	return &RaftError{Message: text}
 }
 
-func (e RaftError) Error() string {
+func WrapError(inner error, messagef string, messageArgs ...interface{}) *RaftError {
+	return &RaftError{
+		Inner:   errors.WithStack(inner),
+		Message: fmt.Sprintf(messagef, messageArgs...),
+	}
+}
+
+func (e *RaftError) UnwrapError() error {
+	return e.Inner
+}
+
+func (e *RaftError) Error() string {
 	return e.Message
 }

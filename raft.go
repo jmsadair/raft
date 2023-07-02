@@ -9,18 +9,9 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-const (
-	errFailedRaftLog                 = "failed to create a logger for raft: %s"
-	errFailedRaftOption              = "failed to apply provided option: %s"
-	errFailedRaftStorageOpen         = "failed to open raft storage: %s"
-	errFailedRaftLogOpen             = "failed to open raft log: %s"
-	errFailedRaftSnapshotStoreOpen   = "failed to open raft snapshot storage: %s"
-	errFailedRaftLogRecover          = "failed to recover persisted state from raft log: %s"
-	errFailedRaftSnapshotRecover     = "failed to recover persisted raft snapshot data: %s"
-	errFailedRaftStorageRecover      = "failed to recover raft persisted state: %s"
-	errFailedRaftRestoreStateMachine = "failed to restore state machine: %s"
-	errRaftNotLeader                 = "server %s is not the leader"
-	errRaftShutdown                  = "server %s is shutdown"
+var (
+	errNotLeader = errors.New("server is not the leader")
+	errShutdown  = errors.New("server is shutdown")
 )
 
 // State represents the current state of a Raft server.
@@ -35,14 +26,15 @@ const (
 	Leader State = iota
 
 	// Follower is a state indicating that a server is responsible for accepting log entries replicated
-	// by the leader. A server is in the follower state may not accept operations for replication.
+	// by the leader.
+	// A server in the follower state may not accept operations for replication.
 	Follower
 
 	// Shutdown is a state indicating that the server is currently offline.
 	Shutdown
 )
 
-// String converts the a state into a string.
+// String converts a State into a string.
 func (s State) String() string {
 	switch s {
 	case Leader:
@@ -184,7 +176,7 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 	var options options
 	for _, opt := range opts {
 		if err := opt(&options); err != nil {
-			return nil, errors.WrapError(err, errFailedRaftOption, err.Error())
+			return nil, errors.WrapError(err, "failed to apply raft option")
 		}
 	}
 
@@ -192,7 +184,7 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 	if options.logger == nil {
 		logger, err := logger.NewLogger()
 		if err != nil {
-			return nil, errors.WrapError(err, errFailedRaftLog, err.Error())
+			return nil, errors.WrapError(err, "failed to create default raft logger")
 		}
 		options.logger = logger
 	}
@@ -208,35 +200,35 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 
 	// Open the storage to recover persisted state.
 	if err := storage.Open(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftStorageOpen, err.Error())
+		return nil, errors.WrapError(err, "failed to open raft storage")
 	}
 
 	// Restore the current term and vote if they have been persisted.
 	persistentState, err := storage.GetState()
 	if err != nil {
-		return nil, errors.WrapError(err, errFailedRaftStorageRecover, err.Error())
+		return nil, errors.WrapError(err, "failed to recover persisted raft state")
 	}
 	currentTerm := persistentState.Term
 	votedFor := persistentState.VotedFor
 
 	// Open the log for new operations.
 	if err := log.Open(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftLogOpen, err.Error())
+		return nil, errors.WrapError(err, "failed to open raft log")
 	}
 
 	// Replay the persisted state of the log into memory.
 	if err := log.Replay(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftLogRecover, err.Error())
+		return nil, errors.WrapError(err, "failed to recover raft log")
 	}
 
 	// Open the snapshot storage for new operations.
 	if err := snapshotStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftSnapshotStoreOpen, err.Error())
+		return nil, errors.WrapError(err, "failed to open raft snapshot storage")
 	}
 
 	// Replay the persisted snapshots into memory.
 	if err := snapshotStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, errFailedRaftSnapshotRecover, err.Error())
+		return nil, errors.WrapError(err, "failed to recover raft snapshot storage")
 	}
 
 	nextIndex := make(map[string]uint64)
@@ -277,7 +269,7 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 		raft.lastApplied = snapshot.LastIncludedIndex
 
 		if err := raft.fsm.Restore(&snapshot); err != nil {
-			return nil, errors.WrapError(err, errFailedRaftRestoreStateMachine, err.Error())
+			return nil, errors.WrapError(err, "failed to restore raft state machine")
 		}
 	}
 
@@ -369,11 +361,13 @@ func (r *Raft) SubmitOperation(operation Operation) (uint64, uint64, error) {
 	defer r.mu.Unlock()
 
 	if r.state != Leader {
-		return 0, 0, errors.WrapError(nil, errRaftNotLeader, r.id)
+		return 0, 0, errNotLeader
 	}
 
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operation.Bytes)
-	r.log.AppendEntry(entry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatalf("server %s failed to append entry to log: %s", err.Error())
+	}
 	r.sendAppendEntriesToPeers()
 
 	r.options.logger.Debugf("server %s submitted operation: logEntry = %v", r.id, entry)
@@ -402,7 +396,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errRaftShutdown, r.id)
+		return errShutdown
 	}
 
 	r.options.logger.Debugf("server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
@@ -455,7 +449,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errRaftShutdown, r.id)
+		return errShutdown
 	}
 
 	r.options.logger.Debugf("server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
@@ -577,7 +571,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errors.WrapError(nil, errRaftShutdown, r.id)
+		return errShutdown
 	}
 
 	r.options.logger.Debugf("server %s received InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
@@ -810,7 +804,7 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 
 // takeSnapshot takes a snapshot of the current state of the state machine,
 // persists the snapshot, compacts the log up to and including the
-// last included index of the snapshot, and return the both the last included
+// last included index of the snapshot, and return both the last included
 // index and term of the snapshot.
 func (r *Raft) takeSnapshot() (uint64, uint64) {
 	r.mu.Lock()
@@ -918,7 +912,7 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-// electionLoop is a long-running loop that kick off an election if this server
+// electionLoop is a long-running loop that kicks off an election if this server
 // has not heard from the leader within the election timeout. This should be called
 // when the Raft instance is started and should be run as a separate go routine.
 func (r *Raft) electionLoop() {
@@ -1015,7 +1009,7 @@ func (r *Raft) commitLoop() {
 }
 
 // applyLoop is a long-running loop that sends log entries to the state machine loop to applied when
-// signalled. This should be called when the Raft instance is started and ran as a separate go routine.
+// signaled. This should be called when the Raft instance is started and ran as a separate go routine.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1061,7 +1055,7 @@ func (r *Raft) fsmLoop() {
 			Response:  r.fsm.Apply(entry),
 		}
 
-		// Notify client of result.
+		// Notify the client of the result.
 		r.operationResponseCh <- response
 
 		r.options.logger.Debugf("server %s applied operation: index = %d, term = %d",

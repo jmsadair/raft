@@ -7,15 +7,8 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 )
 
-const (
-	errStorageNotOpen              = "storage is not open: path = %s"
-	errFailedStorageOpen           = "failed to open storage file: path = %s, err = %s"
-	errFailedStorageClose          = "failed to close storage file: path = %s, err = %s"
-	errFailedStorageSync           = "failed to sync storage file: %s"
-	errFailedStorageCreateTempFile = "failed to create temporary storage file: %s"
-	errFailedStorageRename         = "failed to rename temporary storage file: %s"
-	errFailedPersistentStateEncode = "storage failed to encode persistent state: %s"
-	failedPersistentStateDecode    = "storage failed to decode persistent state: %s"
+var (
+	errStorageNotOpen = errors.New("storage is not open")
 )
 
 // Storage is an interface representing the internal component of Raft that is responsible
@@ -36,14 +29,14 @@ type Storage interface {
 
 // PersistentState is the state that must be persisted in Raft.
 type PersistentState struct {
-	// The term of the associated with Raft instance.
+	// The term of the associated Raft instance.
 	Term uint64
 
 	// The vote of the associated Raft instance.
 	VotedFor string
 }
 
-// persistentStorage is an implementation of the Storage interface that manages durable storage of the persitent
+// persistentStorage is an implementation of the Storage interface that manages durable storage of the persistent
 // state associated with a Raft instance. This implementation is not concurrent safe and should only be used
 // within the Raft implementation.
 type persistentStorage struct {
@@ -62,7 +55,7 @@ func newPersistentStorage(path string) *persistentStorage {
 func (p *persistentStorage) Open() error {
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
-		return errors.WrapError(err, errFailedStorageOpen, p.path, err.Error())
+		return errors.WrapError(err, "failed to open storage file: path = %s", p.path)
 	}
 	p.file = file
 	return nil
@@ -73,47 +66,49 @@ func (p *persistentStorage) Close() error {
 		return nil
 	}
 	if err := p.file.Close(); err != nil {
-		return errors.WrapError(err, errFailedStorageClose, p.path, err.Error())
+		return errors.WrapError(err, "failed to close storage file: path = %s", p.path)
 	}
 	return nil
 }
 
 func (p *persistentStorage) SetState(persistentState *PersistentState) error {
 	if p.file == nil {
-		return errors.WrapError(nil, errStorageNotOpen, p.path)
+		return errStorageNotOpen
 	}
 
 	// Create a temporary file that will replace the file currently associated with storage.
 	tmpFile, err := os.Create(p.path + ".tmp")
 	if err != nil {
-		return errors.WrapError(err, errFailedStorageCreateTempFile, err.Error())
+		return errors.WrapError(err, "failed to create temporary storage file")
 	}
 
 	// Write the new state to the temporary file.
 	if err := encodePersistentState(tmpFile, persistentState); err != nil {
-		return errors.WrapError(err, errFailedPersistentStateEncode, err.Error())
+		return errors.WrapError(err, "failed to encode persistent state")
 	}
 	if err := tmpFile.Sync(); err != nil {
-		return errors.WrapError(err, errFailedStorageSync, err.Error())
+		return errors.WrapError(err, "failed to sync storage file")
 	}
 
 	// Perform atomic rename to swap the newly persisted state with the old.
 	oldFile := p.file
 	if err := os.Rename(tmpFile.Name(), oldFile.Name()); err != nil {
-		return errors.WrapError(err, errFailedStorageRename, err.Error())
+		return errors.WrapError(err, "failed to rename temporary storage file")
 	}
 
 	p.file = tmpFile
 
 	// Close the previous file.
-	oldFile.Close()
+	if err := oldFile.Close(); err != nil {
+		return errors.WrapError(err, "failed to close storage file")
+	}
 
 	return nil
 }
 
 func (p *persistentStorage) GetState() (PersistentState, error) {
 	if p.file == nil {
-		return PersistentState{}, errors.WrapError(nil, errStorageNotOpen, p.path)
+		return PersistentState{}, errStorageNotOpen
 	}
 
 	// Read the contents of the file associated with the storage.
@@ -121,7 +116,7 @@ func (p *persistentStorage) GetState() (PersistentState, error) {
 	persistentState, err := decodePersistentState(reader)
 
 	if err != nil && err != io.EOF {
-		return persistentState, errors.WrapError(err, failedPersistentStateDecode, err.Error())
+		return persistentState, errors.WrapError(err, "failed to decode persistent state")
 	}
 
 	return persistentState, nil

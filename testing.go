@@ -9,29 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmsadair/raft/internal/errors"
+
 	"github.com/jmsadair/raft/internal/util"
 	"github.com/stretchr/testify/assert"
-)
-
-const (
-	errCreateClusterServer         = "failed to create cluster server: server = %d, err = %s"
-	errStoppingClusterServer       = "failed to stop cluster server: server = %d, err = %s"
-	errStartingClusterServer       = "failed to start cluster server: server = %d, err = %s"
-	errMultipleLeaders             = "cluster has more than one leader: leaders = %v"
-	errNoLeader                    = "cluster failed to elect a leader"
-	errUnexpectedLeader            = "cluster elected leader without quorum: leaders = %v"
-	errUnexpectedApply             = "cluster applied a operation without quorum: operation = %s"
-	errFailApply                   = "cluster failed to apply Operation: operation = %s"
-	errOutOfOrder                  = "cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d"
-	errEmptySnapshot               = "cluster took snapshot that was empty: server = %d"
-	errIncorrectNumberSnapshots    = "cluster has incorrrect number of snapshots: server = %d, expectedNumberSnapshots = %d, actualNumberSnapshots = %d"
-	errIncorrectSnapshotIndex      = "cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d"
-	errIncorrectSnapshotTerm       = "cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d"
-	errDifferentOperationSameIndex = "cluster applied different Operations at the same index: index = %d, Operation1 = %s, Operation2 = %s"
-	errReconnectingPeer            = "error reconnecting peer: peer = %d, connectingTo = %d, err = %s"
-	errDisconnectingPeer           = "error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s"
-	errStateMachineEncode          = "error encoding state machine state: %s"
-	errStateMachineDecode          = "error decoding state machine state: %s"
 )
 
 func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
@@ -114,7 +95,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 
 	bytes, err := encodeLogEntries(s.operations)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf(errStateMachineEncode, err.Error())
+		return Snapshot{}, fmt.Errorf("error encoding state machine state: %s", err.Error())
 	}
 
 	var lastIncludedIndex uint64
@@ -136,7 +117,7 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 
 	entries, err := decodeLogEntries(snapshot.Data)
 	if err != nil {
-		return fmt.Errorf(errStateMachineDecode, err.Error())
+		return errors.WrapError(err, "error decoding state machine state")
 	}
 
 	s.operations = entries
@@ -225,7 +206,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	disconnected := make([]bool, numServers)
 	paths := make([]storagePaths, numServers)
 
-	// The paths for all of the persistent storage associated with the cluster.
+	// The paths for all the persistent storage associated with the cluster.
 	tmpDir := t.TempDir()
 	snapshotFileFmt := tmpDir + "/raft-snapshots-%d"
 	logFileFmt := tmpDir + "/raft-log-%d"
@@ -244,7 +225,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 
 		server, err := NewServer(id, peers[i], fsm[i], paths[i].logPath, paths[i].storagePath, paths[i].snapshotStoragePath, replicateCh[i])
 		if err != nil {
-			t.Fatalf(errCreateClusterServer, i, err.Error())
+			t.Fatalf("failed to create cluster server: server = %d, err = %s", i, err.Error())
 		}
 
 		servers[i] = server
@@ -271,7 +252,7 @@ func (tc *testCluster) startCluster() {
 	ready := make(chan interface{})
 	for i, server := range tc.servers {
 		if err := server.Start(ready); err != nil {
-			tc.t.Fatalf(errStartingClusterServer, i, err.Error())
+			tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", i, err.Error())
 		}
 		tc.wg.Add(1)
 		go tc.applyLoop(i)
@@ -300,7 +281,7 @@ func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, 
 			server := tc.servers[j]
 			tc.mu.Unlock()
 
-			// Submit a operation to a server. It might be a leader.
+			// Submit an operation to a server. It might be a leader.
 			index, term, err := server.SubmitOperation(operation)
 			if err != nil {
 				continue
@@ -312,12 +293,12 @@ func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, 
 				successful := tc.checkApplied(index, expectedApplied)
 				if successful {
 					if expectFail {
-						tc.t.Fatalf(errUnexpectedApply, string(operation.Bytes))
+						tc.t.Fatalf("cluster applied a operation without quorum: operation = %s", string(operation.Bytes))
 					}
 					return
 				}
 
-				// If the server's term changed then the operation
+				// If the server's term changed, then the operation
 				// is definitely not going to be applied.
 				status := server.Status()
 				if status.Term != term {
@@ -334,7 +315,7 @@ func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, 
 	}
 
 	if !expectFail {
-		tc.t.Fatalf(errFailApply, string(operation.Bytes))
+		tc.t.Fatalf("cluster failed to apply Operation: operation = %s", string(operation.Bytes))
 	}
 }
 
@@ -357,16 +338,16 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 			// Get the status of the server, it may be a leader.
 			status := server.Status()
 
-			// If the server is a leader and it is connected, then it is
+			// If the server is a leader, and it is connected, then it is
 			// a legitimate leader. Leaders that are disconnected or
 			// partitioned are ignored. It is assumed that disconnected
 			// servers are either:
-			// 1. Completely disconnected from all all other servers - it
-			//    cannot communicate with any other servers and no other
+			// 1. Completely disconnected from all other servers - it
+			//    cannot communicate with any other servers, and no other
 			//    servers can communicate with it.
 			// 2. In a minority partition - it may only communicate with
 			//    a minority of the cluster. Members of the majority partition
-			//    cannnot communicate with it.
+			//    did not communicate with it.
 			tc.mu.Lock()
 			if status.State == Leader && !tc.disconnected[i] {
 				index, _ := strconv.Atoi(status.ID)
@@ -376,7 +357,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 		}
 
 		if len(leaders) > 1 {
-			tc.t.Fatalf(errMultipleLeaders, leaders)
+			tc.t.Fatalf("cluster has more than one leader: leaders = %v", leaders)
 		}
 
 		if len(leaders) == 1 {
@@ -389,11 +370,11 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	}
 
 	if len(leaders) == 0 && !expectNoLeader {
-		tc.t.Fatal(errNoLeader)
+		tc.t.Fatal("cluster failed to elect a leader")
 	}
 
 	if len(leaders) != 0 && expectNoLeader {
-		tc.t.Fatalf(errUnexpectedLeader, leaders)
+		tc.t.Fatalf("cluster elected leader without quorum: leaders = %v", leaders)
 	}
 
 	if expectNoLeader {
@@ -410,7 +391,8 @@ func (tc *testCluster) checkLogs(index int, response OperationResponse) {
 	// The last applied index should be monotonically increasing.
 	expectedIndex := tc.lastApplied[index] + 1
 	if response.Index != expectedIndex {
-		tc.serverErrors[index] = fmt.Sprintf(errOutOfOrder, index, expectedIndex, response.Index)
+		tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
+			index, expectedIndex, response.Index)
 		return
 	}
 
@@ -434,21 +416,21 @@ func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
 			}
 
 			if len(appliedEntries) == 0 {
-				tc.serverErrors[index] = fmt.Sprintf(errEmptySnapshot, index)
+				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot that was empty: server = %d", index)
 				return
 			}
 
 			actualLastIncludedIndex := appliedEntries[len(appliedEntries)-1].Index
 			actualLastIncludedTerm := appliedEntries[len(appliedEntries)-1].Term
 
-			// Sanity check last included index matches with the last included index in the snapshot bytes.
+			// Check the last included index matches with the last included index in the snapshot bytes.
 			if actualLastIncludedIndex != snapshot.LastIncludedIndex {
-				tc.serverErrors[index] = fmt.Sprintf(errIncorrectSnapshotIndex, index, snapshot.LastIncludedIndex, actualLastIncludedIndex)
+				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d", index, snapshot.LastIncludedIndex, actualLastIncludedIndex)
 			}
 
-			// Sanity chec last included term matches with the last included term in the snapshot bytes.
+			// Check the last included term matches with the last included term in the snapshot bytes.
 			if actualLastIncludedTerm != snapshot.LastIncludedTerm {
-				tc.serverErrors[index] = fmt.Sprintf(errIncorrectSnapshotTerm, index, snapshot.LastIncludedTerm, actualLastIncludedTerm)
+				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d", index, snapshot.LastIncludedTerm, actualLastIncludedTerm)
 			}
 
 			// Update this server's responses with the operations included in the snapshot.
@@ -462,14 +444,15 @@ func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
 		}
 	}
 
-	tc.serverErrors[index] = fmt.Sprintf(errOutOfOrder, index, tc.lastApplied[index]+1, response.Index)
+	tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
+		index, tc.lastApplied[index]+1, response.Index)
 }
 
 func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	// The expected operation response from all of the servers.
+	// The expected operation response from all the servers.
 	// All servers should have the same operation response at a
 	// given index.
 	var expectedOperationResponse OperationResponse
@@ -485,7 +468,8 @@ func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 		if operationResponse, ok := tc.operationResponses[i][index]; ok {
 			// Ensure the Operations match.
 			if hasApplied != 0 && string(operationResponse.Operation) != string(expectedOperationResponse.Operation) {
-				tc.t.Fatalf(errDifferentOperationSameIndex, index, string(expectedOperationResponse.Operation), string(operationResponse.Operation))
+				tc.t.Fatalf("cluster applied different Operations at the same index: index = %d, Operation1 = %s, Operation2 = %s",
+					index, string(expectedOperationResponse.Operation), string(operationResponse.Operation))
 			}
 			expectedOperationResponse = operationResponse
 			hasApplied++
@@ -499,7 +483,7 @@ func (tc *testCluster) applyLoop(index int) {
 	defer tc.wg.Done()
 
 	for response := range tc.responseCh[index] {
-		// If the index was greater than the expected index then either
+		// If the index was greater than the expected index, then either
 		// a snapshot must have been installed or there was an error.
 		if response.Index > tc.lastApplied[index]+1 {
 			tc.checkSnapshot(index, response)
@@ -527,7 +511,7 @@ func (tc *testCluster) restartServer(server int) {
 	newServer, err := NewServer(serverID, tc.peers[server], tc.fsm[server], tc.paths[server].logPath,
 		tc.paths[server].storagePath, tc.paths[server].snapshotStoragePath, tc.responseCh[server])
 	if err != nil {
-		tc.t.Fatalf(errStartingClusterServer, server, err.Error())
+		tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", server, err.Error())
 	}
 
 	snapshot, _ := tc.servers[server].raft.snapshotStorage.LastSnapshot()
@@ -541,12 +525,12 @@ func (tc *testCluster) restartServer(server int) {
 	readyCh := make(chan interface{})
 	defer close(readyCh)
 	if err := newServer.Start(readyCh); err != nil {
-		tc.t.Fatalf(errStartingClusterServer, server, err.Error())
+		tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", server, err.Error())
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
 		if err := tc.servers[i].raft.connectPeer(serverID); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, i, server, err.Error())
+			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, server, err.Error())
 		}
 	}
 
@@ -570,7 +554,7 @@ func (tc *testCluster) createPartition() {
 	}
 
 	// Disconnect all servers in the partition set from those
-	// that are not, but maintain connections bewteen the servers
+	// that are not, but maintain connections between the servers
 	// that are in the partition set.
 	for i := 0; i < len(tc.servers); i++ {
 		if _, ok := partitionSet[i]; ok {
@@ -579,15 +563,15 @@ func (tc *testCluster) createPartition() {
 					continue
 				}
 				if err := tc.servers[i].raft.disconnectPeer(fmt.Sprint(j)); err != nil {
-					tc.t.Fatalf(errDisconnectingPeer, i, j, err.Error())
+					tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, j, err.Error())
 				}
 				if err := tc.servers[j].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
-					tc.t.Fatalf(errDisconnectingPeer, j, i, err.Error())
+					tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", j, i, err.Error())
 				}
 			}
 
 			if err := tc.servers[i].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
-				tc.t.Fatalf(errDisconnectingPeer, i, i, err.Error())
+				tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, i, err.Error())
 			}
 		}
 	}
@@ -607,7 +591,7 @@ func (tc *testCluster) reconnectServer(server int) {
 	// on the operation of the cluster. The only purpose of this is to
 	// indicate that this server is connected and should operate as expected.
 	if err := tc.servers[server].raft.disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf(errReconnectingPeer, server, server, err.Error())
+		tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", server, server, err.Error())
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
@@ -615,10 +599,10 @@ func (tc *testCluster) reconnectServer(server int) {
 			continue
 		}
 		if err := tc.servers[i].raft.connectPeer(serverID); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, i, server, err.Error())
+			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, server, err.Error())
 		}
 		if err := tc.servers[server].raft.connectPeer(fmt.Sprint(i)); err != nil {
-			tc.t.Fatalf(errReconnectingPeer, server, i, err.Error())
+			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", server, i, err.Error())
 		}
 	}
 
@@ -632,7 +616,7 @@ func (tc *testCluster) reconnectAllServers() {
 	for i := 0; i < len(tc.servers); i++ {
 		for j := 0; j < len(tc.servers); j++ {
 			if err := tc.servers[i].raft.connectPeer(fmt.Sprint(j)); err != nil {
-				tc.t.Fatalf(errReconnectingPeer, i, j, err.Error())
+				tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, j, err.Error())
 			}
 		}
 	}
@@ -653,7 +637,7 @@ func (tc *testCluster) disconnectServer(server int) {
 	// indicate that this index is disconnected and will not operate
 	// as expected.
 	if err := tc.servers[server].raft.disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf(errDisconnectingPeer, server, server, err.Error())
+		tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", server, server, err.Error())
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
@@ -661,10 +645,10 @@ func (tc *testCluster) disconnectServer(server int) {
 			continue
 		}
 		if err := tc.servers[i].raft.disconnectPeer(serverID); err != nil {
-			tc.t.Fatalf(errDisconnectingPeer, i, server, err.Error())
+			tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, server, err.Error())
 		}
 		if err := tc.servers[server].raft.disconnectPeer(fmt.Sprint(i)); err != nil {
-			tc.t.Fatalf(errDisconnectingPeer, server, i, err.Error())
+			tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", server, i, err.Error())
 		}
 	}
 

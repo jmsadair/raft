@@ -8,14 +8,8 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 )
 
-const (
-	errSnapshotStoreNotOpen = "snapshot storage is not open: path = %s"
-	errFailedSnapshotSave   = "failed to save snapshot to snapshot storage: %s"
-	errFailedSnapshotSync   = "failed to sync snapshot storage file: %s"
-	errFailedSnapshotFlush  = "failed flushing data from snapshot storage file writer: %s"
-	errFailedSnapshotOpen   = "failed to open snapshot storage file: path = %s, err = %s"
-	errFailedSnapshotEncode = "failed to encode snapshot: %s"
-	errFailedSnapshotDecode = "failed to decode snapshot: %s"
+var (
+	errSnapshotStoreNotOpen = errors.New("snapshot storage is not open")
 )
 
 // Snapshot represents a snapshot of the replicated state machine.
@@ -49,7 +43,7 @@ type SnapshotStorage interface {
 	// Close closes the snapshot storage.
 	Close() error
 
-	// LastSnapshot gets the most recently saved snapshot, if it exists.
+	// LastSnapshot gets the most recently saved snapshot if it exists.
 	LastSnapshot() (Snapshot, bool)
 
 	// SaveSnapshot saves the provided snapshot to durable storage.
@@ -87,7 +81,7 @@ func (p *persistentSnapshotStorage) Open() error {
 
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
-		return errors.WrapError(err, errFailedSnapshotOpen, p.path, err.Error())
+		return errors.WrapError(err, "failed to open snapshot storage file: path = %s", p.path)
 	}
 
 	p.file = file
@@ -98,7 +92,7 @@ func (p *persistentSnapshotStorage) Open() error {
 
 func (p *persistentSnapshotStorage) Replay() error {
 	if p.file == nil {
-		return errors.WrapError(nil, errSnapshotStoreNotOpen, p.path)
+		return errNoConnectionToPeer
 	}
 
 	reader := bufio.NewReader(p.file)
@@ -109,7 +103,7 @@ func (p *persistentSnapshotStorage) Replay() error {
 			break
 		}
 		if err != nil {
-			return errors.WrapError(err, errFailedSnapshotDecode, err.Error())
+			return errors.WrapError(err, "failed to decode snapshot storage")
 		}
 		p.snapshots = append(p.snapshots, snapshot)
 	}
@@ -122,7 +116,9 @@ func (p *persistentSnapshotStorage) Close() error {
 		return nil
 	}
 
-	p.file.Close()
+	if err := p.file.Close(); err != nil {
+		return errors.WrapError(err, "failed to close snapshot storage")
+	}
 	p.snapshots = nil
 	p.file = nil
 
@@ -145,18 +141,18 @@ func (p *persistentSnapshotStorage) ListSnapshots() []Snapshot {
 
 func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
 	if p.file == nil {
-		return errors.WrapError(nil, errSnapshotStoreNotOpen, p.path)
+		return errSnapshotStoreNotOpen
 	}
 
 	writer := bufio.NewWriter(p.file)
 	if err := encodeSnapshot(writer, snapshot); err != nil {
-		return errors.WrapError(err, errFailedSnapshotEncode, err.Error())
+		return errors.WrapError(err, "failed to encode snapshot")
 	}
 	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, errFailedSnapshotFlush, err.Error())
+		return errors.WrapError(err, "failed to flush snapshot storage writer")
 	}
 	if err := p.file.Sync(); err != nil {
-		return errors.WrapError(err, errFailedSnapshotSync, err.Error())
+		return errors.WrapError(err, "failed to sync snapshot storage file")
 	}
 
 	p.snapshots = append(p.snapshots, *snapshot)

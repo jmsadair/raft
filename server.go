@@ -10,12 +10,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-const (
-	errServerFailedResolveAddress = "server %s failed to resolve address: address = %s, err = %s"
-	errServerFailedStart          = "server %s failed to start: %s"
-	errServerFailedCreate         = "failed to create server: ID = %s, err = %s"
-)
-
 // Server is a wrapper for a Raft instance that implements the logic of the Raft consensus algorithm.
 // It serves requests for Raft using protobuf and gRPC, making it capable of providing replication
 // and fault tolerance.
@@ -31,8 +25,8 @@ type Server struct {
 
 // NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, including
 // the ID and network address of this server. The log path, storage path, and snapshot path specify the locations where the underlying Raft
-// instance persists its state. If state is already persisted at these paths, it will be read into memory and Raft will be initialized with that state.
-// Otherwise, new files will be created at those paths. Responses from the state machine after applying a operation will be sent over the provided
+// instance persists its state. If the state is already persisted at these paths, it will be read into memory and Raft will be initialized with that state.
+// Otherwise, new files will be created at those paths. Responses from the state machine after applying an operation will be sent over the provided
 // response channel. The response channel must be monitored; otherwise, the server may be blocked.
 func NewServer(id string, peers map[string]string, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
 	responseCh chan<- OperationResponse, opts ...Option) (*Server, error) {
@@ -43,7 +37,7 @@ func NewServer(id string, peers map[string]string, fsm StateMachine, logPath str
 	for peer, address := range peers {
 		tcpAddr, err := net.ResolveTCPAddr("tcp", address)
 		if err != nil {
-			return nil, errors.WrapError(err, errServerFailedResolveAddress, peer, address, err.Error())
+			return nil, errors.WrapError(err, "failed to resolve TCP address: address = %s", address)
 		}
 		grpcPeers[peer] = newPeer(peer, tcpAddr)
 		if peer == id {
@@ -62,7 +56,7 @@ func NewServer(id string, peers map[string]string, fsm StateMachine, logPath str
 
 	raft, err := NewRaft(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
 	if err != nil {
-		return nil, errors.WrapError(err, errServerFailedCreate, id, err.Error())
+		return nil, errors.WrapError(err, "failed to create a raft server: ID = %s", id)
 	}
 
 	server := &Server{
@@ -79,7 +73,7 @@ func NewServer(id string, peers map[string]string, fsm StateMachine, logPath str
 func (s *Server) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
-		return errors.WrapError(err, errServerFailedStart, s.id, err.Error())
+		return errors.WrapError(err, "failed to start server")
 	}
 
 	s.listener = listener
@@ -114,7 +108,7 @@ func (s *Server) Stop() {
 
 // Status returns the status of the server.
 // It retrieves the status from the underlying Raft instance.
-// The status includes the ID, commit index, last applied index,
+// The status includes the ID, commit index, last-applied index,
 // term, and state of the Raft instance.
 func (s *Server) Status() Status {
 	return s.raft.Status()

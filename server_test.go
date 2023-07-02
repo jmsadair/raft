@@ -14,7 +14,7 @@ import (
 
 // Set by environment variable. Indicates whether snapshotting
 // is on or off. If auto snapshotting is on, all tests
-// (exclusing the manual snapshot tests) will be ran with snapshotting
+// (excluding the manual snapshot tests) will be run with snapshotting
 // enabled.
 var snapshotting bool
 

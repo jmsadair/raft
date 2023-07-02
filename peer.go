@@ -11,13 +11,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const (
-	errNoConn                = "no connection established with peer: ID = %s"
-	errFailedConnect         = "failed to connect to peer: ID = %s, err = %s"
-	errFailedCloseConnect    = "failed to close connection with peer: ID = %s, err = %s"
-	errFailedAppendEntries   = "failed to invoke AppendEntries RPC on peer: ID = %s, err = %s"
-	errFailedRequestVote     = "failed to invoke RequestVote RPC on peer: ID = %s, err = %s"
-	errFailedInstallSnapshot = "failed to invoke InstallSnapshot RPC on peer: ID = %s, err = %s"
+var (
+	errNoConnectionToPeer = errors.New("no connection with peer")
 )
 
 // Peer is an interface representing a component responsible for establishing a connection
@@ -61,7 +56,7 @@ type peer struct {
 	// The gRPC client connection to communicate with the peer.
 	conn *grpc.ClientConn
 
-	// Prevents a race condition bewteen disconnect/connect and the RPCs.
+	// Prevents a race condition between disconnect/connect and the RPCs.
 	mu sync.RWMutex
 }
 
@@ -89,7 +84,8 @@ func (p *peer) Connect() error {
 
 	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
-		return errors.WrapError(err, errFailedConnect, p.id, err.Error())
+		return errors.WrapError(err, "failed to connect to peer: ID = %s, address = %s",
+			p.id, p.address.String())
 	}
 
 	p.client = pb.NewRaftClient(conn)
@@ -107,7 +103,8 @@ func (p *peer) Disconnect() error {
 	}
 
 	if err := p.conn.Close(); err != nil {
-		return errors.WrapError(err, errFailedCloseConnect, p.id, err.Error())
+		return errors.WrapError(err, "failed to close connection to to peer: ID = %s, address = %s",
+			p.id, p.address.String())
 	}
 
 	p.conn = nil
@@ -121,13 +118,14 @@ func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRespons
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return AppendEntriesResponse{}, errors.WrapError(nil, errNoConn, p.id)
+		return AppendEntriesResponse{}, errNoConnectionToPeer
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
 	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, errors.WrapError(err, errFailedAppendEntries, p.id, err.Error())
+		return AppendEntriesResponse{}, errors.WrapError(err, "AppendEntries RPC failed: ID = %s, address = %s",
+			p.id, p.address.String())
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -138,13 +136,14 @@ func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, err
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return RequestVoteResponse{}, errors.WrapError(nil, errNoConn, p.id)
+		return RequestVoteResponse{}, errNoConnectionToPeer
 	}
 
 	pbRequest := makeProtoRequestVoteRequest(request)
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return RequestVoteResponse{}, errors.WrapError(err, errFailedRequestVote, p.id, err.Error())
+		return RequestVoteResponse{}, errors.WrapError(err, "RequestVote RPC failed: ID = %s, address = %s",
+			p.id, p.address.String())
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
@@ -155,13 +154,14 @@ func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotR
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return InstallSnapshotResponse{}, errors.WrapError(nil, errNoConn, p.id)
+		return InstallSnapshotResponse{}, errNoConnectionToPeer
 	}
 
 	pbRequest := makeProtoInstallSnapshotRequest(request)
 	pbResponse, err := p.client.InstallSnapshot(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return InstallSnapshotResponse{}, errors.WrapError(err, errFailedInstallSnapshot, p.id, err.Error())
+		return InstallSnapshotResponse{}, errors.WrapError(err, "InstallSnapshot RPC failed: ID = %s, address = %s",
+			p.id, p.address.String())
 	}
 
 	return makeInstallSnapshotResponse(pbResponse), nil

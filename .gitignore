@@ -14,5 +14,8 @@
 # Vscode settings
 /.vscode
 
+# Goland settings
+/.idea
+
 # Dependency directories (remove the comment below to include it)
 # vendor/

@@ -35,11 +35,11 @@ jobs:
       run: staticcheck ./...
 
     - name: Test Raft with Snapshotting
-      run: make test-raft-snapshotting
+      run: make test-snapshotting
       continue-on-error: true
 
     - name: Test Raft without Snapshotting
-      run: make test-raft
+      run: make test
       continue-on-error: true
 
     - name: Check Test Results

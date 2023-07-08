@@ -12,19 +12,19 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 
 	"github.com/jmsadair/raft/internal/util"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
-	assert.Equal(t, expectedIndex, entry.Index, "entry has incorrect index")
-	assert.Equal(t, expectedTerm, entry.Term, "entry has incorrect term")
-	assert.Equal(t, expectedData, entry.Data, "entry has incorrect data")
+	require.Equal(t, expectedIndex, entry.Index)
+	require.Equal(t, expectedTerm, entry.Term)
+	require.Equal(t, expectedData, entry.Data)
 }
 
 func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
-	assert.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex, "last included index does not match")
-	assert.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm, "last included term does not match")
-	assert.Equal(t, expected.Data, actual.Data, "data does not match")
+	require.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex)
+	require.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm)
+	require.Equal(t, expected.Data, actual.Data)
 }
 
 func makeOperations(numOperations int) []Operation {
@@ -93,7 +93,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bytes, err := encodeLogEntries(s.operations)
+	snapshotBytes, err := encodeLogEntries(s.operations)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("error encoding state machine state: %s", err.Error())
 	}
@@ -108,7 +108,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 		lastIncludedTerm = s.operations[len(s.operations)-1].Term
 	}
 
-	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: bytes}, nil
+	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: snapshotBytes}, nil
 }
 
 func (s *stateMachineMock) Restore(snapshot *Snapshot) error {

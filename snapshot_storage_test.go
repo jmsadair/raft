@@ -3,7 +3,7 @@ package raft
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSnapshotStore(t *testing.T) {
@@ -11,62 +11,36 @@ func TestSnapshotStore(t *testing.T) {
 	storageFile := tmpDir + "/test-snap-storage.bin"
 	snapshotStore := newPersistentSnapshotStorage(storageFile)
 
-	if err := snapshotStore.Open(); err != nil {
-		t.Fatalf("error opening snapshot store: %s", err.Error())
-	}
-
-	if err := snapshotStore.Replay(); err != nil {
-		t.Fatalf("error replaying snapshot store: %s", err.Error())
-	}
+	require.NoError(t, snapshotStore.Open())
+	require.NoError(t, snapshotStore.Replay())
+	defer func() { require.NoError(t, snapshotStore.Close()) }()
 
 	snapshot1 := NewSnapshot(1, 1, []byte("test1"))
-	if err := snapshotStore.SaveSnapshot(snapshot1); err != nil {
-		t.Fatalf("error saving snapshot: %s", err.Error())
-	}
+	require.NoError(t, snapshotStore.SaveSnapshot(snapshot1))
 
 	last1, ok := snapshotStore.LastSnapshot()
-	if !ok {
-		t.Fatalf("expected last snapshot to be valid")
-	}
-
+	require.True(t, ok)
 	validateSnapshot(t, snapshot1, &last1)
 
 	snapshot2 := NewSnapshot(2, 2, []byte("test2"))
-	if err := snapshotStore.SaveSnapshot(snapshot2); err != nil {
-		t.Fatalf("error saving snapshot: %s", err.Error())
-	}
+	require.NoError(t, snapshotStore.SaveSnapshot(snapshot1))
 
 	last2, ok := snapshotStore.LastSnapshot()
-	if !ok {
-		t.Fatalf("expected last snapshot to be valid")
-	}
-
+	require.True(t, ok)
 	validateSnapshot(t, snapshot2, &last2)
 
 	snapshots := snapshotStore.ListSnapshots()
 
-	assert.Len(t, snapshots, 2, "incorrect number of snapshots")
+	require.Len(t, snapshots, 2, "incorrect number of snapshots")
 
-	if err := snapshotStore.Close(); err != nil {
-		t.Fatalf("error closing snapshot store: %s", err.Error())
-	}
-
-	if err := snapshotStore.Open(); err != nil {
-		t.Fatalf("error opening snapshot store: %s", err.Error())
-	}
-
-	if err := snapshotStore.Replay(); err != nil {
-		t.Fatalf("error replaying snapshot store: %s", err.Error())
-	}
+	require.NoError(t, snapshotStore.Close())
+	require.NoError(t, snapshotStore.Open())
+	require.NoError(t, snapshotStore.Replay())
 
 	last2, ok = snapshotStore.LastSnapshot()
-	if !ok {
-		t.Fatalf("expected last snapshot to be valid")
-	}
-
+	require.True(t, ok)
 	validateSnapshot(t, snapshot2, &last2)
 
 	snapshots = snapshotStore.ListSnapshots()
-
-	assert.Len(t, snapshots, 2, "incorrect number of snapshots")
+	require.Len(t, snapshots, 2, "incorrect number of snapshots")
 }

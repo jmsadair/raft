@@ -366,7 +366,7 @@ func TestBasicPartition(t *testing.T) {
 }
 
 // TestMultiPartition checks whether a cluster can still make
-// progress submitting multiple operations in the prescence of
+// progress submitting multiple operations in the presence of
 // multiple and changing partitions.
 func TestMultiPartition(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)

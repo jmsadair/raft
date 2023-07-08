@@ -3,7 +3,7 @@ package raft
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAppendEntries(t *testing.T) {
@@ -11,15 +11,9 @@ func TestAppendEntries(t *testing.T) {
 	path := tmpDir + "/test-log.bin"
 	log := newPersistentLog(path)
 
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
-
-	defer log.Close()
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
+	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
 	var entry1, entry2 *LogEntry
@@ -35,51 +29,31 @@ func TestAppendEntries(t *testing.T) {
 	entry2Data := []byte("entry2")
 	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	if err := log.AppendEntries([]*LogEntry{entry1, entry2}); err != nil {
-		t.Fatalf("error appending entries to log: %s", err.Error())
-	}
+	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
 	// Make sure the added entries are correct.
 	entry1, err = log.GetEntry(entry1Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
 	entry2, err = log.GetEntry(entry2Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
 
-	assert.Equal(t, log.LastTerm(), entry2Term)
-	assert.Equal(t, log.LastIndex(), entry2Index)
+	require.Equal(t, log.LastTerm(), entry2Term)
+	require.Equal(t, log.LastIndex(), entry2Index)
 
 	// Close and reopen to the log to check that it was persisted correctly.
-	if err := log.Close(); err != nil {
-		t.Fatalf("error closing log: %s", err.Error())
-	}
-
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
-
-	defer log.Close()
+	require.NoError(t, log.Close())
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
 
 	entry1, err = log.GetEntry(entry1Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
 	entry2, err = log.GetEntry(entry2Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
 }
 
@@ -88,15 +62,9 @@ func TestTruncate(t *testing.T) {
 	path := tmpDir + "/test-log.bin"
 	log := newPersistentLog(path)
 
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
-
-	defer log.Close()
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
+	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
 	var err error
@@ -117,40 +85,26 @@ func TestTruncate(t *testing.T) {
 	entry3Data := []byte("entry3")
 	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
 
-	log.AppendEntries([]*LogEntry{entry1, entry2, entry3})
+	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
 	// Truncate the log down to and including the second entry.
-	if err := log.Truncate(entry2Index); err != nil {
-		t.Fatalf("error truncating log: %s", err.Error())
-	}
+	require.NoError(t, log.Truncate(entry2Index))
 
 	// Make sure the first entry is still present and correct.
 	entry1, err = log.GetEntry(entry1Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 
-	assert.Equal(t, log.LastTerm(), entry1Term)
-	assert.Equal(t, log.LastIndex(), entry1Index)
+	require.Equal(t, log.LastTerm(), entry1Term)
+	require.Equal(t, log.LastIndex(), entry1Index)
 
-	// Close and reopen the log to make sure it was persisted correctly.
-	if err := log.Close(); err != nil {
-		t.Fatalf("error closing log: %s", err.Error())
-	}
-
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
+	// Close and reopen to the log to check that it was persisted correctly.
+	require.NoError(t, log.Close())
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
 
 	entry1, err = log.GetEntry(entry1Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
 }
 
@@ -159,15 +113,9 @@ func TestCompact(t *testing.T) {
 	path := tmpDir + "/test-log.bin"
 	log := newPersistentLog(path)
 
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
-
-	defer log.Close()
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
+	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
 	var err error
@@ -188,12 +136,10 @@ func TestCompact(t *testing.T) {
 	entry3Data := []byte("entry3")
 	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
 
-	log.AppendEntries([]*LogEntry{entry1, entry2, entry3})
+	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
 	// Compact the log up to and including the second index.
-	if err := log.Compact(entry2Index); err != nil {
-		t.Fatalf("error compacting log: %s", err.Error())
-	}
+	require.NoError(t, log.Compact(entry2Index))
 
 	// Make sure the third entry is still present and correct.
 	entry3, err = log.GetEntry(entry3Index)
@@ -202,8 +148,8 @@ func TestCompact(t *testing.T) {
 	}
 	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)
 
-	assert.Equal(t, log.LastTerm(), entry3Term)
-	assert.Equal(t, log.LastIndex(), entry3Index)
+	require.Equal(t, log.LastTerm(), entry3Term)
+	require.Equal(t, log.LastIndex(), entry3Index)
 
 	// Make sure we can still add and retrieve entries from the log.
 	var entry4Index uint64 = 4
@@ -211,37 +157,23 @@ func TestCompact(t *testing.T) {
 	entry4Data := []byte("entry4")
 	entry4 = NewLogEntry(entry4Index, entry4Term, entry4Data)
 
-	log.AppendEntry(entry4)
+	require.NoError(t, log.AppendEntry(entry4))
 
 	entry4, err = log.GetEntry(entry4Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data)
 
-	// Close and reopen to the log to make sure the it was correctly persisted.
-	if err := log.Close(); err != nil {
-		t.Fatalf("error closing log: %s", err.Error())
-	}
-
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
+	// Close and reopen to the log to make sure it was correctly persisted.
+	require.NoError(t, log.Close())
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
 
 	entry3, err = log.GetEntry(entry3Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)
 
 	entry4, err = log.GetEntry(entry4Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data)
 }
 
@@ -250,15 +182,9 @@ func TestDiscard(t *testing.T) {
 	path := tmpDir + "/test-log.bin"
 	log := newPersistentLog(path)
 
-	if err := log.Open(); err != nil {
-		t.Fatalf("error opening log: %s", err.Error())
-	}
-
-	if err := log.Replay(); err != nil {
-		t.Fatalf("error replaying log: %s", err.Error())
-	}
-
-	defer log.Close()
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
+	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some log entries to the log.
 	var entry1Index uint64 = 1
@@ -271,16 +197,14 @@ func TestDiscard(t *testing.T) {
 	entry2Data := []byte("entry2")
 	entry2 := NewLogEntry(entry2Index, entry2Term, entry2Data)
 
-	log.AppendEntries([]*LogEntry{entry1, entry2})
+	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
 	// Discard the log entries.
 	var discardIndex uint64 = 5
 	var discardTerm uint64 = 5
-	if err := log.DiscardEntries(discardIndex, discardTerm); err != nil {
-		t.Fatalf("error discarding log entries: %s", err.Error())
-	}
+	require.NoError(t, log.DiscardEntries(discardIndex, discardTerm))
 
 	// Make sure the last index and last term are correct.
-	assert.Equal(t, discardIndex, log.LastIndex(), "last index not correct after discarding log entries")
-	assert.Equal(t, discardTerm, log.LastTerm(), "last term not correct after discarding log entries")
+	require.Equal(t, discardIndex, log.LastIndex(), "last index not correct after discarding log entries")
+	require.Equal(t, discardTerm, log.LastTerm(), "last term not correct after discarding log entries")
 }

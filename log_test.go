@@ -205,6 +205,6 @@ func TestDiscard(t *testing.T) {
 	require.NoError(t, log.DiscardEntries(discardIndex, discardTerm))
 
 	// Make sure the last index and last term are correct.
-	require.Equal(t, discardIndex, log.LastIndex(), "last index not correct after discarding log entries")
-	require.Equal(t, discardTerm, log.LastTerm(), "last term not correct after discarding log entries")
+	require.Equal(t, discardIndex, log.LastIndex())
+	require.Equal(t, discardTerm, log.LastTerm())
 }

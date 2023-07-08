@@ -143,9 +143,7 @@ func TestCompact(t *testing.T) {
 
 	// Make sure the third entry is still present and correct.
 	entry3, err = log.GetEntry(entry3Index)
-	if err != nil {
-		t.Fatalf("error getting entry from log: %s", err.Error())
-	}
+	require.NoError(t, err)
 	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)
 
 	require.Equal(t, log.LastTerm(), entry3Term)
@@ -205,6 +203,6 @@ func TestDiscard(t *testing.T) {
 	require.NoError(t, log.DiscardEntries(discardIndex, discardTerm))
 
 	// Make sure the last index and last term are correct.
-	require.Equal(t, discardIndex, log.LastIndex(), "last index not correct after discarding log entries")
-	require.Equal(t, discardTerm, log.LastTerm(), "last term not correct after discarding log entries")
+	require.Equal(t, discardIndex, log.LastIndex())
+	require.Equal(t, discardTerm, log.LastTerm())
 }

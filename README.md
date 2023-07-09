@@ -17,3 +17,12 @@ go get -u github.com/jmsadair/raft
 ```
 
 Once you have the library installed, you may refer to the [raft package reference page](https://pkg.go.dev/github.com/jmsadair/raft) for basic usage.
+
+# Future Features
+
+The following features are currently in development or are intended to be added in the future:
+- Batched log writes to improve disk I/O
+- Membership changes
+- Read-only operations
+
+Other developers are encouraged to contribute to this project and pull requests are welcome.

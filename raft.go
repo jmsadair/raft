@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jmsadair/raft/internal/errors"
-	logger "github.com/jmsadair/raft/internal/logger"
+	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
 )
 
@@ -162,13 +162,13 @@ type Raft struct {
 	// Ensures go routines have exited upon stopping.
 	wg sync.WaitGroup
 
-	// A mutex used for synchronization purposes within the Raft struct
+	// A mutex used for synchronization within the Raft struct
 	mu sync.Mutex
 }
 
 // NewRaft creates a new instance of Raft that is configured with the provided options. Responses from
 // applying operations to the state machine will be sent over the provided response channel. If the log,
-// storage, or snapshot storage contain any persisted state, it will be read and this Raft instance will
+// storage, or snapshot storage contains any persisted state, it will be read and this Raft instance will
 // be initialized with that state.
 func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapshotStorage SnapshotStorage,
 	fsm StateMachine, responseCh chan<- OperationResponse, opts ...Option) (*Raft, error) {
@@ -182,11 +182,11 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 
 	// Set default values if option not provided.
 	if options.logger == nil {
-		logger, err := logger.NewLogger()
+		defaultLogger, err := logger.NewLogger()
 		if err != nil {
 			return nil, errors.WrapError(err, "failed to create default raft logger")
 		}
-		options.logger = logger
+		options.logger = defaultLogger
 	}
 	if options.heartbeatInterval == 0 {
 		options.heartbeatInterval = defaultHeartbeat

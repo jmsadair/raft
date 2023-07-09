@@ -182,7 +182,7 @@ type testCluster struct {
 	serverErrors []string
 
 	// The last applied index for each server, where lastApplied[i]
-	// corresponds to last applied index for servers[i].
+	// corresponds to the last applied index for servers[i].
 	lastApplied []uint64
 
 	// Indicates whether auto snapshotting will be used.

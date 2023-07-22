@@ -30,7 +30,6 @@ func TestSnapshotStore(t *testing.T) {
 	validateSnapshot(t, snapshot2, &last2)
 
 	snapshots := snapshotStore.ListSnapshots()
-
 	require.Len(t, snapshots, 2)
 
 	require.NoError(t, snapshotStore.Close())

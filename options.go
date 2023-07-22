@@ -2,7 +2,6 @@ package raft
 
 import (
 	"time"
-
 	"github.com/jmsadair/raft/internal/errors"
 )
 

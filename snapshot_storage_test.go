@@ -23,7 +23,7 @@ func TestSnapshotStore(t *testing.T) {
 	validateSnapshot(t, snapshot1, &last1)
 
 	snapshot2 := NewSnapshot(2, 2, []byte("test2"))
-	require.NoError(t, snapshotStore.SaveSnapshot(snapshot1))
+	require.NoError(t, snapshotStore.SaveSnapshot(snapshot2))
 
 	last2, ok := snapshotStore.LastSnapshot()
 	require.True(t, ok)
@@ -31,7 +31,7 @@ func TestSnapshotStore(t *testing.T) {
 
 	snapshots := snapshotStore.ListSnapshots()
 
-	require.Len(t, snapshots, 2, "incorrect number of snapshots")
+	require.Len(t, snapshots, 2)
 
 	require.NoError(t, snapshotStore.Close())
 	require.NoError(t, snapshotStore.Open())
@@ -42,5 +42,5 @@ func TestSnapshotStore(t *testing.T) {
 	validateSnapshot(t, snapshot2, &last2)
 
 	snapshots = snapshotStore.ListSnapshots()
-	require.Len(t, snapshots, 2, "incorrect number of snapshots")
+	require.Len(t, snapshots, 2)
 }

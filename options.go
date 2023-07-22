@@ -1,12 +1,21 @@
 package raft
 
 import (
+	"github.com/jmsadair/raft/internal/errors"
 	"time"
 )
 
 const (
-	defaultElectionTimeout  = time.Duration(300 * time.Millisecond)
-	defaultHeartbeat        = time.Duration(50 * time.Millisecond)
+	minElectionTimeout     = time.Duration(100 * time.Millisecond)
+	maxElectionTimeout     = time.Duration(2000 * time.Millisecond)
+	defaultElectionTimeout = time.Duration(300 * time.Millisecond)
+
+	minHeartbeat     = time.Duration(25 * time.Millisecond)
+	maxHeartbeat     = time.Duration(300 * time.Millisecond)
+	defaultHeartbeat = time.Duration(50 * time.Millisecond)
+
+	minMaxEntriesPerRPC     = 50
+	maxMaxEntriesPerRPC     = 500
 	defaultMaxEntriesPerRPC = 100
 )
 
@@ -67,6 +76,9 @@ type Option func(options *options) error
 // WithElectionTimeout sets the election timeout for the Raft server.
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
+		if time < minElectionTimeout || time > maxElectionTimeout {
+			return errors.New("election timeout value is invalid")
+		}
 		options.electionTimeout = time
 		return nil
 	}
@@ -75,6 +87,9 @@ func WithElectionTimeout(time time.Duration) Option {
 // WithHeartbeatInterval sets the heartbeat interval for the Raft server.
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
+		if time < minHeartbeat || time > maxHeartbeat {
+			return errors.New("heartbeat interval value is invalid")
+		}
 		options.heartbeatInterval = time
 		return nil
 	}
@@ -84,6 +99,9 @@ func WithHeartbeatInterval(time time.Duration) Option {
 // transmitted via an AppendEntries RPC.
 func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 	return func(options *options) error {
+		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
+			return errors.New("maximum entries per RPC value is invalid")
+		}
 		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil
 	}
@@ -92,6 +110,9 @@ func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 // WithLogger sets the logger used by the Raft server.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
+		if logger == nil {
+			return errors.New("logger must not be nil")
+		}
 		options.logger = logger
 		return nil
 	}

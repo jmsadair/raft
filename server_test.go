@@ -703,6 +703,9 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	cluster.disconnectServer(leader)
 	cluster.checkLeaders(false)
 
+	// Give the leader a bit of time to make sure its lease gets renewed.
+	time.Sleep(defaultElectionTimeout)
+
 	// Check that read-only operation is successful.
 	cluster.submitReadOnly(false, false)
 }

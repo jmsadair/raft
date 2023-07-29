@@ -814,11 +814,13 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	// Renew the lease if the majority of peers have responded.
 	// Set the response counter to nil to prevent additional renewals during
 	// this round of heartbeats.
-	*numResponses += 1
-	if numResponses != nil && r.hasQuorum(*numResponses) {
-		r.lease.renew()
-		numResponses = nil
-		r.options.logger.Debugf("server %s renewed its lease", r.id)
+	if numResponses != nil {
+		*numResponses += 1
+		if r.hasQuorum(*numResponses) {
+			r.lease.renew()
+			numResponses = nil
+			r.options.logger.Debugf("server %s renewed its lease", r.id)
+		}
 	}
 
 	if !response.Success {

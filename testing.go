@@ -549,6 +549,10 @@ func (tc *testCluster) applyLoop(index int) {
 		if response.Operation.LogIndex > tc.lastApplied[index]+1 {
 			tc.checkSnapshot(index, response)
 		} else if response.Operation.IsReadOnly {
+			// If it is a read-only operation, the best that can be done is to check
+			// that the state that is read is the same as the most recent state on
+			// this server. Recall that read-only operations make no guarantees about
+			// reading up-to-date data.
 			tc.checkReadOnlyOperation(index, response)
 		} else {
 			tc.checkLogs(index, response)

@@ -1,4 +1,5 @@
 ![build](https://github.com/jmsadair/raft/actions/workflows/build.yml/badge.svg)
+[![Go Reference](https://pkg.go.dev/badge/github.com/jmsadair/raft)](https://pkg.go.dev/github.com/jmsadair/raft)
 
 # Raft
 

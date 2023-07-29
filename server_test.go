@@ -159,11 +159,11 @@ func TestConcurrentSubmit(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Simulates a client submitting operations.
-	client := func(operations []Operation, readyCh chan interface{}) {
+	client := func(operations [][]byte, readyCh chan interface{}) {
 		defer wg.Done()
 		<-readyCh
-		for _, command := range operations {
-			cluster.submit(command, false, false, 5)
+		for _, operation := range operations {
+			cluster.submit(operation, false, false, 5)
 		}
 	}
 

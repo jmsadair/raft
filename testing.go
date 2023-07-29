@@ -27,10 +27,10 @@ func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
 	require.Equal(t, expected.Data, actual.Data)
 }
 
-func makeOperations(numOperations int) []Operation {
-	operations := make([]Operation, numOperations)
+func makeOperations(numOperations int) [][]byte {
+	operations := make([][]byte, numOperations)
 	for i := 1; i <= numOperations; i++ {
-		operations[i-1] = Operation{Bytes: []byte(fmt.Sprintf("operation %d", i))}
+		operations[i-1] = []byte(fmt.Sprintf("operation %d", i))
 	}
 
 	return operations
@@ -50,7 +50,7 @@ func makePeerMaps(numServers int) []map[string]string {
 	return clusterPeers
 }
 
-func encodeLogEntries(entries []*LogEntry) ([]byte, error) {
+func encodeOperations(entries []*Operation) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(entries); err != nil {
@@ -59,8 +59,8 @@ func encodeLogEntries(entries []*LogEntry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeLogEntries(data []byte) ([]*LogEntry, error) {
-	var operations []*LogEntry
+func decodeOperations(data []byte) ([]*Operation, error) {
+	var operations []*Operation
 	buf := bytes.NewBuffer(data)
 	dec := gob.NewDecoder(buf)
 	if err := dec.Decode(&operations); err != nil {
@@ -70,22 +70,24 @@ func decodeLogEntries(data []byte) ([]*LogEntry, error) {
 }
 
 type stateMachineMock struct {
-	operations   []*LogEntry
+	operations   []*Operation
 	snapshotting bool
 	snapshotSize int
 	mu           sync.Mutex
 }
 
 func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
-	gob.Register(LogEntry{})
-	return &stateMachineMock{operations: make([]*LogEntry, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
+	gob.Register(Operation{})
+	return &stateMachineMock{operations: make([]*Operation, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
 }
 
-func (s *stateMachineMock) Apply(entry *LogEntry) interface{} {
+func (s *stateMachineMock) Apply(operation *Operation) interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.operations = append(s.operations, entry)
+	if operation.IsReadOnly {
+		return len(s.operations)
+	}
+	s.operations = append(s.operations, operation)
 	return len(s.operations)
 }
 
@@ -93,7 +95,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	snapshotBytes, err := encodeLogEntries(s.operations)
+	snapshotBytes, err := encodeOperations(s.operations)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("error encoding state machine state: %s", err.Error())
 	}
@@ -104,8 +106,8 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 		lastIncludedIndex = 0
 		lastIncludedTerm = 0
 	} else {
-		lastIncludedIndex = s.operations[len(s.operations)-1].Index
-		lastIncludedTerm = s.operations[len(s.operations)-1].Term
+		lastIncludedIndex = s.operations[len(s.operations)-1].LogIndex
+		lastIncludedTerm = s.operations[len(s.operations)-1].LogTerm
 	}
 
 	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: snapshotBytes}, nil
@@ -115,7 +117,7 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := decodeLogEntries(snapshot.Data)
+	entries, err := decodeOperations(snapshot.Data)
 	if err != nil {
 		return errors.WrapError(err, "error decoding state machine state")
 	}
@@ -268,7 +270,7 @@ func (tc *testCluster) stopCluster() {
 	tc.wg.Wait()
 }
 
-func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, expectedApplied int) {
+func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, expectedApplied int) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
@@ -293,7 +295,7 @@ func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, 
 				successful := tc.checkApplied(index, expectedApplied)
 				if successful {
 					if expectFail {
-						tc.t.Fatalf("cluster applied a operation without quorum: operation = %s", string(operation.Bytes))
+						tc.t.Fatalf("cluster applied a operation without quorum: operation = %s", string(operation))
 					}
 					return
 				}
@@ -315,7 +317,7 @@ func (tc *testCluster) submit(operation Operation, retry bool, expectFail bool, 
 	}
 
 	if !expectFail {
-		tc.t.Fatalf("cluster failed to apply Operation: operation = %s", string(operation.Bytes))
+		tc.t.Fatalf("cluster failed to apply Operation: operation = %s", string(operation))
 	}
 }
 
@@ -390,13 +392,13 @@ func (tc *testCluster) checkLogs(index int, response OperationResponse) {
 
 	// The last applied index should be monotonically increasing.
 	expectedIndex := tc.lastApplied[index] + 1
-	if response.Index != expectedIndex {
+	if response.Operation.LogIndex != expectedIndex {
 		tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
-			index, expectedIndex, response.Index)
+			index, expectedIndex, response.Operation.LogIndex)
 		return
 	}
 
-	tc.operationResponses[index][response.Index] = response
+	tc.operationResponses[index][response.Operation.LogIndex] = response
 	tc.lastApplied[index]++
 }
 
@@ -407,21 +409,21 @@ func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
 	snapshots := tc.servers[index].ListSnapshots()
 
 	for _, snapshot := range snapshots {
-		if snapshot.LastIncludedIndex+1 == response.Index {
+		if snapshot.LastIncludedIndex+1 == response.Operation.LogIndex {
 			// Decode the snapshot data into entries.
-			appliedEntries, err := decodeLogEntries(snapshot.Data)
+			appliedOperations, err := decodeOperations(snapshot.Data)
 			if err != nil {
 				tc.serverErrors[index] = err.Error()
 				return
 			}
 
-			if len(appliedEntries) == 0 {
+			if len(appliedOperations) == 0 {
 				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot that was empty: server = %d", index)
 				return
 			}
 
-			actualLastIncludedIndex := appliedEntries[len(appliedEntries)-1].Index
-			actualLastIncludedTerm := appliedEntries[len(appliedEntries)-1].Term
+			actualLastIncludedIndex := appliedOperations[len(appliedOperations)-1].LogIndex
+			actualLastIncludedTerm := appliedOperations[len(appliedOperations)-1].LogTerm
 
 			// Check the last included index matches with the last included index in the snapshot bytes.
 			if actualLastIncludedIndex != snapshot.LastIncludedIndex {
@@ -434,18 +436,18 @@ func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
 			}
 
 			// Update this server's responses with the operations included in the snapshot.
-			for _, entry := range appliedEntries {
-				tc.operationResponses[index][entry.Index] = OperationResponse{Index: entry.Index, Term: entry.Term, Operation: entry.Data}
+			for _, appliedOperation := range appliedOperations {
+				tc.operationResponses[index][appliedOperation.LogIndex] = OperationResponse{Operation: *appliedOperation}
 			}
 
-			tc.operationResponses[index][response.Index] = response
-			tc.lastApplied[index] = response.Index
+			tc.operationResponses[index][response.Operation.LogIndex] = response
+			tc.lastApplied[index] = response.Operation.LogIndex
 			return
 		}
 	}
 
 	tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
-		index, tc.lastApplied[index]+1, response.Index)
+		index, tc.lastApplied[index]+1, response.Operation.LogIndex)
 }
 
 func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
@@ -467,9 +469,9 @@ func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
 
 		if operationResponse, ok := tc.operationResponses[i][index]; ok {
 			// Ensure the Operations match.
-			if hasApplied != 0 && string(operationResponse.Operation) != string(expectedOperationResponse.Operation) {
+			if hasApplied != 0 && string(operationResponse.Operation.Bytes) != string(expectedOperationResponse.Operation.Bytes) {
 				tc.t.Fatalf("cluster applied different Operations at the same index: index = %d, Operation1 = %s, Operation2 = %s",
-					index, string(expectedOperationResponse.Operation), string(operationResponse.Operation))
+					index, string(expectedOperationResponse.Operation.Bytes), string(operationResponse.Operation.Bytes))
 			}
 			expectedOperationResponse = operationResponse
 			hasApplied++
@@ -485,7 +487,7 @@ func (tc *testCluster) applyLoop(index int) {
 	for response := range tc.responseCh[index] {
 		// If the index was greater than the expected index, then either
 		// a snapshot must have been installed or there was an error.
-		if response.Index > tc.lastApplied[index]+1 {
+		if response.Operation.LogIndex > tc.lastApplied[index]+1 {
 			tc.checkSnapshot(index, response)
 		} else {
 			tc.checkLogs(index, response)

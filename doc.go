@@ -46,17 +46,23 @@ Here is an example of a type that implements the StateMachine interface.
 	    mu                 sync.Mutex
 	}
 
-	func (sm *StateMachine) Apply(entry *raft.LogEntry) interface{} {
+	func (sm *StateMachine) Apply(operation *raft.Operation) interface{} {
 	    sm.mu.Lock()
 	    defer sm.mu.Unlock()
 
-	    // Save the term and index of the last seen entry for snapshotting.
-	    sm.lastIndex = entry.Index
-	    sm.lastTerm = entry.Term
+		// If the operation is read-only, just return the value of the counter.
+		// You might need to actually decode the operation for a more complex state machine.
+		if operation.IsReadOnly {
+			return Result{Value: sm.count, Error: nil}
+		}
+
+	    // Save the term and index of the last replicated entry for snapshotting.
+	    sm.lastIndex = operation.LogIndex
+	    sm.lastTerm = operation.LogTerm
 
 	    // Decode the operation.
 	    var decodedOp int
-	    buf := bytes.NewBuffer(entry.Data)
+	    buf := bytes.NewBuffer(operation.Bytes)
 	    dec := gob.NewDecoder(buf)
 	    if err := dec.Decode(decodedOp); err != nil {
 	        return Result{Err: err}
@@ -154,7 +160,7 @@ Next, create an instance of the state machine implementation.
 
 	fsm := new(StateMachine)
 
-The server may now be created.
+The server may now be created as below.
 
 	server, err := raft.NewServer("raft-1", peers, fsm, logPath, storagePath, snapshotPath, responseCh)
 
@@ -178,5 +184,35 @@ Here is how to start the server.
 
 	// Start Raft.
 	close(readyCh)
+
+Finally, here is how to submit an operation to the server once it is started. A normal operation may be submitted or,
+alternatively, a read-only operation may be submitted. Generally, read-only operations will offer much better performance than standard
+operations due to the fact that they are not added to the log or replicated. However, read-only operations are implemented
+using leases. This means that they are not safe - a read-only operation may read stale or incorrect data under certian
+circumstances. If your application demands strong consistency, read-only operations should not be used. Results from
+either type of operation will be written to the response channel provided to the server.
+
+	// Encode an operation.
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+	err := encoder.Encode(Increment)
+	if err != nil {
+		panic(err)
+	}
+	op := buffer.Bytes()
+
+	// Sumbit a standard operation that is replicated.
+	// Note that if this server is not the leader it will reject the operation.
+	logIndex, logTerm, err := server.SubmitOperation(op)
+
+	// Submit a read-only operation.
+	// Like standard operations, the server will reject the operation if it is not the leader.
+	// Additionally, it will reject the operation if its lease has expired. In this case, since
+	// the value of the counter is returned on a read-only operation, an empty operation is submitted.
+	err := server.SubmitOperation([]byte{})
+
+Be warned that this is a highly simplified example that demonstrates how raft may be used and some of its features.
+This implementation leaves out many details that would typically be associated with a system that uses raft such
+as duplicate detection and retry mechanisms.
 */
 package raft

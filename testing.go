@@ -168,6 +168,11 @@ type testCluster struct {
 	// servers[i]
 	responseCh []chan OperationResponse
 
+	// The read-only response channel associated with each server, where
+	// readOnlyResponseCh[i] corresponds to the read-only response channel
+	// for servers[i].
+	readOnlyResponseCh []chan error
+
 	// A channel to signal the shutdown of the cluster.
 	shutdownCh chan interface{}
 
@@ -203,6 +208,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	fsm := make([]*stateMachineMock, numServers)
 	replicateCh := make([]chan OperationResponse, numServers)
 	responses := make([]map[uint64]OperationResponse, numServers)
+	readOnlyResponseCh := make([]chan error, numServers)
 	serverErrors := make([]string, numServers)
 	lastApplied := make([]uint64, numServers)
 	disconnected := make([]bool, numServers)
@@ -221,6 +227,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		replicateCh[i] = make(chan OperationResponse)
 		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
 		responses[i] = make(map[uint64]OperationResponse)
+		readOnlyResponseCh[i] = make(chan error, 1)
 		paths[i] = storagePaths{logPath: fmt.Sprintf(logFileFmt, i), storagePath: fmt.Sprintf(storageFileFmt, i),
 			snapshotStoragePath: fmt.Sprintf(snapshotFileFmt, i)}
 		id := fmt.Sprint(i)
@@ -247,6 +254,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		shutdownCh:         make(chan interface{}),
 		snapshotting:       snapshotting,
 		snapshotSize:       snapshotSize,
+		readOnlyResponseCh: readOnlyResponseCh,
 	}
 }
 
@@ -321,6 +329,44 @@ func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, exp
 	}
 }
 
+func (tc *testCluster) submitReadOnly(retry bool, expectFail bool) {
+	// Time between submission attempts. If no leader was found, allow for
+	// an election to complete.
+	electionTimeout := 200 * time.Millisecond
+
+	// Allow for a maximum of five seconds if retry is enabled.
+	start := time.Now()
+	for time.Since(start).Seconds() < 5 {
+		for j := 0; j < len(tc.servers); j++ {
+			tc.mu.Lock()
+			server := tc.servers[j]
+			tc.mu.Unlock()
+
+			// Submit an operation to a server. It might be a leader.
+			err := server.SubmitReadOnlyOperation([]byte{})
+			if err != nil {
+				continue
+			}
+			err = <-tc.readOnlyResponseCh[j]
+			if err != nil && !expectFail {
+				tc.t.Fatal(err.Error())
+			} else {
+				return
+			}
+		}
+
+		if !retry {
+			break
+		}
+
+		time.Sleep(electionTimeout)
+	}
+
+	if !expectFail {
+		tc.t.Fatalf("cluster failed to apply read-only operation")
+	}
+}
+
 func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	// Any leaders detected.
 	leaders := make([]int, 0)
@@ -386,6 +432,19 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	return leaders[0]
 }
 
+func (tc *testCluster) checkReadOnlyOperation(index int, response OperationResponse) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	lastApplied := tc.lastApplied[index]
+	var err error
+	if lastApplied != 0 && response.Response != tc.operationResponses[index][lastApplied].Response {
+		err = fmt.Errorf("cluster read-only operation read incorrect value: server = %d, expectedValue = %v, actualValue = %v",
+			index, tc.operationResponses[index][lastApplied].Response, response.Response)
+	}
+	tc.readOnlyResponseCh[index] <- err
+}
+
 func (tc *testCluster) checkLogs(index int, response OperationResponse) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -393,7 +452,7 @@ func (tc *testCluster) checkLogs(index int, response OperationResponse) {
 	// The last applied index should be monotonically increasing.
 	expectedIndex := tc.lastApplied[index] + 1
 	if response.Operation.LogIndex != expectedIndex {
-		tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
+		tc.serverErrors[index] = fmt.Sprintf("cluster applied operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
 			index, expectedIndex, response.Operation.LogIndex)
 		return
 	}
@@ -489,6 +548,8 @@ func (tc *testCluster) applyLoop(index int) {
 		// a snapshot must have been installed or there was an error.
 		if response.Operation.LogIndex > tc.lastApplied[index]+1 {
 			tc.checkSnapshot(index, response)
+		} else if response.Operation.IsReadOnly {
+			tc.checkReadOnlyOperation(index, response)
 		} else {
 			tc.checkLogs(index, response)
 		}

@@ -24,6 +24,9 @@ type NotLeaderError struct {
 	KnownLeader string
 }
 
+// This function implements the error interface for the NotLeaderError type.
+// It formats and returns an error message indicating that the server with
+// the ID e.ServerID is not the leader, and the known leader is e.KnownLeader.
 func (e NotLeaderError) Error() string {
 	return fmt.Sprintf("server %s is not the leader: knownLeader = %s", e.ServerID, e.KnownLeader)
 }
@@ -35,6 +38,9 @@ type InvalidLeaseError struct {
 	ServerID string
 }
 
+// This function implements the error interface for the InvalidLeaseError type.
+// It formats and returns an error message indicating that the server with
+// the ID e.ServerID does not have a valid lease.
 func (e InvalidLeaseError) Error() string {
 	return fmt.Sprintf("server %s does not have a valid lease", e.ServerID)
 }

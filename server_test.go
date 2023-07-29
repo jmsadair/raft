@@ -159,11 +159,11 @@ func TestConcurrentSubmit(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Simulates a client submitting operations.
-	client := func(operations []Operation, readyCh chan interface{}) {
+	client := func(operations [][]byte, readyCh chan interface{}) {
 		defer wg.Done()
 		<-readyCh
-		for _, command := range operations {
-			cluster.submit(command, false, false, 5)
+		for _, operation := range operations {
+			cluster.submit(operation, false, false, 5)
 		}
 	}
 
@@ -618,4 +618,94 @@ func TestAllCrash(t *testing.T) {
 	for i := 25; i < len(operations); i++ {
 		cluster.submit(operations[i], true, false, 5)
 	}
+}
+
+// TestBasicReadOnly checks that a read-only operation submitted under normal conditions
+// returns the latest state from the state machine without error.
+func TestBasicReadOnly(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader and submit some operations.
+	cluster.checkLeaders(false)
+	operations := makeOperations(1)
+	cluster.submit(operations[0], false, false, 5)
+	cluster.submitReadOnly(false, false)
+}
+
+// TestSingleServerReadOnly checks that a read-only operations are successful in the single server case.
+func TestSingleServerReadOnly(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 1, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader and submit some operations.
+	cluster.checkLeaders(false)
+	operations := makeOperations(10)
+	for _, command := range operations {
+		cluster.submit(command, false, false, 1)
+	}
+
+	// Make sure read-only operation is successful.
+	cluster.submitReadOnly(false, false)
+}
+
+// TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
+// from a majority of the partition is rejected.
+func TestReadOnlyFail(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Wait for a leader.
+	leader := cluster.checkLeaders(false)
+
+	// Disconnect the other two servers in the cluster.
+	cluster.disconnectServer((leader + 1) % 3)
+	cluster.disconnectServer((leader + 2) % 3)
+
+	// Give the lease some time to expire.
+	time.Sleep(defaultLeaseDuration)
+
+	// Make sure the read-only operation fails.
+	cluster.submitReadOnly(true, true)
+}
+
+// TestReadOnlyDisconnect checks that a new leader will renew its lease
+// after the old one is disconnected, thereby allowing successful read-only
+// operations.
+func TestReadOnlyDisconnect(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 1*time.Second)
+
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	// Submit some operations to the initial leader.
+	leader := cluster.checkLeaders(false)
+	operations := makeOperations(10)
+	for _, command := range operations {
+		cluster.submit(command, false, false, 5)
+	}
+
+	// Disconnect the leader and wait for a new one.
+	cluster.disconnectServer(leader)
+	cluster.checkLeaders(false)
+
+	// Give the leader a bit of time to make sure its lease gets renewed.
+	time.Sleep(defaultElectionTimeout)
+
+	// Check that read-only operation is successful.
+	cluster.submitReadOnly(false, false)
 }

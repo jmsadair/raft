@@ -734,7 +734,7 @@ func (r *Raft) ListSnapshots() []Snapshot {
 // sendAppendEntriesToPeers sends an AppendEntries RPC to all peers concurrently.
 // Expects lock to be held.
 func (r *Raft) sendAppendEntriesToPeers() {
-	numResponses := 0
+	numResponses := 1
 	for _, peer := range r.peers {
 		go r.sendAppendEntries(peer, &numResponses)
 	}
@@ -751,8 +751,11 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 
 	// Handle the single server case.
 	if peer.ID() == r.id {
-		if len(r.peers) == 1 && r.log.LastIndex() > r.commitIndex {
-			r.commitCond.Broadcast()
+		if len(r.peers) == 1 {
+			if r.log.LastIndex() > r.commitIndex {
+				r.commitCond.Broadcast()
+			}
+			r.lease.renew()
 		}
 		return
 	}

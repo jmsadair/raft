@@ -814,6 +814,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	// Renew the lease if the majority of peers have responded.
 	// Set the response counter to nil to prevent additional renewals during
 	// this round of heartbeats.
+	*numResponses += 1
 	if numResponses != nil && r.hasQuorum(*numResponses) {
 		r.lease.renew()
 		numResponses = nil
@@ -1172,7 +1173,7 @@ func (r *Raft) fsmLoop() {
 		// Notify the client of the result.
 		r.operationResponseCh <- response
 
-		r.options.logger.Debugf("server %s applied operation: read-only = %v index = %d, term = %d",
+		r.options.logger.Debugf("server %s applied operation: read-only = %v, index = %d, term = %d",
 			r.id, operation.IsReadOnly, operation.LogIndex, operation.LogTerm)
 
 		// Take a snapshot of the state machine if necessary.

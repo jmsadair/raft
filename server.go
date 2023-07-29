@@ -120,12 +120,22 @@ func (s *Server) IsStarted() bool {
 	return s.server != nil
 }
 
-// SubmitOperation submits a operation to the server for processing.
+// SubmitOperation submits an operation (as bytes) to the server for processing.
 // It forwards the operation to the underlying Raft instance for handling
 // and returns the index and term assigned to the operation, as well as
 // an error if submitting the operation failed.
-func (s *Server) SubmitOperation(operation Operation) (uint64, uint64, error) {
+func (s *Server) SubmitOperation(operation []byte) (uint64, uint64, error) {
 	return s.raft.SubmitOperation(operation)
+}
+
+// SubmitReadOnlyOperation submits an operation (as bytes) to the server for
+// processing. It forwards the operation to the underlying Raft instance for handling
+// and returns an error if submitting the operation failed. Read-only operations are
+// generally much more performant than standard, replicated operations. However,
+// be warned that read-only operations are NOT safe. It is possible that stale or
+// incorrect data may be returned under certain conditions.
+func (s *Server) SubmitReadOnlyOperation(operation []byte) error {
+	return s.raft.SubmitReadOnlyOperation(operation)
 }
 
 // ListSnapshots returns an array of all the snapshots that the underlying

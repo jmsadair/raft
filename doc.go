@@ -209,7 +209,7 @@ either type of operation will be written to the response channel provided to the
 	// Like standard operations, the server will reject the operation if it is not the leader.
 	// Additionally, it will reject the operation if its lease has expired. In this case, since
 	// the value of the counter is returned on a read-only operation, an empty operation is submitted.
-	err := server.SubmitOperation([]byte{})
+	err := server.SubmitReadOnlyOperation([]byte{})
 
 Be warned that this is a highly simplified example that demonstrates how raft may be used and some of its features.
 This implementation leaves out many details that would typically be associated with a system that uses raft such

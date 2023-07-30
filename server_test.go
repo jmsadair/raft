@@ -107,7 +107,7 @@ func TestSingleServerSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], false, false, 1)
+	cluster.submit(operations[0], true, false, 1)
 }
 
 // TestSingleSubmit checks whether the cluster can successfully
@@ -122,7 +122,7 @@ func TestBasicSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], false, false, 3)
+	cluster.submit(operations[0], true, false, 3)
 }
 
 // TestMultipleSubmit checks whether a cluster can successfully
@@ -138,7 +138,7 @@ func TestMultipleSubmit(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for _, command := range operations {
-		cluster.submit(command, false, false, 5)
+		cluster.submit(command, true, false, 5)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestConcurrentSubmit(t *testing.T) {
 		defer wg.Done()
 		<-readyCh
 		for _, operation := range operations {
-			cluster.submit(operation, false, false, 5)
+			cluster.submit(operation, true, false, 5)
 		}
 	}
 
@@ -228,7 +228,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Submit some operations with this leader.
 	operations := makeOperations(80)
 	for i := 0; i < 20; i++ {
-		cluster.submit(operations[i], false, false, 5)
+		cluster.submit(operations[i], true, false, 5)
 	}
 
 	// Disconnect the leader.
@@ -282,7 +282,7 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	// since only a minority of the cluster can communicate.
 	operations := makeOperations(20)
 	for _, command := range operations {
-		cluster.submit(command, false, true, 1)
+		cluster.submit(command, true, true, 1)
 	}
 }
 
@@ -427,7 +427,7 @@ func TestBasicCrash(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], false, false, 5)
+		cluster.submit(operations[i], true, false, 5)
 	}
 
 	// Crash the leader and see if we can still make progress.
@@ -452,7 +452,7 @@ func TestCrashRejoin(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], false, false, 5)
+		cluster.submit(operations[i], true, false, 5)
 	}
 
 	// Crash the leader and see if we can still make progress.
@@ -600,7 +600,7 @@ func TestAllCrash(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(50)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], false, false, 5)
+		cluster.submit(operations[i], true, false, 5)
 	}
 
 	// Crash all servers.
@@ -633,8 +633,8 @@ func TestBasicReadOnly(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], false, false, 5)
-	cluster.submitReadOnly(false, false)
+	cluster.submit(operations[0], true, false, 5)
+	cluster.submitReadOnly(true, false)
 }
 
 // TestSingleServerReadOnly checks that a read-only operations are successful in the single server case.
@@ -650,11 +650,11 @@ func TestSingleServerReadOnly(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(10)
 	for _, command := range operations {
-		cluster.submit(command, false, false, 1)
+		cluster.submit(command, true, false, 1)
 	}
 
 	// Make sure read-only operation is successful.
-	cluster.submitReadOnly(false, false)
+	cluster.submitReadOnly(true, false)
 }
 
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
@@ -696,7 +696,7 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(10)
 	for _, command := range operations {
-		cluster.submit(command, false, false, 5)
+		cluster.submit(command, true, false, 5)
 	}
 
 	// Disconnect the leader and wait for a new one.
@@ -707,5 +707,5 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	time.Sleep(defaultElectionTimeout)
 
 	// Check that read-only operation is successful.
-	cluster.submitReadOnly(false, false)
+	cluster.submitReadOnly(true, false)
 }

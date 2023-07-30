@@ -1,5 +1,7 @@
 ![build](https://github.com/jmsadair/raft/actions/workflows/build.yml/badge.svg)
 [![Go Reference](https://pkg.go.dev/badge/github.com/jmsadair/raft)](https://pkg.go.dev/github.com/jmsadair/raft)
+![GitHub](https://img.shields.io/github/license/jmsadair/raft)
+![GitHub go.mod Go version (subdirectory of monorepo)](https://img.shields.io/github/go-mod/go-version/jmsadair/raft)
 
 # Raft
 

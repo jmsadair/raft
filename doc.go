@@ -136,7 +136,7 @@ Here is an example of a type that implements the StateMachine interface.
 Now, create a map that maps server IDs to their respective address. This map should contain the ID and address
 of all the servers in the cluster, including this one.
 
-	peers := map[string]net.Addr{
+	peers := map[string]string{
 	    "raft-1": "127.0.0.0:8080",
 	    "raft-2": "127.0.0.1:8080",
 	    "raft-3": "127.0.0.2:8080",

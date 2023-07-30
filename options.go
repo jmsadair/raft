@@ -84,7 +84,8 @@ type Option func(options *options) error
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
 		if time < minElectionTimeout || time > maxElectionTimeout {
-			return errors.New("election timeout value is invalid")
+			return errors.New("election timeout value is invalid: minimum = %v, maximum = %v",
+				minElectionTimeout, maxElectionTimeout)
 		}
 		options.electionTimeout = time
 		return nil
@@ -95,7 +96,8 @@ func WithElectionTimeout(time time.Duration) Option {
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		if time < minHeartbeat || time > maxHeartbeat {
-			return errors.New("heartbeat interval value is invalid")
+			return errors.New("heartbeat interval value is invalid: minimum = %v, maximum = %v",
+				minHeartbeat, maxHeartbeat)
 		}
 		options.heartbeatInterval = time
 		return nil
@@ -107,7 +109,8 @@ func WithHeartbeatInterval(time time.Duration) Option {
 func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 	return func(options *options) error {
 		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
-			return errors.New("maximum entries per RPC value is invalid")
+			return errors.New("maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
+				minMaxEntriesPerRPC, maxMaxEntriesPerRPC)
 		}
 		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil
@@ -122,7 +125,8 @@ func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 func WithLeaseDuration(leaseDuration time.Duration) Option {
 	return func(options *options) error {
 		if leaseDuration < minLeaseDuration || leaseDuration > maxLeaseDuration {
-			return errors.New("lease duration is invalid")
+			return errors.New("lease duration is invalid: minimum = %v, maximum = %v",
+				minLeaseDuration, maxLeaseDuration)
 		}
 		options.leaseDuration = leaseDuration
 		return nil

@@ -11,8 +11,8 @@ type RaftError struct {
 	Message string
 }
 
-func New(text string) *RaftError {
-	return &RaftError{Message: text}
+func New(format string, args ...interface{}) *RaftError {
+	return &RaftError{Message: fmt.Sprintf(format, args...)}
 }
 
 func WrapError(inner error, messagef string, messageArgs ...interface{}) *RaftError {

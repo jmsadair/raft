@@ -154,7 +154,7 @@ its term and vote. The snapshot path specifies where the server will persist any
 Now, create the channel that responses from the state machine will be relayed over. Note that, when the server is started, it is important that
 this channel is always being monitored. Otherwise, the internal Raft implementation will become blocked.
 
-	responseCh := make(chan raft.CommandResponse)
+	responseCh := make(chan raft.OperationResponse)
 
 Next, create an instance of the state machine implementation.
 
@@ -167,7 +167,7 @@ The server may now be created as below.
 Here is how to start the server.
 
 	// This sends a signal to the Raft implementation to start.
-	readyCh := make(chan interface)
+	readyCh := make(chan interface{})
 
 	// Once Start is called, the server is prepared to start receiving RPCs.
 	err := server.Start(readyCh)

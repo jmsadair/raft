@@ -357,8 +357,8 @@ func (r *Raft) Start() error {
 	// operations are written to the fsm channel after is closed.
 	go r.fsmLoop()
 
-	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v",
-		r.id, r.options.electionTimeout, r.options.heartbeatInterval)
+	r.options.logger.Infof("server %s started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v, maxLogEntriesPerRPC = %v",
+		r.id, r.options.electionTimeout, r.options.heartbeatInterval, r.options.leaseDuration, r.options.maxEntriesPerRPC)
 
 	return nil
 }
@@ -828,7 +828,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 		if r.hasQuorum(*numResponses) {
 			r.lease.renew()
 			numResponses = nil
-			r.options.logger.Debugf("server %s renewed its lease", r.id)
+			r.options.logger.Debugf("server %s renewed its lease: expiration = %v", r.id, r.lease.expiration)
 		}
 	}
 
@@ -1169,14 +1169,20 @@ func (r *Raft) fsmLoop() {
 		// data.
 		if operation.IsReadOnly {
 			r.mu.Lock()
-			leaseValid := r.lease != nil && r.lease.isValid()
-			r.mu.Unlock()
-			if leaseValid {
-				r.readOnlyErrCh <- nil
-			} else {
+			if r.lease == nil {
+				r.mu.Unlock()
+				r.options.logger.Debugf("server %s rejecting read-only operation: NotLeaderError", r.id)
+				r.readOnlyErrCh <- NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}
+				continue
+			}
+			if !r.lease.isValid() {
+				r.mu.Unlock()
+				r.options.logger.Debugf("server %s rejecting read-only operation: InvalidLeaseError", r.id)
 				r.readOnlyErrCh <- InvalidLeaseError{ServerID: r.id}
 				continue
 			}
+			r.mu.Unlock()
+			r.readOnlyErrCh <- nil
 		}
 
 		response.Response = r.fsm.Apply(operation)

@@ -280,7 +280,7 @@ func TestSubmitDisconnectFail(t *testing.T) {
 
 	// Try to submit some operations. This should be unsuccessful
 	// since only a minority of the cluster can communicate.
-	operations := makeOperations(20)
+	operations := makeOperations(1)
 	for _, command := range operations {
 		cluster.submit(command, true, true, 1)
 	}

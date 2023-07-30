@@ -136,7 +136,7 @@ Here is an example of a type that implements the StateMachine interface.
 Now, create a map that maps server IDs to their respective address. This map should contain the ID and address
 of all the servers in the cluster, including this one.
 
-	peers := map[string]net.Addr{
+	peers := map[string]string{
 	    "raft-1": "127.0.0.0:8080",
 	    "raft-2": "127.0.0.1:8080",
 	    "raft-3": "127.0.0.2:8080",
@@ -209,7 +209,7 @@ either type of operation will be written to the response channel provided to the
 	// Like standard operations, the server will reject the operation if it is not the leader.
 	// Additionally, it will reject the operation if its lease has expired. In this case, since
 	// the value of the counter is returned on a read-only operation, an empty operation is submitted.
-	err := server.SubmitOperation([]byte{})
+	err := server.SubmitReadOnlyOperation([]byte{})
 
 Be warned that this is a highly simplified example that demonstrates how raft may be used and some of its features.
 This implementation leaves out many details that would typically be associated with a system that uses raft such

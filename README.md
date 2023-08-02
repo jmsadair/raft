@@ -1,3 +1,8 @@
+<p align="center">
+  <img alt="raft" src="assets/raft_logo.png">
+</p>
+
+
 ![build](https://github.com/jmsadair/raft/actions/workflows/build.yml/badge.svg)
 [![Go Reference](https://pkg.go.dev/badge/github.com/jmsadair/raft)](https://pkg.go.dev/github.com/jmsadair/raft)
 ![GitHub](https://img.shields.io/github/license/jmsadair/raft)

@@ -340,3 +340,21 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 
 	require.Equal(t, "candidate1", raft.votedFor)
 }
+
+// TestRequestVoteShutdownFailure checks that a RequestVote request received by a server in the shutdown state
+// is rejected and an error is returned.
+func TestRequestVoteShutdownFailure(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate",
+		Term:        1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.Error(t, raft.RequestVote(request, response))
+	require.False(t, response.VoteGranted)
+}

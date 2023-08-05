@@ -44,7 +44,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 		LeaderID:     "leader1",
 		Term:         1,
 		LeaderCommit: 1,
-		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("entry1"))},
+		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -56,7 +56,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("entry1"))
+	validateLogEntry(t, entry, 1, 1, []byte("operation1"))
 }
 
 // TestAppendEntriesConflictSuccess checks that raft correctly handles the case where its log entries and
@@ -75,7 +75,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	request := &AppendEntriesRequest{
 		LeaderID: "leader1",
 		Term:     2,
-		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("entry1")), NewLogEntry(2, 1, []byte("entry2"))},
+		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 1, []byte("entry2"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -83,7 +83,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.True(t, response.Success)
 	require.Equal(t, uint64(2), response.Term)
 
-	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("entry1")), NewLogEntry(2, 2, []byte("entry2"))}
+	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 2, []byte("entry2"))}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
@@ -92,11 +92,11 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("entry1"))
+	validateLogEntry(t, entry, 1, 1, []byte("operation1"))
 
 	entry, err = raft.log.GetEntry(2)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 2, 2, []byte("entry2"))
+	validateLogEntry(t, entry, 2, 2, []byte("operation2"))
 }
 
 // TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
@@ -160,7 +160,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 
 	raft.state = Follower
 	raft.currentTerm = 1
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("test"))))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
 
 	request := &AppendEntriesRequest{
 		LeaderID:     "leader",
@@ -325,7 +325,7 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "candidate1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("entry1"))}))
+	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("operation1"))}))
 
 	request := &RequestVoteRequest{
 		CandidateID:  "candidate2",
@@ -357,4 +357,146 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 
 	require.Error(t, raft.RequestVote(request, response))
 	require.False(t, response.VoteGranted)
+}
+
+// TestInstallSnapshotSuccess checks that raft handles a basic InstallSnapshot request that should be successful
+// correctly.
+func TestInstallSnapshotSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "leader1"
+	raft.state = Follower
+
+	bytes, err := encodeOperations([]*Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}})
+	require.NoError(t, err)
+
+	request := &InstallSnapshotRequest{
+		LeaderID:          "leader1",
+		Term:              1,
+		LastIncludedIndex: 1,
+		LastIncludedTerm:  1,
+		Bytes:             bytes,
+	}
+
+	response := &InstallSnapshotResponse{}
+
+	require.NoError(t, raft.InstallSnapshot(request, response))
+	require.Equal(t, uint64(1), response.Term)
+
+	require.Equal(t, uint64(1), raft.commitIndex)
+	require.Equal(t, uint64(1), raft.lastApplied)
+	require.Equal(t, uint64(1), raft.lastIncludedIndex)
+	require.Equal(t, uint64(1), raft.lastIncludedTerm)
+	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
+	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+
+	// Make sure that the state machine was restored after installing the snapshot.
+	// The data from the snapshot from the state machine should match the data from the request.
+	snapshot, err := args.stateMachine.Snapshot()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), snapshot.LastIncludedIndex)
+	require.Equal(t, uint64(1), snapshot.LastIncludedTerm)
+	require.Equal(t, bytes, snapshot.Data)
+}
+
+// TestInstallSnapshotDiscardSuccess checks that a server discards its log entries when it receives an InstallSnapshot
+// request if it does not have an entry at the last included index.
+func TestInstallSnapshotDiscardSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 2
+	raft.votedFor = "leader1"
+	raft.state = Follower
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
+
+	bytes, err := encodeOperations([]*Operation{{Bytes: []byte("operation1"), LogIndex: 2, LogTerm: 2}})
+	require.NoError(t, err)
+
+	request := &InstallSnapshotRequest{
+		LeaderID:          "leader1",
+		Term:              2,
+		LastIncludedIndex: 2,
+		LastIncludedTerm:  2,
+		Bytes:             bytes,
+	}
+
+	response := &InstallSnapshotResponse{}
+
+	require.NoError(t, raft.InstallSnapshot(request, response))
+	require.Equal(t, uint64(2), response.Term)
+
+	require.Equal(t, uint64(2), raft.commitIndex)
+	require.Equal(t, uint64(2), raft.lastApplied)
+	require.Equal(t, uint64(2), raft.lastIncludedIndex)
+	require.Equal(t, uint64(2), raft.lastIncludedTerm)
+	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
+	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+	require.Equal(t, uint64(2), raft.log.LastIndex())
+	require.Equal(t, uint64(2), raft.log.LastTerm())
+	require.False(t, raft.log.Contains(1))
+
+	// Make sure that the state machine was restored after installing the snapshot.
+	// The data from the snapshot from the state machine should match the data from the request.
+	snapshot, err := args.stateMachine.Snapshot()
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), snapshot.LastIncludedIndex)
+	require.Equal(t, uint64(2), snapshot.LastIncludedTerm)
+	require.Equal(t, bytes, snapshot.Data)
+}
+
+// TestInstallSnapshotDiscardSuccess checks that a server compacts its log when it receives a InstallSnapshot
+// request with a last included index that this server has a log entry for and the that last included term
+// matches the term of that entry.
+func TestInstallSnapshotCompactSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "leader1"
+	raft.state = Follower
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(2, 1, []byte("operation2"))))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(3, 1, []byte("operation3"))))
+
+	bytes, err := encodeOperations([]*Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}})
+	require.NoError(t, err)
+
+	request := &InstallSnapshotRequest{
+		LeaderID:          "leader1",
+		Term:              1,
+		LastIncludedIndex: 3,
+		LastIncludedTerm:  1,
+		Bytes:             bytes,
+	}
+
+	response := &InstallSnapshotResponse{}
+
+	require.NoError(t, raft.InstallSnapshot(request, response))
+	require.Equal(t, uint64(1), response.Term)
+
+	require.Equal(t, uint64(3), raft.commitIndex)
+	require.Equal(t, uint64(3), raft.lastApplied)
+	require.Equal(t, uint64(3), raft.lastIncludedIndex)
+	require.Equal(t, uint64(1), raft.lastIncludedTerm)
+	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
+	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+	require.Equal(t, uint64(3), raft.log.LastIndex())
+	require.Equal(t, uint64(1), raft.log.LastTerm())
+	require.False(t, raft.log.Contains(1))
+	require.False(t, raft.log.Contains(2))
+
+	// The log had a matching entry at the last included index - the state machine should not be restored.
+	snapshot, err := args.stateMachine.Snapshot()
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), snapshot.LastIncludedIndex)
+	require.Equal(t, uint64(0), snapshot.LastIncludedTerm)
 }

@@ -75,7 +75,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	request := &AppendEntriesRequest{
 		LeaderID: "leader1",
 		Term:     2,
-		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 1, []byte("entry2"))},
+		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 1, []byte("operation2"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -83,7 +83,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.True(t, response.Success)
 	require.Equal(t, uint64(2), response.Term)
 
-	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 2, []byte("entry2"))}
+	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 2, []byte("operation2"))}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))

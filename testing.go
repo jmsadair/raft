@@ -32,7 +32,6 @@ func makeOperations(numOperations int) [][]byte {
 	for i := 1; i <= numOperations; i++ {
 		operations[i-1] = []byte(fmt.Sprintf("operation %d", i))
 	}
-
 	return operations
 }
 
@@ -46,7 +45,6 @@ func makePeerMaps(numServers int) []map[string]string {
 			clusterPeers[i][peerID] = address
 		}
 	}
-
 	return clusterPeers
 }
 

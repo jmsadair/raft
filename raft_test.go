@@ -37,15 +37,14 @@ func TestAppendEntriesSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "test-leader"
+	raft.votedFor = "leader1"
 	raft.state = Follower
 
-	entries := []*LogEntry{NewLogEntry(1, 1, []byte("test1"))}
 	request := &AppendEntriesRequest{
-		LeaderID:     "test-leader",
+		LeaderID:     "leader1",
 		Term:         1,
 		LeaderCommit: 1,
-		Entries:      entries,
+		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("entry1"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -57,7 +56,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("test1"))
+	validateLogEntry(t, entry, 1, 1, []byte("entry1"))
 }
 
 // TestAppendEntriesConflictSuccess checks that raft correctly handles the case where its log entries and
@@ -70,14 +69,13 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
-	raft.votedFor = "test-leader"
+	raft.votedFor = "leader1"
 	raft.state = Follower
 
-	entries := []*LogEntry{NewLogEntry(1, 1, []byte("test1")), NewLogEntry(2, 1, []byte("test2"))}
 	request := &AppendEntriesRequest{
-		LeaderID: "test-leader",
+		LeaderID: "leader1",
 		Term:     2,
-		Entries:  entries,
+		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("entry1")), NewLogEntry(2, 1, []byte("entry2"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -85,8 +83,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.True(t, response.Success)
 	require.Equal(t, uint64(2), response.Term)
 
-	entries = []*LogEntry{NewLogEntry(1, 1, []byte("test1")), NewLogEntry(2, 2, []byte("test2"))}
-	request.Entries = entries
+	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("entry1")), NewLogEntry(2, 2, []byte("entry2"))}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
@@ -95,11 +92,11 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("test1"))
+	validateLogEntry(t, entry, 1, 1, []byte("entry1"))
 
 	entry, err = raft.log.GetEntry(2)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 2, 2, []byte("test2"))
+	validateLogEntry(t, entry, 2, 2, []byte("entry2"))
 }
 
 // TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
@@ -111,11 +108,11 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "test-leader"
+	raft.votedFor = "leader1"
 	raft.state = Leader
 
 	request := &AppendEntriesRequest{
-		LeaderID: "other-test-leader",
+		LeaderID: "leader2",
 		Term:     3,
 		Entries:  []*LogEntry{},
 	}
@@ -166,7 +163,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("test"))))
 
 	request := &AppendEntriesRequest{
-		LeaderID:     "test-leader",
+		LeaderID:     "leader",
 		Term:         1,
 		Entries:      []*LogEntry{},
 		PrevLogTerm:  2,
@@ -188,7 +185,7 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	request := &AppendEntriesRequest{
-		LeaderID: "test-leader",
+		LeaderID: "leader1",
 		Term:     1,
 		Entries:  []*LogEntry{},
 	}
@@ -196,4 +193,150 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 
 	require.Error(t, raft.AppendEntries(request, response))
 	require.False(t, response.Success)
+}
+
+// TestRequestVoteSuccess checks that raft handles a RequestVote request that should be successful correctly.
+func TestRequestVoteSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.state = Follower
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate1",
+		Term:        1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.True(t, response.VoteGranted)
+	require.Equal(t, uint64(1), response.Term)
+
+	require.Equal(t, "candidate1", raft.votedFor)
+}
+
+// TestRequestVoteLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
+// follower state when it receives an AppendEntries request with a greater term than its own.
+func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.state = Leader
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate1",
+		Term:        2,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.True(t, response.VoteGranted)
+	require.Equal(t, uint64(2), response.Term)
+
+	require.Equal(t, uint64(2), raft.currentTerm)
+	require.Equal(t, Follower, raft.state)
+	require.Equal(t, "candidate1", raft.votedFor)
+}
+
+// TestRequestVoteAlreadyVotedSuccess checks that a raft instance that receives a RequestVote request from a server
+// that it already voted for grants it vote again.
+func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "candidate1"
+	raft.state = Leader
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate1",
+		Term:        1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.True(t, response.VoteGranted)
+}
+
+// TestRequestVoteAlreadyVotedFailure checks that a raft instance that receives a RequestVote request from a different
+// server after it already voted for another server refuses to grant its vote.
+func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "candidate1"
+	raft.state = Follower
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate2",
+		Term:        1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.False(t, response.VoteGranted)
+
+	require.Equal(t, "candidate1", raft.votedFor)
+}
+
+// TestRequestVoteOutOfDateTermFailure checks that a RequestVote request received that has a term less than
+// the term of server that received it is rejected.
+func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 2
+	raft.votedFor = "candidate1"
+	raft.state = Follower
+
+	request := &RequestVoteRequest{
+		CandidateID: "candidate2",
+		Term:        1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.False(t, response.VoteGranted)
+
+	require.Equal(t, "candidate1", raft.votedFor)
+}
+
+// TestRequestVoteOutOfDateLogFailure checks that a RequestVote request received from a server with an out-of-date
+// log is rejected.
+func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 2
+	raft.votedFor = "candidate1"
+	raft.state = Follower
+	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("entry1"))}))
+
+	request := &RequestVoteRequest{
+		CandidateID:  "candidate2",
+		Term:         2,
+		LastLogIndex: 2,
+		LastLogTerm:  1,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.False(t, response.VoteGranted)
+
+	require.Equal(t, "candidate1", raft.votedFor)
 }

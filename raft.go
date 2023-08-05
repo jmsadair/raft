@@ -513,7 +513,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		return nil
 	}
 
-	// Reject any requests with out-date-log.
+	// Reject any requests with an out-of-date log.
 	// To determine which log is more up-to-date:
 	// 1. If the logs have last entries with different terms, then the log with the
 	//    greater term is more up-to-date.

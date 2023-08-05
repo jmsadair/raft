@@ -103,9 +103,6 @@ type persistentLog struct {
 	path string
 }
 
-// newPersistentLog creates a new instance of PersistentLog at the provided path.
-// This implementation is not concurrent safe and should only be used within the
-// RaftCore implementation.
 func newPersistentLog(path string) *persistentLog {
 	return &persistentLog{path: path}
 }

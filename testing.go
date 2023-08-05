@@ -50,10 +50,10 @@ func makePeerMaps(numServers int) []map[string]string {
 	return clusterPeers
 }
 
-func encodeOperations(entries []*Operation) ([]byte, error) {
+func encodeOperations(operations []*Operation) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(entries); err != nil {
+	if err := enc.Encode(operations); err != nil {
 		return buf.Bytes(), err
 	}
 	return buf.Bytes(), nil
@@ -102,10 +102,7 @@ func (s *stateMachineMock) Snapshot() (Snapshot, error) {
 
 	var lastIncludedIndex uint64
 	var lastIncludedTerm uint64
-	if len(s.operations) == 0 {
-		lastIncludedIndex = 0
-		lastIncludedTerm = 0
-	} else {
+	if len(s.operations) > 0 {
 		lastIncludedIndex = s.operations[len(s.operations)-1].LogIndex
 		lastIncludedTerm = s.operations[len(s.operations)-1].LogTerm
 	}
@@ -132,6 +129,37 @@ func (s *stateMachineMock) NeedSnapshot() bool {
 	defer s.mu.Unlock()
 
 	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
+}
+
+type raftArgs struct {
+	id              string
+	log             Log
+	snapshotStorage SnapshotStorage
+	storage         Storage
+	stateMachine    StateMachine
+	peers           map[string]Peer
+	responseCh      chan<- OperationResponse
+}
+
+func makeRaftArgs(t *testing.T, snapshotting bool, snapshotSize int) raftArgs {
+	tmpDir := t.TempDir()
+	id := "raft"
+	snapshotStorage := newPersistentSnapshotStorage(tmpDir + "/raft-snapshots")
+	log := newPersistentLog(tmpDir + "/raft-log")
+	storage := newPersistentStorage(tmpDir + "/raft-storage")
+	stateMachine := newStateMachineMock(snapshotting, snapshotSize)
+	peers := make(map[string]Peer)
+	responseCh := make(chan OperationResponse)
+
+	return raftArgs{
+		id:              id,
+		log:             log,
+		storage:         storage,
+		snapshotStorage: snapshotStorage,
+		peers:           peers,
+		stateMachine:    stateMachine,
+		responseCh:      responseCh,
+	}
 }
 
 type storagePaths struct {

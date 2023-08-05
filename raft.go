@@ -694,7 +694,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 
 	var entry *LogEntry
 	if r.log.Contains(request.LastIncludedIndex) {
-		entry, _ = r.log.GetEntry(r.lastIncludedIndex)
+		entry, _ = r.log.GetEntry(request.LastIncludedIndex)
 	}
 
 	// Persist the snapshot.

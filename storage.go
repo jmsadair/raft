@@ -47,8 +47,8 @@ type persistentStorage struct {
 	file *os.File
 }
 
-// newPersistentStorage creates a new instance of persistentStorage with the provided path.
-func newPersistentStorage(path string) *persistentStorage {
+// NewStorage creates a new instance of Storage at the provided path.
+func NewStorage(path string) Storage {
 	return &persistentStorage{path: path}
 }
 

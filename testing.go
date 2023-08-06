@@ -161,12 +161,6 @@ func makeDefaultRaftArgs(t *testing.T, snapshotting bool, snapshotSize int) raft
 	}
 }
 
-type storagePaths struct {
-	logPath             string
-	storagePath         string
-	snapshotStoragePath string
-}
-
 type testCluster struct {
 	// The testing instance associated with the cluster.
 	t *testing.T

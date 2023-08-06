@@ -8,7 +8,7 @@ import (
 // TestNewRaft checks that a newly created raft with no provided options does not have any persisted state and
 // has the default options.
 func TestNewRaft(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -32,7 +32,7 @@ func TestNewRaft(t *testing.T) {
 // TestAppendEntriesSuccess checks that raft handles a basic AppendEntries request that should be successful
 // correctly.
 func TestAppendEntriesSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -65,7 +65,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 // the log entries in a request are conflicting (a log entry in the request has a different term than a log
 // entry at the same index in the log).
 func TestAppendEntriesConflictSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -107,7 +107,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 // TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an AppendEntries request with a greater term than its own.
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -136,7 +136,7 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 // TestAppendEntriesOutOfDateTermFailure checks that an AppendEntries request received that has a term less than
 // the term of server that received it is rejected.
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -160,7 +160,7 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 // TestAppendEntriesPrevLogIndexFailure checks that an AppendEntries request is rejected when the log does not contain
 // an entry at the previous log index whose term match the previous log term.
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -187,7 +187,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 // TestAppendEntriesShutdownFailure checks that an error is returned when an AppendEntries request is received
 // by a server in the shutdown state.
 func TestAppendEntriesShutdownFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -206,7 +206,7 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 
 // TestRequestVoteSuccess checks that raft handles a RequestVote request that should be successful correctly.
 func TestRequestVoteSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -231,7 +231,7 @@ func TestRequestVoteSuccess(t *testing.T) {
 // TestRequestVoteLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an AppendEntries request with a greater term than its own.
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -258,7 +258,7 @@ func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 // TestRequestVoteAlreadyVotedSuccess checks that a raft instance that receives a RequestVote request from a server
 // that it already voted for grants it vote again.
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -281,7 +281,7 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 // TestRequestVoteAlreadyVotedFailure checks that a raft instance that receives a RequestVote request from a different
 // server after it already voted for another server refuses to grant its vote.
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -306,7 +306,7 @@ func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 // TestRequestVoteOutOfDateTermFailure checks that a RequestVote request received that has a term less than
 // the term of server that received it is rejected.
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -331,7 +331,7 @@ func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 // TestRequestVoteOutOfDateLogFailure checks that a RequestVote request received from a server with an out-of-date
 // log is rejected.
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -359,7 +359,7 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 // TestRequestVoteShutdownFailure checks that a RequestVote request received by a server in the shutdown state
 // is rejected and an error is returned.
 func TestRequestVoteShutdownFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -378,7 +378,7 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 // TestInstallSnapshotSuccess checks that raft handles a basic InstallSnapshot request that should be successful
 // correctly.
 func TestInstallSnapshotSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -423,7 +423,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 // TestInstallSnapshotDiscardSuccess checks that a server discards its log entries when it receives an InstallSnapshot
 // request if it does not have an entry at the last included index.
 func TestInstallSnapshotDiscardSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -473,7 +473,7 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 // request with a last included index that this server has a log entry for and the that last included term
 // matches the term of that entry.
 func TestInstallSnapshotCompactSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -523,7 +523,7 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 // TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an InstallSnapshot request with a greater term than its own.
 func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)
@@ -555,7 +555,7 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 // TestInstallSnapshotOutOfDateTermFailure checks that a InstallSnapshot request received that has a term less than
 // the term of server that received it is rejected.
 func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
-	args := makeRaftArgs(t, false, 0)
+	args := makeDefaultRaftArgs(t, false, 0)
 
 	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
 		args.stateMachine, args.responseCh)

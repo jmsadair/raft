@@ -103,7 +103,8 @@ type persistentLog struct {
 	path string
 }
 
-func newPersistentLog(path string) *persistentLog {
+// NewLog creates a new instance of Log at the provided path.
+func NewLog(path string) Log {
 	return &persistentLog{path: path}
 }
 

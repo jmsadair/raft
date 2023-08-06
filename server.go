@@ -39,14 +39,14 @@ func NewServer(id string, peers map[string]string, fsm StateMachine, logPath str
 		if err != nil {
 			return nil, errors.WrapError(err, "failed to resolve TCP address: address = %s", address)
 		}
-		grpcPeers[peer] = newPeer(peer, tcpAddr)
+		grpcPeers[peer] = NewPeer(peer, tcpAddr)
 		if peer == id {
 			listenInterface = tcpAddr
 		}
 	}
 
 	// Create log with protobuf encoding and decoding at the provided path.
-	log := newPersistentLog(logPath)
+	log := NewLog(logPath)
 
 	// Create storage with protobuf encoding and decoding at the provided path.
 	storage := newPersistentStorage(storagePath)

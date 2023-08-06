@@ -143,7 +143,7 @@ func makeRaftArgs(t *testing.T, snapshotting bool, snapshotSize int) raftArgs {
 	tmpDir := t.TempDir()
 	id := "raft"
 	snapshotStorage := newPersistentSnapshotStorage(tmpDir + "/raft-snapshots")
-	log := newPersistentLog(tmpDir + "/raft-log")
+	log := NewLog(tmpDir + "/raft-log")
 	storage := newPersistentStorage(tmpDir + "/raft-storage")
 	stateMachine := newStateMachineMock(snapshotting, snapshotSize)
 	peers := make(map[string]Peer)

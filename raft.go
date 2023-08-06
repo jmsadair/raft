@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -112,6 +113,9 @@ type OperationResponse struct {
 type Status struct {
 	// The ID of the Raft instance.
 	ID string
+
+	// The Address of the Raft instance.
+	Address net.Addr
 
 	// The current term.
 	Term uint64
@@ -511,13 +515,14 @@ func (r *Raft) SubmitReadOnlyOperation(operation []byte) error {
 }
 
 // Status returns the status of the Raft instance. The status includes
-// the ID, term, commit index, last applied index, and state.
+// the ID, address, term, commit index, last applied index, and state.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	return Status{
 		ID:          r.id,
+		Address:     r.peers[r.id].Address(),
 		Term:        r.currentTerm,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,

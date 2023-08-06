@@ -177,8 +177,7 @@ func (l *persistentLog) GetEntry(index uint64) (*LogEntry, error) {
 
 func (l *persistentLog) Contains(index uint64) bool {
 	logIndex := index - l.entries[0].Index
-	lastIndex := l.entries[len(l.entries)-1].Index
-	return !(logIndex <= 0 || logIndex > lastIndex)
+	return !(logIndex <= 0 || logIndex >= uint64(len(l.entries)))
 }
 
 func (l *persistentLog) AppendEntry(entry *LogEntry) error {
@@ -216,8 +215,7 @@ func (l *persistentLog) Truncate(index uint64) error {
 	}
 
 	logIndex := index - l.entries[0].Index
-	lastIndex := l.entries[len(l.entries)-1].Index
-	if logIndex <= 0 || logIndex > lastIndex {
+	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
 		return errIndexDoesNotExist
 	}
 
@@ -245,12 +243,11 @@ func (l *persistentLog) Compact(index uint64) error {
 	}
 
 	logIndex := index - l.entries[0].Index
-	lastIndex := l.entries[len(l.entries)-1].Index
-	if logIndex <= 0 || logIndex > lastIndex {
+	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
 		return errIndexDoesNotExist
 	}
 
-	newEntries := make([]*LogEntry, len(l.entries)-int(logIndex))
+	newEntries := make([]*LogEntry, uint64(len(l.entries))-logIndex)
 	copy(newEntries[:], l.entries[logIndex:])
 
 	// Create a temporary file to write the compacted log to.

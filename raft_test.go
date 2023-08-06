@@ -10,7 +10,8 @@ import (
 func TestNewRaft(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	require.Zero(t, raft.currentTerm)
@@ -33,7 +34,8 @@ func TestNewRaft(t *testing.T) {
 func TestAppendEntriesSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -65,7 +67,8 @@ func TestAppendEntriesSuccess(t *testing.T) {
 func TestAppendEntriesConflictSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -75,7 +78,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	request := &AppendEntriesRequest{
 		LeaderID: "leader1",
 		Term:     2,
-		Entries:  []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 1, []byte("operation2"))},
+		Entries: []*LogEntry{NewLogEntry(1, 1, []byte("operation1")),
+			NewLogEntry(2, 1, []byte("operation2"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -83,7 +87,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.True(t, response.Success)
 	require.Equal(t, uint64(2), response.Term)
 
-	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")), NewLogEntry(2, 2, []byte("operation2"))}
+	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")),
+		NewLogEntry(2, 2, []byte("operation2"))}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
@@ -104,7 +109,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -132,7 +138,8 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -155,7 +162,8 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -181,7 +189,8 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 func TestAppendEntriesShutdownFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	request := &AppendEntriesRequest{
@@ -199,7 +208,8 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 func TestRequestVoteSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -223,7 +233,8 @@ func TestRequestVoteSuccess(t *testing.T) {
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -249,7 +260,8 @@ func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -271,7 +283,8 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -295,7 +308,8 @@ func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -319,7 +333,8 @@ func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -346,7 +361,8 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 func TestRequestVoteShutdownFailure(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	request := &RequestVoteRequest{
@@ -364,7 +380,8 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 func TestInstallSnapshotSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -408,7 +425,8 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -457,7 +475,8 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	args := makeRaftArgs(t, false, 0)
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage, args.stateMachine, args.responseCh)
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -499,4 +518,73 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), snapshot.LastIncludedIndex)
 	require.Equal(t, uint64(0), snapshot.LastIncludedTerm)
+}
+
+// TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
+// follower state when it receives an InstallSnapshot request with a greater term than its own.
+func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.state = Leader
+
+	bytes, err := encodeOperations([]*Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}})
+	require.NoError(t, err)
+
+	request := &InstallSnapshotRequest{
+		LeaderID:          "leader1",
+		Term:              2,
+		LastIncludedIndex: 1,
+		LastIncludedTerm:  1,
+		Bytes:             bytes,
+	}
+
+	response := &InstallSnapshotResponse{}
+
+	require.NoError(t, raft.InstallSnapshot(request, response))
+	require.Equal(t, uint64(2), response.Term)
+
+	require.Equal(t, Follower, raft.state)
+	require.Equal(t, uint64(2), raft.currentTerm)
+}
+
+// TestInstallSnapshotOutOfDateTermFailure checks that a InstallSnapshot request received that has a term less than
+// the term of server that received it is rejected.
+func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
+	args := makeRaftArgs(t, false, 0)
+
+	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
+		args.stateMachine, args.responseCh)
+	require.NoError(t, err)
+
+	raft.currentTerm = 2
+	raft.votedFor = "leader1"
+	raft.state = Follower
+
+	bytes, err := encodeOperations([]*Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}})
+	require.NoError(t, err)
+
+	request := &InstallSnapshotRequest{
+		LeaderID:          "leader1",
+		Term:              1,
+		LastIncludedIndex: 1,
+		LastIncludedTerm:  1,
+		Bytes:             bytes,
+	}
+
+	response := &InstallSnapshotResponse{}
+
+	require.NoError(t, raft.InstallSnapshot(request, response))
+	require.Equal(t, uint64(2), response.Term)
+
+	// Make sure that the snapshot was actually not installed.
+	require.Equal(t, uint64(0), raft.commitIndex)
+	require.Equal(t, uint64(0), raft.lastApplied)
+	require.Equal(t, uint64(0), raft.lastIncludedIndex)
+	require.Equal(t, uint64(0), raft.lastIncludedTerm)
+	require.Len(t, raft.snapshotStorage.ListSnapshots(), 0)
 }

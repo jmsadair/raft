@@ -636,6 +636,8 @@ func (tc *testCluster) restartServer(server int) {
 	snapshots := tc.servers[server].ListSnapshots()
 	if len(snapshots) > 0 {
 		tc.lastApplied[server] = snapshots[len(snapshots)-1].LastIncludedIndex
+	} else {
+		tc.lastApplied[server] = 0
 	}
 	tc.servers[server] = newServer
 	tc.operationResponses[server] = make(map[uint64]OperationResponse)

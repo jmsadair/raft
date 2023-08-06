@@ -8,10 +8,11 @@ import (
 // TestNewRaft checks that a newly created raft with no provided options does not have any persisted state and
 // has the default options.
 func TestNewRaft(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	require.Zero(t, raft.currentTerm)
@@ -32,10 +33,11 @@ func TestNewRaft(t *testing.T) {
 // TestAppendEntriesSuccess checks that raft handles a basic AppendEntries request that should be successful
 // correctly.
 func TestAppendEntriesSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -65,10 +67,11 @@ func TestAppendEntriesSuccess(t *testing.T) {
 // the log entries in a request are conflicting (a log entry in the request has a different term than a log
 // entry at the same index in the log).
 func TestAppendEntriesConflictSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -107,10 +110,11 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 // TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an AppendEntries request with a greater term than its own.
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -136,10 +140,11 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 // TestAppendEntriesOutOfDateTermFailure checks that an AppendEntries request received that has a term less than
 // the term of server that received it is rejected.
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -160,10 +165,11 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 // TestAppendEntriesPrevLogIndexFailure checks that an AppendEntries request is rejected when the log does not contain
 // an entry at the previous log index whose term match the previous log term.
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -187,10 +193,11 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 // TestAppendEntriesShutdownFailure checks that an error is returned when an AppendEntries request is received
 // by a server in the shutdown state.
 func TestAppendEntriesShutdownFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	request := &AppendEntriesRequest{
@@ -206,10 +213,11 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 
 // TestRequestVoteSuccess checks that raft handles a RequestVote request that should be successful correctly.
 func TestRequestVoteSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -231,10 +239,11 @@ func TestRequestVoteSuccess(t *testing.T) {
 // TestRequestVoteLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an AppendEntries request with a greater term than its own.
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -258,10 +267,11 @@ func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 // TestRequestVoteAlreadyVotedSuccess checks that a raft instance that receives a RequestVote request from a server
 // that it already voted for grants it vote again.
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -281,10 +291,11 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 // TestRequestVoteAlreadyVotedFailure checks that a raft instance that receives a RequestVote request from a different
 // server after it already voted for another server refuses to grant its vote.
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -306,10 +317,11 @@ func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 // TestRequestVoteOutOfDateTermFailure checks that a RequestVote request received that has a term less than
 // the term of server that received it is rejected.
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -331,10 +343,11 @@ func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 // TestRequestVoteOutOfDateLogFailure checks that a RequestVote request received from a server with an out-of-date
 // log is rejected.
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -359,10 +372,11 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 // TestRequestVoteShutdownFailure checks that a RequestVote request received by a server in the shutdown state
 // is rejected and an error is returned.
 func TestRequestVoteShutdownFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	request := &RequestVoteRequest{
@@ -378,10 +392,11 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 // TestInstallSnapshotSuccess checks that raft handles a basic InstallSnapshot request that should be successful
 // correctly.
 func TestInstallSnapshotSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -413,7 +428,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
-	snapshot, err := args.stateMachine.Snapshot()
+	snapshot, err := raft.fsm.Snapshot()
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), snapshot.LastIncludedIndex)
 	require.Equal(t, uint64(1), snapshot.LastIncludedTerm)
@@ -423,10 +438,11 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 // TestInstallSnapshotDiscardSuccess checks that a server discards its log entries when it receives an InstallSnapshot
 // request if it does not have an entry at the last included index.
 func TestInstallSnapshotDiscardSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -462,7 +478,7 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
-	snapshot, err := args.stateMachine.Snapshot()
+	snapshot, err := raft.fsm.Snapshot()
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), snapshot.LastIncludedIndex)
 	require.Equal(t, uint64(2), snapshot.LastIncludedTerm)
@@ -473,10 +489,11 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 // request with a last included index that this server has a log entry for and the that last included term
 // matches the term of that entry.
 func TestInstallSnapshotCompactSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -514,7 +531,7 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.False(t, raft.log.Contains(2))
 
 	// The log had a matching entry at the last included index - the state machine should not be restored.
-	snapshot, err := args.stateMachine.Snapshot()
+	snapshot, err := raft.fsm.Snapshot()
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), snapshot.LastIncludedIndex)
 	require.Equal(t, uint64(0), snapshot.LastIncludedTerm)
@@ -523,10 +540,11 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 // TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
 // follower state when it receives an InstallSnapshot request with a greater term than its own.
 func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -555,10 +573,11 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 // TestInstallSnapshotOutOfDateTermFailure checks that a InstallSnapshot request received that has a term less than
 // the term of server that received it is rejected.
 func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
-	args := makeDefaultRaftArgs(t, false, 0)
+	tmpDir := t.TempDir()
 
-	raft, err := NewRaft(args.id, args.peers, args.log, args.storage, args.snapshotStorage,
-		args.stateMachine, args.responseCh)
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
+		NewStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+		newStateMachineMock(false, 0), make(chan OperationResponse))
 	require.NoError(t, err)
 
 	raft.currentTerm = 2

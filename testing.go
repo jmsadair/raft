@@ -130,37 +130,6 @@ func (s *stateMachineMock) NeedSnapshot() bool {
 	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
 }
 
-type raftArgs struct {
-	id              string
-	log             Log
-	snapshotStorage SnapshotStorage
-	storage         Storage
-	stateMachine    StateMachine
-	peers           map[string]Peer
-	responseCh      chan<- OperationResponse
-}
-
-func makeDefaultRaftArgs(t *testing.T, snapshotting bool, snapshotSize int) raftArgs {
-	tmpDir := t.TempDir()
-	id := "raft"
-	snapshotStorage := NewSnapshotStorage(tmpDir + "/raft-snapshots")
-	log := NewLog(tmpDir + "/raft-log")
-	storage := NewStorage(tmpDir + "/raft-storage")
-	stateMachine := newStateMachineMock(snapshotting, snapshotSize)
-	peers := make(map[string]Peer)
-	responseCh := make(chan OperationResponse)
-
-	return raftArgs{
-		id:              id,
-		log:             log,
-		storage:         storage,
-		snapshotStorage: snapshotStorage,
-		peers:           peers,
-		stateMachine:    stateMachine,
-		responseCh:      responseCh,
-	}
-}
-
 type testCluster struct {
 	// The testing instance associated with the cluster.
 	t *testing.T

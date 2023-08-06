@@ -21,6 +21,9 @@ type Peer interface {
 	// ID returns the ID of the peer.
 	ID() string
 
+	// Address returns the network address of the peer.
+	Address() net.Addr
+
 	// Connect establishes a connection with the peer.
 	Connect() error
 

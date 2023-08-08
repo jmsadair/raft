@@ -148,8 +148,8 @@ type Protocol interface {
 	// and an error if the operation failed to be added.
 	SubmitOperation(operation []byte) (uint64, uint64, error)
 
-	// SubmitReadOnlyOperation takes a byte array representing a read-only operation and
-	// adds it to the protocol's log. It returns an error if the operation failed to be added.
+	// SubmitReadOnlyOperation takes a byte array representing a read-only operation and applies
+	// it to the state machine without adding it to the protocol's log.
 	SubmitReadOnlyOperation(operation []byte) error
 
 	// Status returns the current status of the protocol. The returned status includes information

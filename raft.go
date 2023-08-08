@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -113,6 +114,9 @@ type Status struct {
 	// The ID of the Raft instance.
 	ID string
 
+	// The Address of the Raft instance.
+	Address net.Addr
+
 	// The current term.
 	Term uint64
 
@@ -126,8 +130,53 @@ type Status struct {
 	State State
 }
 
-// Raft represents the consensus module in the Raft architecture, a distributed consensus algorithm
-// designed for fault-tolerant systems. This implementation of Raft should be utilized as the internal
+// Protocol represents an abstraction of the raft consensus protocol.
+// The raft protocol is a distributed consensus algorithm designed for fault-tolerant systems.
+// It provides functions to start and stop the protocol, submit operations, check the status and manage snapshots.
+type Protocol interface {
+	// Start initializes the consensus protocol and prepares it to receive commands.
+	// It may involve establishing network connections, allocating resources etc.
+	// Returns error if the initialization fails.
+	Start() error
+
+	// Stop shuts down the consensus protocol safely. It may involve releasing resources,
+	// closing network connections etc. Returns error if the shutdown fails.
+	Stop() error
+
+	// SubmitOperation takes a byte array representing an operation and adds it to the
+	// protocol's log. It returns the log index and term where the operation was stored,
+	// and an error if the operation failed to be added.
+	SubmitOperation(operation []byte) (uint64, uint64, error)
+
+	// SubmitReadOnlyOperation takes a byte array representing a read-only operation and applies
+	// it to the state machine without adding it to the protocol's log.
+	SubmitReadOnlyOperation(operation []byte) error
+
+	// Status returns the current status of the protocol. The returned status includes information
+	// like the current term, whether the protocol is a leader, follower or candidate, and more.
+	Status() Status
+
+	// RequestVote handles vote requests from other nodes during elections. It takes a vote request
+	// and fills the response with the result of the vote. It returns an error if the vote request
+	// fails to be processed.
+	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
+
+	// AppendEntries handles log replication requests from the leader. It takes a request to append
+	// entries and fills the response with the result of the append operation. It returns an error
+	// if the append operation fails.
+	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
+
+	// InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
+	// install a snapshot and fills the response with the result of the installation. It returns an
+	// error if the snapshot installation process fails.
+	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
+
+	// ListSnapshots returns a list of all snapshots currently stored by the protocol.
+	// Snapshots are used for log compaction and to bring new servers up to date.
+	ListSnapshots() []Snapshot
+}
+
+// Raft implements the Protocol interface. This implementation of Raft should be utilized as the internal
 // logic for an actual server, as it solely encapsulates the core functionality of Raft and cannot operate
 // as a standalone server.
 type Raft struct {
@@ -466,13 +515,14 @@ func (r *Raft) SubmitReadOnlyOperation(operation []byte) error {
 }
 
 // Status returns the status of the Raft instance. The status includes
-// the ID, term, commit index, last applied index, and state.
+// the ID, address, term, commit index, last applied index, and state.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	return Status{
 		ID:          r.id,
+		Address:     r.peers[r.id].Address(),
 		Term:        r.currentTerm,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,

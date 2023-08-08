@@ -9,7 +9,7 @@ import (
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -60,7 +60,7 @@ func TestAppendEntries(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -111,7 +111,7 @@ func TestTruncate(t *testing.T) {
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -178,7 +178,7 @@ func TestCompact(t *testing.T) {
 func TestDiscard(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -210,7 +210,7 @@ func TestDiscard(t *testing.T) {
 func TestContains(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())

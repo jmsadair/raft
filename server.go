@@ -15,56 +15,19 @@ import (
 // and fault tolerance.
 type Server struct {
 	pb.UnimplementedRaftServer
-	id              string
 	listenInterface net.Addr
 	listener        net.Listener
 	server          *grpc.Server
-	raft            *Raft
+	raft            Protocol
 	wg              sync.WaitGroup
 }
 
-// NewServer creates a new instance of a Server with the provided ID. The provided peers are the peers that will make up the cluster, including
-// the ID and network address of this server. The log path, storage path, and snapshot path specify the locations where the underlying Raft
-// instance persists its state. If the state is already persisted at these paths, it will be read into memory and Raft will be initialized with that state.
-// Otherwise, new files will be created at those paths. Responses from the state machine after applying an operation will be sent over the provided
-// response channel. The response channel must be monitored; otherwise, the server may be blocked.
-func NewServer(id string, peers map[string]string, fsm StateMachine, logPath string, storagePath string, snapshotPath string,
-	responseCh chan<- OperationResponse, opts ...Option) (*Server, error) {
-	var listenInterface net.Addr
-
-	// Create peers.
-	grpcPeers := make(map[string]Peer, len(peers))
-	for peer, address := range peers {
-		tcpAddr, err := net.ResolveTCPAddr("tcp", address)
-		if err != nil {
-			return nil, errors.WrapError(err, "failed to resolve TCP address: address = %s", address)
-		}
-		grpcPeers[peer] = newPeer(peer, tcpAddr)
-		if peer == id {
-			listenInterface = tcpAddr
-		}
-	}
-
-	// Create log with protobuf encoding and decoding at the provided path.
-	log := newPersistentLog(logPath)
-
-	// Create storage with protobuf encoding and decoding at the provided path.
-	storage := newPersistentStorage(storagePath)
-
-	// Create snapshot storage with protobuf encoding and decoding at the provided path.
-	snapshotStorage := newPersistentSnapshotStorage(snapshotPath)
-
-	raft, err := NewRaft(id, grpcPeers, log, storage, snapshotStorage, fsm, responseCh, opts...)
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to create a raft server: ID = %s", id)
-	}
-
+// NewServer creates a new instance of a Server with a raft instance that satisfies the Protocol interface.
+func NewServer(raft Protocol) (*Server, error) {
 	server := &Server{
-		id:              id,
-		listenInterface: listenInterface,
+		listenInterface: raft.Status().Address,
 		raft:            raft,
 	}
-
 	return server, nil
 }
 

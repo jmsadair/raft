@@ -68,9 +68,9 @@ type persistentSnapshotStorage struct {
 	file *os.File
 }
 
-// newPersistentSnapshotStorage creates a new instance of PersistentSnapshotStorage at the
+// NewSnapshotStorage creates a new instance of SnapshotStorage at the
 // provided path.
-func newPersistentSnapshotStorage(path string) *persistentSnapshotStorage {
+func NewSnapshotStorage(path string) SnapshotStorage {
 	return &persistentSnapshotStorage{path: path}
 }
 

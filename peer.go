@@ -21,6 +21,9 @@ type Peer interface {
 	// ID returns the ID of the peer.
 	ID() string
 
+	// Address returns the network address of the peer.
+	Address() net.Addr
+
 	// Connect establishes a connection with the peer.
 	Connect() error
 
@@ -60,9 +63,9 @@ type peer struct {
 	mu sync.RWMutex
 }
 
-// newPeer creates a new instance of a peer with
-// the provided ID and network address.
-func newPeer(id string, address net.Addr) *peer {
+// NewPeer creates a new Peer instance. The function establishes a gRPC client
+// for making Raft protocol calls to the peer. This function is concurrent-safe.
+func NewPeer(id string, address net.Addr) Peer {
 	return &peer{id: id, address: address}
 }
 

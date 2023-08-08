@@ -18,7 +18,7 @@ import "time"
 // Note that the lease mechanism depends on clock synchronization
 // between the nodes of the distributed system. Clock skew might
 // cause a node to incorrectly assume that its lease is still valid,
-// or conversely, that it has already ex
+// or conversely, that it has already expired.
 type lease struct {
 	// Time at which the lease expires.
 	expiration time.Time

@@ -9,7 +9,7 @@ import (
 func TestPersistentStorageSetGet(t *testing.T) {
 	tmpDir := t.TempDir()
 	storageFile := tmpDir + "/test-storage.bin"
-	storage := newPersistentStorage(storageFile)
+	storage := NewStorage(storageFile)
 
 	require.NoError(t, storage.Open())
 

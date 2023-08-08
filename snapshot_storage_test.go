@@ -9,7 +9,7 @@ import (
 func TestSnapshotStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	storageFile := tmpDir + "/test-snap-storage.bin"
-	snapshotStore := newPersistentSnapshotStorage(storageFile)
+	snapshotStore := NewSnapshotStorage(storageFile)
 
 	require.NoError(t, snapshotStore.Open())
 	require.NoError(t, snapshotStore.Replay())

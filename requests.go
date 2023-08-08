@@ -80,7 +80,7 @@ type InstallSnapshotRequest struct {
 
 // InstallSnapshotResponse is a response to a snapshot installation.
 type InstallSnapshotResponse struct {
-	// The term of the server that recieved the request.
+	// The term of the server that received the request.
 	Term uint64
 }
 

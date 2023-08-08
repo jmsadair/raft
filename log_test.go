@@ -9,7 +9,7 @@ import (
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -60,7 +60,7 @@ func TestAppendEntries(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -111,7 +111,7 @@ func TestTruncate(t *testing.T) {
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -178,7 +178,7 @@ func TestCompact(t *testing.T) {
 func TestDiscard(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := tmpDir + "/test-log.bin"
-	log := newPersistentLog(path)
+	log := NewLog(path)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -205,4 +205,27 @@ func TestDiscard(t *testing.T) {
 	// Make sure the last index and last term are correct.
 	require.Equal(t, discardIndex, log.LastIndex())
 	require.Equal(t, discardTerm, log.LastTerm())
+}
+
+func TestContains(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/test-log.bin"
+	log := NewLog(path)
+
+	require.NoError(t, log.Open())
+	require.NoError(t, log.Replay())
+	defer func() { require.NoError(t, log.Close()) }()
+
+	// Make sure that placeholder entry is not visible.
+	require.False(t, log.Contains(0))
+
+	// Add an entry to the log.
+	var entry1Index uint64 = 1
+	var entry1Term uint64 = 1
+	entry1Data := []byte("entry1")
+	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data)
+	require.NoError(t, log.AppendEntry(entry1))
+
+	// Ensure log contains newly added entry
+	require.True(t, log.Contains(entry1Index))
 }

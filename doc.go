@@ -1,14 +1,16 @@
 /*
-This library provides a simple, easy-to-understand, and reliable implementation of Raft using Go. Raft is a consensus protocol designed to manage replicated logs
-in a distributed system. Its purpose is to ensure fault-tolerant coordination and consistency among a group of nodes, making it suitable for building reliable
-systems. Potential use cases include distributed file systems, consistent key-value stores, and service discovery.
+This library provides a simple, easy-to-understand, and reliable implementation of Raft using Go. Raft is a consensus
+protocol designed to manage replicated logs in a distributed system. Its purpose is to ensure fault-tolerant coordination
+and consistency among a group of nodes, making it suitable for building reliable systems. Potential use cases include
+distributed file systems, consistent key-value stores, and service discovery.
 
-There are two ways that this library can be used. The first way is to use the Raft implementation to create a custom server. This may be useful if you wish to
-use a different communication protocol or the provided storage implementations are not sufficient for your use case. The second way is to use the provided Server
-implementation. This is covered below.
+There are two ways that this library can be used. The first way is to use the Raft implementation to create a custom server.
+This may be useful if you wish to use a different communication protocol. The second way is to use the provided Server
+implementation, which employs gRPC and protobuf. This is covered below.
 
-To set up a server, the first step is to define the state machine that is to be replicated. This state machine must implement that StateMachine interface, and it must be concurrent safe.
-Here is an example of a type that implements the StateMachine interface.
+To set up a server, the first step is to define the state machine that is to be replicated. This state machine must
+implement that StateMachine interface, and it must be concurrent safe. Here is an example of a type that implements
+the StateMachine interface.
 
 	// Op represents an operation on the state machine.
 	type Op int
@@ -133,38 +135,50 @@ Here is an example of a type that implements the StateMachine interface.
 	    return s.lastIndex % 100 == 0
 	}
 
-Now, create a map that maps server IDs to their respective address. This map should contain the ID and address
-of all the servers in the cluster, including this one.
+Now, create a map that maps Raft IDs to their respective Peer. This map should contain the ID and corresponding Peer
+of all the Raft instances in the cluster, including this one.
 
+	peerAddr1, _ := net.ResolveTCPAddr("tcp", "127.0.0.1:8080")
+	peerAddr2, _ := net.ResolveTCPAddr("tcp", "127.0.0.2:8080")
+	peerAddr3, _ := net.ResolveTCPAddr("tcp", "127.0.0.3:8080")
 	peers := map[string]string{
-	    "raft-1": "127.0.0.0:8080",
-	    "raft-2": "127.0.0.1:8080",
-	    "raft-3": "127.0.0.2:8080",
+	    "raft-1": raft.NewPeer("raft-1", peerAddr1),
+	    "raft-2": raft.NewPeer("raft-2", peerAddr2),
+	    "raft-3": raft.NewPeer("raft-1", peerAddr3),
 	}
 
-Then, select the paths for where the server persist its state. Note that if the file at the path exists, the server will read it into memory
-and initialize itself with the content. Otherwise, the server will create the file. There are three paths the server expects: the log path, the storage path, and
-the snapshot storage path. The log path specifies where the server will persist its log entries. The storage path specifies where the server will persist
-its term and vote. The snapshot path specifies where the server will persist any snapshots that it takes.
+Then, create the Log, Storage, and SnapshotStorage instances that Raft will use to persist its state. Note that if the
+file at the path exists, Raft will read it into memory and initialize itself with the content. Otherwise, Raft will create
+the file.
 
-	logPath := "raft-1-log"
-	storagePath := "raft-1-storage"
-	snapshotPath := "raft-1-snapshots"
+	log := raft.NewLog("raft-1-log.bin")
+	storage := raft.NewStorage("raft-1-storage.bin")
+	snapshotStorage := raft.NewSnapshotStorage("raft-1-snapshots.bin")
 
 Now, create the channel that responses from the state machine will be relayed over. Note that, when the server is started, it is important that
 this channel is always being monitored. Otherwise, the internal Raft implementation will become blocked.
 
 	responseCh := make(chan raft.OperationResponse)
 
-Next, create an instance of the state machine implementation.
+Next, create an instance of the StateMachine implementation.
 
 	fsm := new(StateMachine)
 
-The server may now be created as below.
+A Raft instance may now be created as below.
 
-	server, err := raft.NewServer("raft-1", peers, fsm, logPath, storagePath, snapshotPath, responseCh)
+	raft, err := raft.NewRaft("raft-1", peers, log, storage, snapshotStorage, fsm, responseCh)
 
-Here is how to start the server.
+Note that you can also specify options such as election timeout and lease duration when creating a new
+Raft instance. For example, the below code will create a Raft instance that uses 500 milliseconds as its
+election timeout. If no options are provided, the default options are used.
+
+	raft, err := raft.NewRaft("raft-1", peers, log, storage, snapshotStorage, fsm, responseCh, raft.WithElectionTimeout(500*time.Millisecond))
+
+All that remains is to create a Server instance and start it.
+
+	server, err := raft.NewServer(raft)
+
+Here is how to start the Server instance.
 
 	// This sends a signal to the Raft implementation to start.
 	readyCh := make(chan interface{})
@@ -185,7 +199,7 @@ Here is how to start the server.
 	// Start Raft.
 	close(readyCh)
 
-Finally, here is how to submit an operation to the server once it is started. A normal operation may be submitted or,
+Finally, here is how to submit an operation to the Server instance once it is started. A normal operation may be submitted or,
 alternatively, a read-only operation may be submitted. Generally, read-only operations will offer much better performance than standard
 operations due to the fact that they are not added to the log or replicated. However, read-only operations are implemented
 using leases. This means that they are not safe - a read-only operation may read stale or incorrect data under certian
@@ -212,7 +226,7 @@ either type of operation will be written to the response channel provided to the
 	err := server.SubmitReadOnlyOperation([]byte{})
 
 Be warned that this is a highly simplified example that demonstrates how raft may be used and some of its features.
-This implementation leaves out many details that would typically be associated with a system that uses raft such
+This implementation leaves out many details that would typically be associated with a system that uses Raft such
 as duplicate detection and retry mechanisms.
 */
 package raft

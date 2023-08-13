@@ -36,4 +36,5 @@ The following features are currently in development or are intended to be added 
 - Batched log writes to improve disk I/O
 - Membership changes
 
-Other developers are encouraged to contribute to this project and pull requests are welcome.
+Other developers are encouraged to contribute to this project and pull requests are welcome. Please read
+these [guidelines](.github/CONTRIBUTING.md) if you are interested in contributing.

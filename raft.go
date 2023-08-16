@@ -80,35 +80,6 @@ func (s State) String() string {
 	}
 }
 
-// Operation is an operation that will be applied to the state machine.
-// An operation must be deterministic.
-type Operation struct {
-	// The operation as bytes. The provided state machine should be capable
-	// of decoding these bytes.
-	Bytes []byte
-
-	// Indicates whether the operation is read-only. If it is, the log index
-	// and log term will not be valid as there is no log entry associated with
-	// the operation.
-	IsReadOnly bool
-
-	// The log entry index associated with the operation.
-	LogIndex uint64
-
-	// The log entry term associated with the operation.
-	LogTerm uint64
-}
-
-// OperationResponse is the response that is generated after applying
-// an operation to the state machine.
-type OperationResponse struct {
-	// The operation applied to the state machine.
-	Operation Operation
-
-	// The response returned by the state machine after applying the operation.
-	Response interface{}
-}
-
 // Status is the status of a Raft instance.
 type Status struct {
 	// The ID of the Raft instance.

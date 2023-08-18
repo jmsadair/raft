@@ -34,6 +34,9 @@ type Operation struct {
 
 	// The log entry term associated with the operation.
 	LogTerm uint64
+
+	// The channel that the result of the operation will be sent over.
+	ResponseCh chan OperationResponse
 }
 
 // OperationResponse is the response that is generated after applying
@@ -44,6 +47,9 @@ type OperationResponse struct {
 
 	// The response returned by the state machine after applying the operation.
 	Response interface{}
+
+	// An error encountered during the processing of the response, if any.
+	Err error
 }
 
 // OperationResponseFuture represents a future response for an operation.
@@ -70,14 +76,13 @@ func NewOperationResponseFuture(operation []byte, timeout time.Duration) *Operat
 }
 
 // Await waits for the response associated with the future operation.
-// If the response does not arrive within the specified timeout, an OperationTimeoutError is returned.
-func (o *OperationResponseFuture) Await() (OperationResponse, error) {
+func (o *OperationResponseFuture) Await() OperationResponse {
 	for {
 		select {
 		case response := <-o.responseCh:
-			return response, nil
+			return response
 		case <-time.After(o.timeout):
-			return OperationResponse{}, OperationTimeoutError{operation: o.operation}
+			return OperationResponse{Err: OperationTimeoutError{operation: o.operation}}
 		}
 	}
 }

@@ -19,8 +19,8 @@ func TestOperationResponseFutureAwaitSuccess(t *testing.T) {
 		future.responseCh <- OperationResponse{}
 	}()
 
-	_, err := future.Await()
-	require.NoError(t, err)
+	response := future.Await()
+	require.NoError(t, response.Err)
 }
 
 // TestOperationFutureAwaitSuccess checks that OperationResponseFuture.Await times out and
@@ -31,6 +31,6 @@ func TestOperationResponseFutureAwaitTimeout(t *testing.T) {
 
 	future := NewOperationResponseFuture(operation, timeout)
 
-	_, err := future.Await()
-	require.Error(t, err)
+	response := future.Await()
+	require.Error(t, response.Err)
 }

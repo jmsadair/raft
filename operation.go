@@ -76,6 +76,9 @@ func NewOperationResponseFuture(operation []byte, timeout time.Duration) *Operat
 }
 
 // Await waits for the response associated with the future operation.
+// Note that the returned response may contain an error which should always be
+// checked before consuming the content of the response. The content is not valid
+// if the error is not nil.
 func (o *OperationResponseFuture) Await() OperationResponse {
 	for {
 		select {

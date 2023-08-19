@@ -27,7 +27,9 @@ type Snapshot struct {
 // NewSnapshot creates a new Snapshot instance with the provided state data
 // from the replicated state machine.
 func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) *Snapshot {
-	return &Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: data}
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy[:], data)
+	return &Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: dataCopy}
 }
 
 // SnapshotStorage is an interface representing the internal component of Raft that is responsible

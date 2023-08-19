@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
@@ -87,8 +88,8 @@ func (s *Server) IsStarted() bool {
 // It forwards the operation to the underlying Raft instance for handling
 // and returns the index and term assigned to the operation, as well as
 // an error if submitting the operation failed.
-func (s *Server) SubmitOperation(operation []byte) (uint64, uint64, error) {
-	return s.raft.SubmitOperation(operation)
+func (s *Server) SubmitOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
+	return s.raft.SubmitOperation(operation, timeout)
 }
 
 // SubmitReadOnlyOperation submits an operation (as bytes) to the server for
@@ -97,8 +98,8 @@ func (s *Server) SubmitOperation(operation []byte) (uint64, uint64, error) {
 // generally much more performant than standard, replicated operations. However,
 // be warned that read-only operations are NOT safe. It is possible that stale or
 // incorrect data may be returned under certain conditions.
-func (s *Server) SubmitReadOnlyOperation(operation []byte) error {
-	return s.raft.SubmitReadOnlyOperation(operation)
+func (s *Server) SubmitReadOnlyOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
+	return s.raft.SubmitReadOnlyOperation(operation, timeout)
 }
 
 // ListSnapshots returns an array of all the snapshots that the underlying

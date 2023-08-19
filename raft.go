@@ -117,11 +117,11 @@ type Protocol interface {
 	// SubmitOperation takes a byte array representing an operation and adds it to the
 	// protocol's log. It returns the log index and term where the operation was stored,
 	// and an error if the operation failed to be added.
-	SubmitOperation(operation []byte, timeout time.Duration) OperationResponseFuture
+	SubmitOperation(operation []byte, timeout time.Duration) *OperationResponseFuture
 
 	// SubmitReadOnlyOperation takes a byte array representing a read-only operation and applies
 	// it to the state machine without adding it to the protocol's log.
-	SubmitReadOnlyOperation(operation []byte, timeout time.Duration) OperationResponseFuture
+	SubmitReadOnlyOperation(operation []byte, timeout time.Duration) *OperationResponseFuture
 
 	// Status returns the current status of the protocol. The returned status includes information
 	// like the current term, whether the protocol is a leader, follower or candidate, and more.
@@ -1179,6 +1179,7 @@ func (r *Raft) applyLoop() {
 func (r *Raft) fsmLoop() {
 	for operation := range r.fsmCh {
 		response := OperationResponse{Operation: *operation}
+		r.options.logger.Debugf("server %s applying operation", r.id)
 
 		// Ensure that the lease is valid before performing read-only operation.
 		// This check should be as close as possible to where the operation is

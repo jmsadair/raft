@@ -853,8 +853,6 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 		if r.hasQuorum(*numResponses) {
 			r.lease.renew()
 			numResponses = nil
-			r.options.logger.Debugf("server %s renewed its lease", r.id)
-
 		}
 	}
 

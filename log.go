@@ -77,15 +77,12 @@ type LogEntry struct {
 
 	// The Data of the log entry.
 	Data []byte
-
-	// Used to transmit responses to operations.
-	ResponseCh chan OperationResponse
 }
 
 // NewLogEntry creates a new instance of LogEntry with the provided
 // index, term, and data.
-func NewLogEntry(index uint64, term uint64, data []byte, responseCh chan OperationResponse) *LogEntry {
-	return &LogEntry{Index: index, Term: term, Data: data, ResponseCh: responseCh}
+func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
+	return &LogEntry{Index: index, Term: term, Data: data}
 }
 
 // IsConflict checks whether the current log entry conflicts with another log entry.
@@ -138,7 +135,7 @@ func (l *persistentLog) Replay() error {
 	// The log must always contain at least one entry.
 	// The first entry is a placeholder entry used for indexing into the log.
 	if len(l.entries) == 0 {
-		entry := NewLogEntry(0, 0, nil, nil)
+		entry := NewLogEntry(0, 0, nil)
 		if err := encodeLogEntry(l.file, entry); err != nil {
 			return errors.WrapError(err, "failed to encode log entry")
 		}

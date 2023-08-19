@@ -115,12 +115,13 @@ type Protocol interface {
 	Stop() error
 
 	// SubmitOperation takes a byte array representing an operation and adds it to the
-	// protocol's log. It returns the log index and term where the operation was stored,
-	// and an error if the operation failed to be added.
+	// protocol's log. It returns an OperationResponseFuture with the provided timeout,
+	// representing a future response to applying the operation to the state machine.
 	SubmitOperation(operation []byte, timeout time.Duration) *OperationResponseFuture
 
 	// SubmitReadOnlyOperation takes a byte array representing a read-only operation and applies
-	// it to the state machine without adding it to the protocol's log.
+	// it to the state machine without adding it to the protocol's log. It returns an OperationResponseFuture
+	// with the provided timeout, representing a future response to applying the operation to the state machine.
 	SubmitReadOnlyOperation(operation []byte, timeout time.Duration) *OperationResponseFuture
 
 	// Status returns the current status of the protocol. The returned status includes information
@@ -168,6 +169,10 @@ type Raft struct {
 
 	// This contains the highest log entry known to be replicated on each sever.
 	matchIndex map[string]uint64
+
+	// Outstanding futures that have yet to be filled. Maps log index to the corresponding future.
+	// Does not include futures for read-only operations.
+	pendingFutures map[uint64]*OperationResponseFuture
 
 	// A lease for the leader to serve read-only operations, must be nil if the server is not the leader.
 	lease *lease
@@ -306,6 +311,7 @@ func NewRaft(id string, peers map[string]Peer, log Log, storage Storage, snapsho
 		peers:           peers,
 		nextIndex:       nextIndex,
 		matchIndex:      matchIndex,
+		pendingFutures:  make(map[uint64]*OperationResponseFuture),
 		log:             log,
 		storage:         storage,
 		snapshotStorage: snapshotStorage,
@@ -418,11 +424,10 @@ func (r *Raft) Stop() error {
 }
 
 // SubmitOperation accepts an operation (as bytes) from a client for replication and
-// returns the log index assigned to the operation, the term assigned to the
-// operation, and an error if this server is not the leader. Note that submitting
-// an operation for replication does not guarantee replication if there are failures.
-// Once the operation has been replicated and applied to the state machine, the response
-// will be sent over the provided response channel.
+// returns a future for the response to the operation. Note that submitting an operation
+// for replication does not guarantee replication if there are failures. Once the operation
+// has been replicated and applied to the state machine, the future will be populated with the
+// response.
 func (r *Raft) SubmitOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -434,10 +439,13 @@ func (r *Raft) SubmitOperation(operation []byte, timeout time.Duration) *Operati
 		return future
 	}
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operation, future.responseCh)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operation)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatalf("server %s failed to append entry to log: %s", err.Error())
 	}
+
+	r.pendingFutures[entry.Index] = future
+
 	r.sendAppendEntriesToPeers()
 
 	r.options.logger.Debugf("server %s submitted operation: logEntry = %v", r.id, entry)
@@ -449,8 +457,7 @@ func (r *Raft) SubmitOperation(operation []byte, timeout time.Duration) *Operati
 // applies it to the state machine without replication if this server has a valid lease.
 // Consequently, read-only operations will generally be significantly more performant than
 // replicated operations. However, read-only operations may read stale or incorrect data
-// under certain conditions. If this server has an invalid lease, an error is returned. Otherwise,
-// nil is returned and the response will be sent over the provided response channel.
+// under certain conditions.
 func (r *Raft) SubmitReadOnlyOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -521,7 +528,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	// If the request has a more up-to-date term, update current term and become a follower.
 	if request.Term > r.currentTerm {
-		r.becomeFollower(request.Term)
+		r.becomeFollower(request.CandidateID, request.Term)
 		response.Term = r.currentTerm
 	}
 
@@ -582,7 +589,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// If the request has a more up-to-date term, update current term and
 	// become a follower.
 	if request.Term > r.currentTerm {
-		r.becomeFollower(request.Term)
+		r.becomeFollower(request.LeaderID, request.Term)
 		response.Term = r.currentTerm
 	}
 
@@ -699,7 +706,7 @@ func (r *Raft) InstallSnapshot(request *InstallSnapshotRequest, response *Instal
 
 	// If the request has a more up-to-date term, update current term and become a follower.
 	if r.currentTerm < request.Term {
-		r.becomeFollower(request.Term)
+		r.becomeFollower(request.LeaderID, request.Term)
 		response.Term = request.Term
 	}
 
@@ -834,7 +841,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 
 	// Become a follower if a peer has a more up-to-date term.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(response.Term)
+		r.becomeFollower(peer.ID(), response.Term)
 		return
 	}
 
@@ -919,7 +926,7 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 
 	// Become a follower if a peer has a more up-to-date term.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(response.Term)
+		r.becomeFollower(peer.ID(), response.Term)
 		return
 	}
 
@@ -1003,7 +1010,7 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 
 	// If the peer has a more up-to-date term, transition to the follower state.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(response.Term)
+		r.becomeFollower(peer.ID(), response.Term)
 		return
 	}
 
@@ -1153,13 +1160,21 @@ func (r *Raft) applyLoop() {
 				r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 			}
 
+			var responseCh chan OperationResponse
+			if future, ok := r.pendingFutures[entry.Index]; ok {
+				responseCh = future.responseCh
+			}
+
 			operation := &Operation{
 				Bytes:      entry.Data,
 				IsReadOnly: false,
 				LogIndex:   entry.Index,
 				LogTerm:    entry.Term,
-				ResponseCh: entry.ResponseCh,
+				ResponseCh: responseCh,
 			}
+
+			// Clean up the pending future.
+			delete(r.pendingFutures, entry.Index)
 
 			// Warning: do not hold locks when sending on the response channel. May deadlock
 			// if the client is not listening.
@@ -1179,7 +1194,6 @@ func (r *Raft) applyLoop() {
 func (r *Raft) fsmLoop() {
 	for operation := range r.fsmCh {
 		response := OperationResponse{Operation: *operation}
-		r.options.logger.Debugf("server %s applying operation", r.id)
 
 		// Ensure that the lease is valid before performing read-only operation.
 		// This check should be as close as possible to where the operation is
@@ -1195,23 +1209,16 @@ func (r *Raft) fsmLoop() {
 				response.Err = InvalidLeaseError{ServerID: r.id}
 			}
 			r.mu.Unlock()
-
-			select {
-			case operation.ResponseCh <- response:
-			default:
-			}
-
+			r.sendResponseWithoutBlocking(operation.ResponseCh, response)
 			continue
 		}
 
 		response.Response = r.fsm.Apply(operation)
+
 		r.options.logger.Debugf("server %s applied operation: read-only = %v, index = %d, term = %d",
 			r.id, operation.IsReadOnly, operation.LogIndex, operation.LogTerm)
 
-		select {
-		case operation.ResponseCh <- response:
-		default:
-		}
+		r.sendResponseWithoutBlocking(operation.ResponseCh, response)
 
 		// Take a snapshot of the state machine if necessary.
 		if r.fsm.NeedSnapshot() {
@@ -1242,15 +1249,24 @@ func (r *Raft) becomeLeader() {
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeFollower transitions this server to the follower state. It clears the vote and sets the term to
-// the provided term. Expects lock to be held.
-func (r *Raft) becomeFollower(term uint64) {
+// becomeFollower transitions this server to the follower state. It clears the vote, sets the term to
+// the provided term, and sets the leader ID to the provided ID. Additionally, it responds to any pending futures
+// with a NotLeaderError. Expects lock to be held.
+func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.state = Follower
 	r.currentTerm = term
+	r.leaderId = leaderID
 	r.votedFor = ""
 	r.lease = nil
 	r.persistTermAndVote()
 	r.options.logger.Infof("server %s has entered the follower state: term = %d", r.id, r.currentTerm)
+
+	// Clean up the pending futures.
+	response := OperationResponse{Err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}}
+	for _, pendingFuture := range r.pendingFutures {
+		r.sendResponseWithoutBlocking(pendingFuture.responseCh, response)
+	}
+	r.pendingFutures = make(map[uint64]*OperationResponseFuture)
 }
 
 // hasQuorum indicates whether the provided count constitutes a majority
@@ -1288,4 +1304,11 @@ func (r *Raft) connectPeer(id string) error {
 		return errors.WrapError(err, "server failed to connect peer: %s", err.Error())
 	}
 	return nil
+}
+
+func (r *Raft) sendResponseWithoutBlocking(responseCh chan OperationResponse, response OperationResponse) {
+	select {
+	case responseCh <- response:
+	default:
+	}
 }

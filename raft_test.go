@@ -48,7 +48,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 		LeaderID:     "leader1",
 		Term:         1,
 		LeaderCommit: 1,
-		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"), nil)},
+		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -81,8 +81,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	request := &AppendEntriesRequest{
 		LeaderID: "leader1",
 		Term:     2,
-		Entries: []*LogEntry{NewLogEntry(1, 1, []byte("operation1"), nil),
-			NewLogEntry(2, 1, []byte("operation2"), nil)},
+		Entries: []*LogEntry{NewLogEntry(1, 1, []byte("operation1")),
+			NewLogEntry(2, 1, []byte("operation2"))},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -90,8 +90,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.True(t, response.Success)
 	require.Equal(t, uint64(2), response.Term)
 
-	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1"), nil),
-		NewLogEntry(2, 2, []byte("operation2"), nil)}
+	request.Entries = []*LogEntry{NewLogEntry(1, 1, []byte("operation1")),
+		NewLogEntry(2, 2, []byte("operation2"))}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
@@ -174,7 +174,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 
 	raft.state = Follower
 	raft.currentTerm = 1
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), nil)))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
 
 	request := &AppendEntriesRequest{
 		LeaderID:     "leader",
@@ -353,7 +353,7 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "candidate1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("operation1"), nil)}))
+	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("operation1"))}))
 
 	request := &RequestVoteRequest{
 		CandidateID:  "candidate2",
@@ -448,7 +448,7 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "leader1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), nil)))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
 
 	bytes, err := encodeOperations([]Operation{{Bytes: []byte("operation1"), LogIndex: 2, LogTerm: 2}})
 	require.NoError(t, err)
@@ -499,9 +499,9 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	raft.currentTerm = 1
 	raft.votedFor = "leader1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), nil)))
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(2, 1, []byte("operation2"), nil)))
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(3, 1, []byte("operation3"), nil)))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(2, 1, []byte("operation2"))))
+	require.NoError(t, raft.log.AppendEntry(NewLogEntry(3, 1, []byte("operation3"))))
 
 	bytes, err := encodeOperations([]Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}})
 	require.NoError(t, err)

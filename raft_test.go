@@ -428,11 +428,9 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
-	snapshot, err := raft.fsm.Snapshot()
+	snapshotBytes, err := raft.fsm.Snapshot()
 	require.NoError(t, err)
-	require.Equal(t, uint64(1), snapshot.LastIncludedIndex)
-	require.Equal(t, uint64(1), snapshot.LastIncludedTerm)
-	require.Equal(t, bytes, snapshot.Data)
+	require.Equal(t, bytes, snapshotBytes)
 }
 
 // TestInstallSnapshotDiscardSuccess checks that a server discards its log entries when it receives an InstallSnapshot
@@ -478,11 +476,9 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
-	snapshot, err := raft.fsm.Snapshot()
+	snapshotBytes, err := raft.fsm.Snapshot()
 	require.NoError(t, err)
-	require.Equal(t, uint64(2), snapshot.LastIncludedIndex)
-	require.Equal(t, uint64(2), snapshot.LastIncludedTerm)
-	require.Equal(t, bytes, snapshot.Data)
+	require.Equal(t, bytes, snapshotBytes)
 }
 
 // TestInstallSnapshotDiscardSuccess checks that a server compacts its log when it receives a InstallSnapshot
@@ -529,12 +525,6 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.Equal(t, uint64(1), raft.log.LastTerm())
 	require.False(t, raft.log.Contains(1))
 	require.False(t, raft.log.Contains(2))
-
-	// The log had a matching entry at the last included index - the state machine should not be restored.
-	snapshot, err := raft.fsm.Snapshot()
-	require.NoError(t, err)
-	require.Equal(t, uint64(0), snapshot.LastIncludedIndex)
-	require.Equal(t, uint64(0), snapshot.LastIncludedTerm)
 }
 
 // TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the

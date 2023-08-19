@@ -91,23 +91,15 @@ func (s *stateMachineMock) Apply(operation *Operation) interface{} {
 	return len(s.operations)
 }
 
-func (s *stateMachineMock) Snapshot() (Snapshot, error) {
+func (s *stateMachineMock) Snapshot() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	snapshotBytes, err := encodeOperations(s.operations)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("error encoding state machine state: %s", err.Error())
+		return nil, fmt.Errorf("error encoding state machine state: %s", err.Error())
 	}
-
-	var lastIncludedIndex uint64
-	var lastIncludedTerm uint64
-	if len(s.operations) > 0 {
-		lastIncludedIndex = s.operations[len(s.operations)-1].LogIndex
-		lastIncludedTerm = s.operations[len(s.operations)-1].LogTerm
-	}
-
-	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: snapshotBytes}, nil
+	return snapshotBytes, nil
 }
 
 func (s *stateMachineMock) Restore(snapshot *Snapshot) error {

@@ -645,7 +645,7 @@ func TestAllCrash(t *testing.T) {
 }
 
 // TestBasicReadOnly checks that a read-only operation submitted under normal conditions
-// returns the latest state from the state machine without error.
+// are successful.
 func TestBasicReadOnly(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 

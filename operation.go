@@ -6,7 +6,7 @@ import "time"
 // raft times out. It encapsulates the operation associated with the timeout.
 type OperationTimeoutError struct {
 	// The operation that was submitted to raft.
-	operation []byte
+	Operation []byte
 }
 
 // This function implements the error interface for the OperationTimeoutError type.
@@ -85,7 +85,7 @@ func (o *OperationResponseFuture) Await() OperationResponse {
 		case response := <-o.responseCh:
 			return response
 		case <-time.After(o.timeout):
-			return OperationResponse{Err: OperationTimeoutError{operation: o.operation}}
+			return OperationResponse{Err: OperationTimeoutError{Operation: o.operation}}
 		}
 	}
 }

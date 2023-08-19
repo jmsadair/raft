@@ -322,7 +322,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 		}
 
 		// Check if the other arrays of applied operations match the longest array of applied operations.
-		matches := 0
+		matches := 1
 		for i, applied := range appliedOperationsPerServer {
 			if i == longestAppliedIndex {
 				continue

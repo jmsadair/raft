@@ -107,7 +107,9 @@ func TestSingleServerSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], true, false, 1)
+	cluster.submit(operations[0], true, false, false)
+
+	cluster.checkStateMachines(1, 3*time.Second)
 }
 
 // TestSingleSubmit checks whether the cluster can successfully
@@ -122,7 +124,9 @@ func TestBasicSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], true, false, 3)
+	cluster.submit(operations[0], true, false, false)
+
+	cluster.checkStateMachines(3, 3*time.Second)
 }
 
 // TestMultipleSubmit checks whether a cluster can successfully
@@ -138,8 +142,10 @@ func TestMultipleSubmit(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 5)
+		cluster.submit(command, true, false, false)
 	}
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestConcurrentSubmit test whether operations are correctly
@@ -163,7 +169,7 @@ func TestConcurrentSubmit(t *testing.T) {
 		defer wg.Done()
 		<-readyCh
 		for _, operation := range operations {
-			cluster.submit(operation, true, false, 5)
+			cluster.submit(operation, true, false, false)
 		}
 	}
 
@@ -187,9 +193,7 @@ func TestConcurrentSubmit(t *testing.T) {
 	close(readyCh)
 	wg.Wait()
 
-	if t.Failed() {
-		t.Fatal("concurrent apply operations failed")
-	}
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestSubmitDisconnect checks that a cluster can still
@@ -207,8 +211,10 @@ func TestSubmitDisconnect(t *testing.T) {
 	cluster.disconnectServer(leader)
 	operations := makeOperations(20)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 2)
+		cluster.submit(command, true, false, false)
 	}
+
+	cluster.checkStateMachines(2, 3*time.Second)
 }
 
 // TestSubmitDisconnectRejoin checks that a cluster correctly
@@ -228,7 +234,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Submit some operations with this leader.
 	operations := makeOperations(80)
 	for i := 0; i < 20; i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Disconnect the leader.
@@ -237,7 +243,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Submit some more operations. Note that we only expect
 	// 4 servers to apply the command.
 	for i := 20; i < 40; i++ {
-		cluster.submit(operations[i], true, false, 4)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Disconnect the second leader.
@@ -246,7 +252,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Submit some more operations. Note that we only expect
 	// 3 servers to apply the command.
 	for i := 40; i < 60; i++ {
-		cluster.submit(operations[i], true, false, 3)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Allow the old leaders to rejoin.
@@ -256,8 +262,10 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 	// Submit some more operations. All servers should apply the
 	// command now.
 	for i := 60; i < 80; i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestSubmitDisconnectFail checks that a cluster is unable to
@@ -282,7 +290,7 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	// since only a minority of the cluster can communicate.
 	operations := makeOperations(1)
 	for _, command := range operations {
-		cluster.submit(command, true, true, 1)
+		cluster.submit(command, true, true, false)
 	}
 }
 
@@ -329,11 +337,13 @@ func TestUnreliableNetwork(t *testing.T) {
 	// See if we can commit operations in the face of recurring partitions.
 	operations := makeOperations(300)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 3)
+		cluster.submit(command, true, false, false)
 	}
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestBasicPartition checks that a cluster can still make
@@ -358,11 +368,13 @@ func TestBasicPartition(t *testing.T) {
 
 	operations := makeOperations(50)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 3)
+		cluster.submit(command, true, false, false)
 	}
 
 	// Heal the partition.
 	cluster.reconnectAllServers()
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestMultiPartition checks whether a cluster can still make
@@ -406,11 +418,13 @@ func TestMultiPartition(t *testing.T) {
 	// See if we can commit operations in the face of recurring partitions.
 	operations := makeOperations(300)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 3)
+		cluster.submit(command, true, false, false)
 	}
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestBasicCrash checks that a cluster can still make
@@ -427,14 +441,16 @@ func TestBasicCrash(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
 	for i := 25; i < len(operations); i++ {
-		cluster.submit(operations[i], true, false, 4)
+		cluster.submit(operations[i], true, false, false)
 	}
+
+	cluster.checkStateMachines(4, 3*time.Second)
 }
 
 // TestCrashRejoin checks that a cluster correctly
@@ -452,21 +468,23 @@ func TestCrashRejoin(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
 	for i := 25; i < 150; i++ {
-		cluster.submit(operations[i], true, false, 4)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Allow the leader to rejoin and see if we can make progress
 	// committing operations.
 	cluster.restartServer(leader)
 	for i := 150; i < len(operations); i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestMultiCrash checks if a cluster can still make
@@ -514,11 +532,13 @@ func TestMultiCrash(t *testing.T) {
 	// See if we can commit operations in the face of multiple crashes.
 	operations := makeOperations(300)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 3)
+		cluster.submit(command, true, false, false)
 	}
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestDisconnectCrashPartition checks whether the cluster can still
@@ -578,11 +598,13 @@ func TestDisconnectCrashPartition(t *testing.T) {
 	// Submit enough operations to ensure that a variety of failures occur.
 	operations := makeOperations(500)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 3)
+		cluster.submit(command, true, false, false)
 	}
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestAllCrash checks that a cluster can still make
@@ -600,7 +622,7 @@ func TestAllCrash(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(50)
 	for i := 0; i < 25; i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
 
 	// Crash all servers.
@@ -616,8 +638,10 @@ func TestAllCrash(t *testing.T) {
 	// Wait for another leader and submit more operations.
 	cluster.checkLeaders(false)
 	for i := 25; i < len(operations); i++ {
-		cluster.submit(operations[i], true, false, 5)
+		cluster.submit(operations[i], true, false, false)
 	}
+
+	cluster.checkStateMachines(5, 3*time.Second)
 }
 
 // TestBasicReadOnly checks that a read-only operation submitted under normal conditions
@@ -633,8 +657,8 @@ func TestBasicReadOnly(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(operations[0], true, false, 5)
-	cluster.submitReadOnly(true, false)
+	cluster.submit(operations[0], true, false, false)
+	cluster.submit([]byte{}, true, false, true)
 }
 
 // TestSingleServerReadOnly checks that a read-only operations are successful in the single server case.
@@ -650,11 +674,10 @@ func TestSingleServerReadOnly(t *testing.T) {
 	cluster.checkLeaders(false)
 	operations := makeOperations(10)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 1)
+		cluster.submit(command, true, false, false)
 	}
 
-	// Make sure read-only operation is successful.
-	cluster.submitReadOnly(true, false)
+	cluster.submit([]byte{}, true, false, true)
 }
 
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
@@ -678,7 +701,7 @@ func TestReadOnlyFail(t *testing.T) {
 	time.Sleep(defaultLeaseDuration)
 
 	// Make sure the read-only operation fails.
-	cluster.submitReadOnly(true, true)
+	cluster.submit([]byte{}, true, true, true)
 }
 
 // TestReadOnlyDisconnect checks that a new leader will renew its lease
@@ -696,7 +719,7 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(10)
 	for _, command := range operations {
-		cluster.submit(command, true, false, 5)
+		cluster.submit(command, true, false, false)
 	}
 
 	// Disconnect the leader and wait for a new one.
@@ -707,5 +730,5 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	time.Sleep(defaultElectionTimeout)
 
 	// Check that read-only operation is successful.
-	cluster.submitReadOnly(true, false)
+	cluster.submit([]byte{}, true, false, true)
 }

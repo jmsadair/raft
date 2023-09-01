@@ -9,7 +9,7 @@ type StateMachine interface {
 	// Snapshot returns a snapshot of the current state of the state machine.
 	// The bytes contained in the snapshot must be serialized in a way that
 	// the Restore function can understand.
-	Snapshot() (Snapshot, error)
+	Snapshot() ([]byte, error)
 
 	// Restore recovers the state of the state machine given a snapshot that was produced
 	// by Snapshot.

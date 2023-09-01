@@ -31,7 +31,11 @@ func (e *RaftError) UnwrapError() error {
 	return e.Inner
 }
 
-// Error implements the error interface for RaftError. It returns the error message of the RaftError.
+// Error implements the error interface for RaftError.
+// It returns the error message along with the stack trace of the RaftError.
 func (e *RaftError) Error() string {
+	if e.Inner != nil {
+		return fmt.Sprintf("%s\n%s", e.Message, e.Inner.Error())
+	}
 	return e.Message
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net"
+	"reflect"
 	"strconv"
 	"sync"
 	"testing"
@@ -49,7 +50,7 @@ func makePeerMaps(numServers int) []map[string]Peer {
 	return clusterPeers
 }
 
-func encodeOperations(operations []*Operation) ([]byte, error) {
+func encodeOperations(operations []Operation) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	if err := enc.Encode(operations); err != nil {
@@ -58,8 +59,8 @@ func encodeOperations(operations []*Operation) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeOperations(data []byte) ([]*Operation, error) {
-	var operations []*Operation
+func decodeOperations(data []byte) ([]Operation, error) {
+	var operations []Operation
 	buf := bytes.NewBuffer(data)
 	dec := gob.NewDecoder(buf)
 	if err := dec.Decode(&operations); err != nil {
@@ -69,7 +70,7 @@ func decodeOperations(data []byte) ([]*Operation, error) {
 }
 
 type stateMachineMock struct {
-	operations   []*Operation
+	operations   []Operation
 	snapshotting bool
 	snapshotSize int
 	mu           sync.Mutex
@@ -77,7 +78,7 @@ type stateMachineMock struct {
 
 func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
 	gob.Register(Operation{})
-	return &stateMachineMock{operations: make([]*Operation, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
+	return &stateMachineMock{operations: make([]Operation, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
 }
 
 func (s *stateMachineMock) Apply(operation *Operation) interface{} {
@@ -86,27 +87,19 @@ func (s *stateMachineMock) Apply(operation *Operation) interface{} {
 	if operation.IsReadOnly {
 		return len(s.operations)
 	}
-	s.operations = append(s.operations, operation)
+	s.operations = append(s.operations, *operation)
 	return len(s.operations)
 }
 
-func (s *stateMachineMock) Snapshot() (Snapshot, error) {
+func (s *stateMachineMock) Snapshot() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	snapshotBytes, err := encodeOperations(s.operations)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("error encoding state machine state: %s", err.Error())
+		return nil, fmt.Errorf("error encoding state machine state: %s", err.Error())
 	}
-
-	var lastIncludedIndex uint64
-	var lastIncludedTerm uint64
-	if len(s.operations) > 0 {
-		lastIncludedIndex = s.operations[len(s.operations)-1].LogIndex
-		lastIncludedTerm = s.operations[len(s.operations)-1].LogTerm
-	}
-
-	return Snapshot{LastIncludedIndex: lastIncludedIndex, LastIncludedTerm: lastIncludedTerm, Data: snapshotBytes}, nil
+	return snapshotBytes, nil
 }
 
 func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
@@ -128,6 +121,22 @@ func (s *stateMachineMock) NeedSnapshot() bool {
 	defer s.mu.Unlock()
 
 	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
+}
+
+func (s *stateMachineMock) appliedOperations() []Operation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	operationsCopy := make([]Operation, len(s.operations))
+	copy(operationsCopy, s.operations)
+
+	// Set the response channel to nil, since these operations will be compared to others.
+	// Not all operations will necessarily have the same response channel.
+	for i := range operationsCopy {
+		operationsCopy[i].ResponseCh = nil
+	}
+
+	return operationsCopy
 }
 
 type testCluster struct {
@@ -164,34 +173,8 @@ type testCluster struct {
 	// corresponds to the state machine for servers[i].
 	fsm []*stateMachineMock
 
-	// The response channel associated with each server, where
-	// responseCh[i] corresponds to the response channel for
-	// servers[i]
-	responseCh []chan OperationResponse
-
-	// The read-only response channel associated with each server, where
-	// readOnlyResponseCh[i] corresponds to the read-only response channel
-	// for servers[i].
-	readOnlyResponseCh []chan error
-
 	// A channel to signal the shutdown of the cluster.
 	shutdownCh chan interface{}
-
-	// The operation responses associated with each server, where
-	// operationResponses[i] corresponds to the responses for
-	// servers[i]. The map maps indices to the associated operation
-	// response.
-	operationResponses []map[uint64]OperationResponse
-
-	// Errors encountered during the execution of a background go
-	// routine. Provides a means of shuttling the error from the background
-	// go routine to the main, testing go routine. Note that serverErrors[i] corresponds
-	// to any errors associated with servers[i].
-	serverErrors []string
-
-	// The last applied index for each server, where lastApplied[i]
-	// corresponds to the last applied index for servers[i].
-	lastApplied []uint64
 
 	// Indicates whether auto snapshotting will be used.
 	snapshotting bool
@@ -200,8 +183,6 @@ type testCluster struct {
 	snapshotSize int
 
 	mu sync.Mutex
-
-	wg sync.WaitGroup
 }
 
 func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
@@ -211,11 +192,6 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	snapshotStores := make([]SnapshotStorage, numServers)
 	stores := make([]Storage, numServers)
 	fsm := make([]*stateMachineMock, numServers)
-	responseCh := make([]chan OperationResponse, numServers)
-	responses := make([]map[uint64]OperationResponse, numServers)
-	readOnlyResponseCh := make([]chan error, numServers)
-	serverErrors := make([]string, numServers)
-	lastApplied := make([]uint64, numServers)
 	disconnected := make([]bool, numServers)
 
 	// The paths for all the persistent storage associated with the cluster.
@@ -230,15 +206,12 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	// Create the raft and server instances.
 	for i := 0; i < numServers; i++ {
 		id := fmt.Sprint(i)
-		responseCh[i] = make(chan OperationResponse)
 		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
-		responses[i] = make(map[uint64]OperationResponse)
-		readOnlyResponseCh[i] = make(chan error, 1)
 		logs[i] = NewLog(fmt.Sprintf(logFileFmt, i))
 		snapshotStores[i] = NewSnapshotStorage(fmt.Sprintf(storageFileFmt, i))
 		stores[i] = NewStorage(fmt.Sprintf(snapshotFileFmt, i))
 
-		raft, err := NewRaft(id, peers[i], logs[i], stores[i], snapshotStores[i], fsm[i], responseCh[i])
+		raft, err := NewRaft(id, peers[i], logs[i], stores[i], snapshotStores[i], fsm[i])
 		if err != nil {
 			t.Fatalf("failed to create raft instance: err = %s", err.Error())
 		}
@@ -252,23 +225,18 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	}
 
 	return &testCluster{
-		t:                  t,
-		servers:            servers,
-		rafts:              rafts,
-		disconnected:       disconnected,
-		peers:              peers,
-		logs:               logs,
-		snapshotStores:     snapshotStores,
-		stores:             stores,
-		fsm:                fsm,
-		responseCh:         responseCh,
-		operationResponses: responses,
-		serverErrors:       serverErrors,
-		lastApplied:        lastApplied,
-		shutdownCh:         make(chan interface{}),
-		snapshotting:       snapshotting,
-		snapshotSize:       snapshotSize,
-		readOnlyResponseCh: readOnlyResponseCh,
+		t:              t,
+		servers:        servers,
+		rafts:          rafts,
+		disconnected:   disconnected,
+		peers:          peers,
+		logs:           logs,
+		snapshotStores: snapshotStores,
+		stores:         stores,
+		fsm:            fsm,
+		shutdownCh:     make(chan interface{}),
+		snapshotting:   snapshotting,
+		snapshotSize:   snapshotSize,
 	}
 }
 
@@ -278,8 +246,6 @@ func (tc *testCluster) startCluster() {
 		if err := server.Start(ready); err != nil {
 			tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", i, err.Error())
 		}
-		tc.wg.Add(1)
-		go tc.applyLoop(i)
 	}
 	close(ready)
 }
@@ -289,45 +255,34 @@ func (tc *testCluster) stopCluster() {
 		server.Stop()
 	}
 	close(tc.shutdownCh)
-	tc.wg.Wait()
 }
 
-func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, expectedApplied int) {
+func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, readOnly bool) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
 
-	// Allow for a maximum of five seconds if retry is enabled.
+	// Allow for a maximum of three seconds if retry is enabled.
 	start := time.Now()
-	for time.Since(start).Seconds() < 5 {
+	for time.Since(start).Seconds() < 3 {
 		for j := 0; j < len(tc.servers); j++ {
 			tc.mu.Lock()
 			server := tc.servers[j]
 			tc.mu.Unlock()
 
 			// Submit an operation to a server. It might be a leader.
-			index, term, err := server.SubmitOperation(operation)
-			if err != nil {
-				continue
+			var future *OperationResponseFuture
+			if !readOnly {
+				future = server.SubmitOperation(operation, 200*time.Millisecond)
+			} else {
+				future = server.SubmitReadOnlyOperation(operation, 200*time.Millisecond)
 			}
 
-			// See if the operation is applied.
-			for k := 0; k < 10; k++ {
-				time.Sleep(25 * time.Millisecond)
-				successful := tc.checkApplied(index, expectedApplied)
-				if successful {
-					if expectFail {
-						tc.t.Fatalf("cluster applied a operation without quorum: operation = %s", string(operation))
-					}
-					return
+			if response := future.Await(); response.Err == nil {
+				if string(response.Operation.Bytes) != string(operation) {
+					tc.t.Fatalf("response operation does not match submitted operation")
 				}
-
-				// If the server's term changed, then the operation
-				// is definitely not going to be applied.
-				status := server.Status()
-				if status.Term != term {
-					break
-				}
+				return
 			}
 		}
 
@@ -343,42 +298,38 @@ func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, exp
 	}
 }
 
-func (tc *testCluster) submitReadOnly(retry bool, expectFail bool) {
-	// Time between submission attempts. If no leader was found, allow for
-	// an election to complete.
-	electionTimeout := 200 * time.Millisecond
+func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Duration) {
+	startTime := time.Now()
+	appliedOperationsPerServer := make([][]Operation, len(tc.servers))
 
-	// Allow for a maximum of five seconds if retry is enabled.
-	start := time.Now()
-	for time.Since(start).Seconds() < 5 {
-		for j := 0; j < len(tc.servers); j++ {
-			tc.mu.Lock()
-			server := tc.servers[j]
-			tc.mu.Unlock()
+	for time.Since(startTime) < timeout {
+		// Take the longest array of applied operations to be the source of truth.
+		longestAppliedIndex := -1
+		for i := 0; i < len(tc.servers); i++ {
+			appliedOperations := tc.fsm[i].appliedOperations()
+			if longestAppliedIndex == -1 || len(appliedOperations) > len(appliedOperationsPerServer[longestAppliedIndex]) {
+				longestAppliedIndex = i
+			}
+			appliedOperationsPerServer[i] = appliedOperations
+		}
 
-			// Submit an operation to a server. It might be a leader.
-			err := server.SubmitReadOnlyOperation([]byte{})
-			if err != nil {
+		// Check if the other arrays of applied operations match the longest array of applied operations.
+		matches := 1
+		for i, applied := range appliedOperationsPerServer {
+			if i == longestAppliedIndex {
 				continue
 			}
-			err = <-tc.readOnlyResponseCh[j]
-			if err != nil && !expectFail {
-				tc.t.Fatal(err.Error())
-			} else {
-				return
+			if reflect.DeepEqual(appliedOperationsPerServer[longestAppliedIndex], applied) {
+				matches++
 			}
 		}
 
-		if !retry {
-			break
+		if matches >= expectedMatches {
+			return
 		}
-
-		time.Sleep(electionTimeout)
 	}
 
-	if !expectFail {
-		tc.t.Fatalf("cluster failed to apply read-only operation")
-	}
+	tc.t.Fatalf("cluster state machines do not match")
 }
 
 func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
@@ -389,9 +340,9 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	// to allow an election to take place.
 	electionTimeout := 300 * time.Millisecond
 
-	// A maximum of 3 seconds is given to successfully elect a leader.
+	// A maximum of 5 seconds is given to successfully elect a leader.
 	start := time.Now()
-	for time.Since(start).Seconds() < 3 {
+	for time.Since(start).Seconds() < 5 {
 		for i := 0; i < len(tc.servers); i++ {
 			tc.mu.Lock()
 			server := tc.servers[i]
@@ -409,7 +360,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 			//    servers can communicate with it.
 			// 2. In a minority partition - it may only communicate with
 			//    a minority of the cluster. Members of the majority partition
-			//    did not communicate with it.
+			//    cannot communicate with it.
 			tc.mu.Lock()
 			if status.State == Leader && !tc.disconnected[i] {
 				index, _ := strconv.Atoi(status.ID)
@@ -446,136 +397,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	return leaders[0]
 }
 
-func (tc *testCluster) checkReadOnlyOperation(index int, response OperationResponse) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	lastApplied := tc.lastApplied[index]
-	var err error
-	if lastApplied != 0 && response.Response != tc.operationResponses[index][lastApplied].Response {
-		err = fmt.Errorf("cluster read-only operation read incorrect value: server = %d, expectedValue = %v, actualValue = %v",
-			index, tc.operationResponses[index][lastApplied].Response, response.Response)
-	}
-	tc.readOnlyResponseCh[index] <- err
-}
-
-func (tc *testCluster) checkLogs(index int, response OperationResponse) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	// The last applied index should be monotonically increasing.
-	expectedIndex := tc.lastApplied[index] + 1
-	if response.Operation.LogIndex != expectedIndex {
-		tc.serverErrors[index] = fmt.Sprintf("cluster applied operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
-			index, expectedIndex, response.Operation.LogIndex)
-		return
-	}
-
-	tc.operationResponses[index][response.Operation.LogIndex] = response
-	tc.lastApplied[index]++
-}
-
-func (tc *testCluster) checkSnapshot(index int, response OperationResponse) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	snapshots := tc.servers[index].ListSnapshots()
-
-	for _, snapshot := range snapshots {
-		if snapshot.LastIncludedIndex+1 == response.Operation.LogIndex {
-			// Decode the snapshot data into entries.
-			appliedOperations, err := decodeOperations(snapshot.Data)
-			if err != nil {
-				tc.serverErrors[index] = err.Error()
-				return
-			}
-
-			if len(appliedOperations) == 0 {
-				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot that was empty: server = %d", index)
-				return
-			}
-
-			actualLastIncludedIndex := appliedOperations[len(appliedOperations)-1].LogIndex
-			actualLastIncludedTerm := appliedOperations[len(appliedOperations)-1].LogTerm
-
-			// Check the last included index matches with the last included index in the snapshot bytes.
-			if actualLastIncludedIndex != snapshot.LastIncludedIndex {
-				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot with incorrect last included index: server = %d, lastIncludedIndex = %d, actualLastIncludedIdex = %d", index, snapshot.LastIncludedIndex, actualLastIncludedIndex)
-			}
-
-			// Check the last included term matches with the last included term in the snapshot bytes.
-			if actualLastIncludedTerm != snapshot.LastIncludedTerm {
-				tc.serverErrors[index] = fmt.Sprintf("cluster took snapshot with incorrect last included term: server = %d, lastIncludedTerm = %d, actualLastIncludedTerm = %d", index, snapshot.LastIncludedTerm, actualLastIncludedTerm)
-			}
-
-			// Update this server's responses with the operations included in the snapshot.
-			for _, appliedOperation := range appliedOperations {
-				tc.operationResponses[index][appliedOperation.LogIndex] = OperationResponse{Operation: *appliedOperation}
-			}
-
-			tc.operationResponses[index][response.Operation.LogIndex] = response
-			tc.lastApplied[index] = response.Operation.LogIndex
-			return
-		}
-	}
-
-	tc.serverErrors[index] = fmt.Sprintf("cluster applied Operations out of order: server = %d, expectedIndex = %d, actualIndex = %d",
-		index, tc.lastApplied[index]+1, response.Operation.LogIndex)
-}
-
-func (tc *testCluster) checkApplied(index uint64, expectedApplied int) bool {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	// The expected operation response from all the servers.
-	// All servers should have the same operation response at a
-	// given index.
-	var expectedOperationResponse OperationResponse
-
-	// The number of servers that have applied the operation at the provided index.
-	hasApplied := 0
-
-	for i := 0; i < len(tc.servers); i++ {
-		if tc.serverErrors[i] != "" {
-			tc.t.Fatalf(tc.serverErrors[i])
-		}
-
-		if operationResponse, ok := tc.operationResponses[i][index]; ok {
-			// Ensure the Operations match.
-			if hasApplied != 0 && string(operationResponse.Operation.Bytes) != string(expectedOperationResponse.Operation.Bytes) {
-				tc.t.Fatalf("cluster applied different Operations at the same index: index = %d, Operation1 = %s, Operation2 = %s",
-					index, string(expectedOperationResponse.Operation.Bytes), string(operationResponse.Operation.Bytes))
-			}
-			expectedOperationResponse = operationResponse
-			hasApplied++
-		}
-	}
-
-	return hasApplied >= expectedApplied
-}
-
-func (tc *testCluster) applyLoop(index int) {
-	defer tc.wg.Done()
-
-	for response := range tc.responseCh[index] {
-		// If the index was greater than the expected index, then either
-		// a snapshot must have been installed or there was an error.
-		if response.Operation.LogIndex > tc.lastApplied[index]+1 {
-			tc.checkSnapshot(index, response)
-		} else if response.Operation.IsReadOnly {
-			// If it is a read-only operation, the best that can be done is to check
-			// that the state that is read is the same as the most recent state on
-			// this server. Recall that read-only operations make no guarantees about
-			// reading up-to-date data.
-			tc.checkReadOnlyOperation(index, response)
-		} else {
-			tc.checkLogs(index, response)
-		}
-	}
-}
-
 func (tc *testCluster) crashServer(server int) {
-	// Do not acquire lock here - will cause deadlock.
 	tc.disconnectServer(server)
 	tc.servers[server].Stop()
 }
@@ -586,11 +408,10 @@ func (tc *testCluster) restartServer(server int) {
 
 	serverID := fmt.Sprint(server)
 
-	tc.responseCh[server] = make(chan OperationResponse)
 	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
 	newRaft, err := NewRaft(serverID, tc.peers[server], tc.logs[server], tc.stores[server], tc.snapshotStores[server],
-		tc.fsm[server], tc.responseCh[server])
+		tc.fsm[server])
 	if err != nil {
 		tc.t.Fatalf("failed to create raft instance: err = %s", err.Error())
 	}
@@ -600,19 +421,8 @@ func (tc *testCluster) restartServer(server int) {
 	if err != nil {
 		tc.t.Fatalf("failed to create cluster server: err = %s", err.Error())
 	}
-	tc.servers[server] = newServer
 
-	snapshots := tc.servers[server].ListSnapshots()
-	if len(snapshots) > 0 {
-		tc.lastApplied[server] = snapshots[len(snapshots)-1].LastIncludedIndex
-	} else {
-		tc.lastApplied[server] = 0
-	}
 	tc.servers[server] = newServer
-	tc.operationResponses[server] = make(map[uint64]OperationResponse)
-
-	tc.wg.Add(1)
-	go tc.applyLoop(server)
 
 	readyCh := make(chan interface{})
 	defer close(readyCh)

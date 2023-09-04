@@ -25,6 +25,9 @@ type Storage interface {
 
 	// GetState recovers the state from the storage. Storage must be open.
 	GetState() (PersistentState, error)
+
+	// SizeInBytes returns the size of the storage in bytes.
+	SizeInBytes() (int64, error)
 }
 
 // PersistentState is the state that must be persisted in Raft.
@@ -120,4 +123,8 @@ func (p *persistentStorage) GetState() (PersistentState, error) {
 	}
 
 	return persistentState, nil
+}
+
+func (p *persistentStorage) SizeInBytes() (int64, error) {
+	return p.file.Seek(0, io.SeekCurrent)
 }

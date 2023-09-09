@@ -1192,20 +1192,10 @@ func (r *Raft) fsmLoop() {
 		response := OperationResponse{Operation: *operation}
 
 		r.mu.Lock()
-		// Compute the size of all persisted state in case a snapshot is needed.
-		logSize, err := r.log.SizeInBytes()
+		logSizeInBytes, err := r.log.SizeInBytes()
 		if err != nil {
 			r.options.logger.Fatalf("failed to get log size: %s", err.Error())
 		}
-		snapshotStorageSize, err := r.snapshotStorage.SizeInBytes()
-		if err != nil {
-			r.options.logger.Fatalf("failed to get snapshot storage size: %s", err.Error())
-		}
-		storageSize, err := r.storage.SizeInBytes()
-		if err != nil {
-			r.options.logger.Fatalf("failed to get storage size: %s", err.Error())
-		}
-		stateSizeInBytes := logSize + storageSize + snapshotStorageSize
 
 		// Ensure that the lease is valid before performing read-only operation.
 		// This check should be as close as possible to where the operation is
@@ -1233,7 +1223,7 @@ func (r *Raft) fsmLoop() {
 		r.sendResponseWithoutBlocking(operation.ResponseCh, response)
 
 		// Take a snapshot of the state machine if necessary.
-		if !operation.IsReadOnly && r.fsm.NeedSnapshot(stateSizeInBytes) {
+		if !operation.IsReadOnly && r.fsm.NeedSnapshot(logSizeInBytes) {
 			r.takeSnapshot(operation.LogIndex, operation.LogTerm)
 		}
 	}

@@ -17,5 +17,5 @@ type StateMachine interface {
 
 	// NeedSnapshot returns true if a snapshot should be taken of the state machine and false
 	// otherwise.
-	NeedSnapshot(stateSizeInBytes int64) bool
+	NeedSnapshot(logSizeInBytes int64) bool
 }

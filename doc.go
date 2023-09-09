@@ -104,13 +104,11 @@ the StateMachine interface.
 	    return nil
 	}
 
-	func (sm *StateMachine) NeedSnapshot() bool {
+	func (sm *StateMachine) NeedSnapshot(logSizeInBytes) bool {
 	    s.mu.Lock()
 	    defer s.mu.Unlock()
 
-	    // This probably is not a realisitic condition for needing a snapshot, but
-	    // this state machine is only a counter.
-	    return s.lastIndex % 100 == 0
+		return logSizeInBytes >= 100000
 	}
 
 Now, create a map that maps Raft IDs to their respective Peer. This map should contain the ID and corresponding Peer

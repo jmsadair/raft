@@ -104,7 +104,7 @@ the StateMachine interface.
 	    return nil
 	}
 
-	func (sm *StateMachine) NeedSnapshot(logSizeInBytes uint64) bool {
+	func (sm *StateMachine) NeedSnapshot(logSizeInBytes int64) bool {
 	    s.mu.Lock()
 	    defer s.mu.Unlock()
 

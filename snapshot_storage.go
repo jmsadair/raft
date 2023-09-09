@@ -53,9 +53,6 @@ type SnapshotStorage interface {
 
 	// ListSnapshots returns an array of the snapshots that have been saved.
 	ListSnapshots() []Snapshot
-
-	// SizeInBytes returns the size of the snapshot storage in bytes.
-	SizeInBytes() (int64, error)
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface that manages snapshots
@@ -163,8 +160,4 @@ func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
 	p.snapshots = append(p.snapshots, *snapshot)
 
 	return nil
-}
-
-func (p *persistentSnapshotStorage) SizeInBytes() (int64, error) {
-	return p.file.Seek(0, io.SeekCurrent)
 }

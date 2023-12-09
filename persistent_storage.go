@@ -1,5 +1,11 @@
 package raft
 
+import "errors"
+
+var (
+	PersistentStorageNotOpen = errors.New("the storage is not open")
+)
+
 // PersistentStorage represents a resource that is persisted
 // in non-volatile memory.
 type PersistentStorage interface {

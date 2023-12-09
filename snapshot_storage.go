@@ -42,13 +42,16 @@ type SnapshotStorage interface {
 	PersistentStorage
 
 	// LastSnapshot gets the most recently saved snapshot if it exists.
-	LastSnapshot() (Snapshot, bool)
+	// If the snapshot does not exist, it will be nil. An error is returned
+	// if the snapshot storage is not open.
+	LastSnapshot() (*Snapshot, error)
 
 	// SaveSnapshot persists the provided snapshot.
 	SaveSnapshot(snapshot *Snapshot) error
 
 	// ListSnapshots returns an array of the snapshots that have been persisted.
-	ListSnapshots() []Snapshot
+	// An error is returned if the snapshot storage is not open.
+	ListSnapshots() ([]Snapshot, error)
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface. This
@@ -80,7 +83,7 @@ func (p *persistentSnapshotStorage) Open() error {
 
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
-		return errors.WrapError(err, "failed to open snapshot storage file: path = %s", p.path)
+		return errors.WrapError(err, "failed to open snapshot storage")
 	}
 
 	p.file = file
@@ -102,7 +105,7 @@ func (p *persistentSnapshotStorage) Replay() error {
 			break
 		}
 		if err != nil {
-			return errors.WrapError(err, "failed to decode snapshot storage")
+			return errors.WrapError(err, "failed while replaying snapshot storage")
 		}
 		p.snapshots = append(p.snapshots, snapshot)
 	}
@@ -124,18 +127,21 @@ func (p *persistentSnapshotStorage) Close() error {
 	return nil
 }
 
-func (p *persistentSnapshotStorage) LastSnapshot() (Snapshot, bool) {
-	if len(p.snapshots) == 0 {
-		return Snapshot{}, false
+func (p *persistentSnapshotStorage) LastSnapshot() (*Snapshot, error) {
+	if p.file == nil {
+		return nil, errSnapshotStoreNotOpen
 	}
-	return p.snapshots[len(p.snapshots)-1], true
+	if len(p.snapshots) == 0 {
+		return nil, nil
+	}
+	return &p.snapshots[len(p.snapshots)-1], nil
 }
 
-func (p *persistentSnapshotStorage) ListSnapshots() []Snapshot {
-	if len(p.snapshots) == 0 {
-		return []Snapshot{}
+func (p *persistentSnapshotStorage) ListSnapshots() ([]Snapshot, error) {
+	if p.file == nil {
+		return p.snapshots, errSnapshotStoreNotOpen
 	}
-	return p.snapshots
+	return p.snapshots, nil
 }
 
 func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
@@ -145,13 +151,13 @@ func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
 
 	writer := bufio.NewWriter(p.file)
 	if err := encodeSnapshot(writer, snapshot); err != nil {
-		return errors.WrapError(err, "failed to encode snapshot")
+		return errors.WrapError(err, "failed to save snapshot")
 	}
 	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, "failed to flush snapshot storage writer")
+		return errors.WrapError(err, "failed to save snapshot")
 	}
 	if err := p.file.Sync(); err != nil {
-		return errors.WrapError(err, "failed to sync snapshot storage file")
+		return errors.WrapError(err, "failed to save snapshot")
 	}
 
 	p.snapshots = append(p.snapshots, *snapshot)

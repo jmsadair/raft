@@ -338,14 +338,17 @@ func NewRaft(
 	raft.commitCond = sync.NewCond(&raft.mu)
 
 	// Restore the state machine from the most recent snapshot if there was one.
-	snapshot, ok := snapshotStorage.LastSnapshot()
-	if ok {
+	snapshot, err := snapshotStorage.LastSnapshot()
+	if err != nil {
+		return nil, errors.WrapError(err, "failed to retrieve last snapshot from snapshot storage")
+	}
+	if snapshot != nil {
 		raft.lastIncludedIndex = snapshot.LastIncludedIndex
 		raft.lastIncludedTerm = snapshot.LastIncludedTerm
 		raft.commitIndex = snapshot.LastIncludedIndex
 		raft.lastApplied = snapshot.LastIncludedIndex
 
-		if err := raft.fsm.Restore(&snapshot); err != nil {
+		if err := raft.fsm.Restore(snapshot); err != nil {
 			return nil, errors.WrapError(err, "failed to restore state machine")
 		}
 	}
@@ -859,7 +862,11 @@ func (r *Raft) InstallSnapshot(
 func (r *Raft) ListSnapshots() []Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.snapshotStorage.ListSnapshots()
+	snapshots, err := r.snapshotStorage.ListSnapshots()
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed while listing snapshots: %s", r.id, err.Error())
+	}
+	return snapshots
 }
 
 // sendAppendEntriesToPeers sends an AppendEntries RPC to all peers concurrently.
@@ -1058,7 +1065,7 @@ func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
 	snapshotBytes, err := r.fsm.Snapshot()
 	if err != nil {
 		r.options.logger.Fatalf(
-			"server %s failed to take snapshot of state machine: %s",
+			"server %s failed while taking snapshot of state machine: %s",
 			r.id,
 			err.Error(),
 		)
@@ -1070,14 +1077,14 @@ func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
 
 	// Persist the snapshot.
 	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
-		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
+		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
 
 	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, r.lastIncludedIndex)
 
 	// Compact the log up to the last log entry that was applied to the state machine.
 	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed compacting log: %s", r.id, err.Error())
+		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
 
 	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
@@ -1095,8 +1102,11 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 		return
 	}
 
-	snapshot, ok := r.snapshotStorage.LastSnapshot()
-	if !ok {
+	snapshot, err := r.snapshotStorage.LastSnapshot()
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to send snapshot: err = %s", r.id, err.Error())
+	}
+	if snapshot == nil {
 		return
 	}
 

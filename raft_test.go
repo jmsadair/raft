@@ -426,8 +426,12 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 	require.Equal(t, uint64(1), raft.lastApplied)
 	require.Equal(t, uint64(1), raft.lastIncludedIndex)
 	require.Equal(t, uint64(1), raft.lastIncludedTerm)
-	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
-	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+
+	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	require.NoError(t, err)
+	require.NotNil(t, snapshots)
+	require.Len(t, snapshots, 1)
+	require.Equal(t, bytes, snapshots[0].Data)
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
@@ -473,8 +477,13 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	require.Equal(t, uint64(2), raft.lastApplied)
 	require.Equal(t, uint64(2), raft.lastIncludedIndex)
 	require.Equal(t, uint64(2), raft.lastIncludedTerm)
-	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
-	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+
+	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	require.NoError(t, err)
+	require.NotNil(t, snapshots)
+	require.Len(t, snapshots, 1)
+	require.Equal(t, bytes, snapshots[0].Data)
+
 	require.Equal(t, uint64(2), raft.log.LastIndex())
 	require.Equal(t, uint64(2), raft.log.LastTerm())
 	require.False(t, raft.log.Contains(1))
@@ -526,8 +535,13 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.Equal(t, uint64(3), raft.lastApplied)
 	require.Equal(t, uint64(3), raft.lastIncludedIndex)
 	require.Equal(t, uint64(1), raft.lastIncludedTerm)
-	require.Len(t, raft.snapshotStorage.ListSnapshots(), 1)
-	require.Equal(t, bytes, raft.snapshotStorage.ListSnapshots()[0].Data)
+
+	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	require.NoError(t, err)
+	require.NotNil(t, snapshots)
+	require.Len(t, snapshots, 1)
+	require.Equal(t, bytes, snapshots[0].Data)
+
 	require.Equal(t, uint64(3), raft.log.LastIndex())
 	require.Equal(t, uint64(1), raft.log.LastTerm())
 	require.False(t, raft.log.Contains(1))
@@ -606,5 +620,9 @@ func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	require.Equal(t, uint64(0), raft.lastApplied)
 	require.Equal(t, uint64(0), raft.lastIncludedIndex)
 	require.Equal(t, uint64(0), raft.lastIncludedTerm)
-	require.Len(t, raft.snapshotStorage.ListSnapshots(), 0)
+
+	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	require.NoError(t, err)
+	require.NotNil(t, snapshots)
+	require.Len(t, snapshots, 0)
 }

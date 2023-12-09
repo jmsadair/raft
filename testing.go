@@ -17,7 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func validateLogEntry(t *testing.T, entry *LogEntry, expectedIndex uint64, expectedTerm uint64, expectedData []byte) {
+func validateLogEntry(
+	t *testing.T,
+	entry *LogEntry,
+	expectedIndex uint64,
+	expectedTerm uint64,
+	expectedData []byte,
+) {
 	require.Equal(t, expectedIndex, entry.Index)
 	require.Equal(t, expectedTerm, entry.Term)
 	require.Equal(t, expectedData, entry.Data)
@@ -78,7 +84,11 @@ type stateMachineMock struct {
 
 func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
 	gob.Register(Operation{})
-	return &stateMachineMock{operations: make([]Operation, 0), snapshotting: snapshotting, snapshotSize: snapshotSize}
+	return &stateMachineMock{
+		operations:   make([]Operation, 0),
+		snapshotting: snapshotting,
+		snapshotSize: snapshotSize,
+	}
 }
 
 func (s *stateMachineMock) Apply(operation *Operation) interface{} {
@@ -162,7 +172,7 @@ type testCluster struct {
 
 	// The storage associated with each server, where stores[i] is the
 	// storage for servers[i]
-	stores []Storage
+	stores []StateStorage
 
 	// The servers which are disconnected, where disconnected[i] being
 	// true indicates servers[i] is disconnected.
@@ -189,7 +199,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	rafts := make([]*Raft, numServers)
 	logs := make([]Log, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
-	stores := make([]Storage, numServers)
+	stores := make([]StateStorage, numServers)
 	fsm := make([]*stateMachineMock, numServers)
 	disconnected := make([]bool, numServers)
 
@@ -208,7 +218,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
 		logs[i] = NewLog(fmt.Sprintf(logFileFmt, i))
 		snapshotStores[i] = NewSnapshotStorage(fmt.Sprintf(storageFileFmt, i))
-		stores[i] = NewStorage(fmt.Sprintf(snapshotFileFmt, i))
+		stores[i] = NewStateStorage(fmt.Sprintf(snapshotFileFmt, i))
 
 		raft, err := NewRaft(id, peers[i], logs[i], stores[i], snapshotStores[i], fsm[i])
 		if err != nil {
@@ -306,7 +316,8 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 		longestAppliedIndex := -1
 		for i := 0; i < len(tc.servers); i++ {
 			appliedOperations := tc.fsm[i].appliedOperations()
-			if longestAppliedIndex == -1 || len(appliedOperations) > len(appliedOperationsPerServer[longestAppliedIndex]) {
+			if longestAppliedIndex == -1 ||
+				len(appliedOperations) > len(appliedOperationsPerServer[longestAppliedIndex]) {
 				longestAppliedIndex = i
 			}
 			appliedOperationsPerServer[i] = appliedOperations
@@ -409,8 +420,14 @@ func (tc *testCluster) restartServer(server int) {
 
 	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
-	newRaft, err := NewRaft(serverID, tc.peers[server], tc.logs[server], tc.stores[server], tc.snapshotStores[server],
-		tc.fsm[server])
+	newRaft, err := NewRaft(
+		serverID,
+		tc.peers[server],
+		tc.logs[server],
+		tc.stores[server],
+		tc.snapshotStores[server],
+		tc.fsm[server],
+	)
 	if err != nil {
 		tc.t.Fatalf("failed to create raft instance: err = %s", err.Error())
 	}
@@ -431,7 +448,12 @@ func (tc *testCluster) restartServer(server int) {
 
 	for i := 0; i < len(tc.servers); i++ {
 		if err := tc.rafts[i].connectPeer(serverID); err != nil {
-			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, server, err.Error())
+			tc.t.Fatalf(
+				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				i,
+				server,
+				err.Error(),
+			)
 		}
 	}
 
@@ -464,18 +486,30 @@ func (tc *testCluster) createPartition() {
 					continue
 				}
 				if err := tc.rafts[i].disconnectPeer(fmt.Sprint(j)); err != nil {
-					tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, j,
-						err.Error())
+					tc.t.Fatalf(
+						"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+						i,
+						j,
+						err.Error(),
+					)
 				}
 				if err := tc.rafts[j].disconnectPeer(fmt.Sprint(i)); err != nil {
-					tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", j, i,
-						err.Error())
+					tc.t.Fatalf(
+						"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+						j,
+						i,
+						err.Error(),
+					)
 				}
 			}
 
 			if err := tc.rafts[i].disconnectPeer(fmt.Sprint(i)); err != nil {
-				tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, i,
-					err.Error())
+				tc.t.Fatalf(
+					"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+					i,
+					i,
+					err.Error(),
+				)
 			}
 		}
 	}
@@ -495,7 +529,12 @@ func (tc *testCluster) reconnectServer(server int) {
 	// on the operation of the cluster. The only purpose of this is to
 	// indicate that this server is connected and should operate as expected.
 	if err := tc.rafts[server].disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", server, server, err.Error())
+		tc.t.Fatalf(
+			"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+			server,
+			server,
+			err.Error(),
+		)
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
@@ -503,10 +542,20 @@ func (tc *testCluster) reconnectServer(server int) {
 			continue
 		}
 		if err := tc.rafts[i].connectPeer(serverID); err != nil {
-			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, server, err.Error())
+			tc.t.Fatalf(
+				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				i,
+				server,
+				err.Error(),
+			)
 		}
 		if err := tc.rafts[server].connectPeer(fmt.Sprint(i)); err != nil {
-			tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", server, i, err.Error())
+			tc.t.Fatalf(
+				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				server,
+				i,
+				err.Error(),
+			)
 		}
 	}
 
@@ -520,7 +569,12 @@ func (tc *testCluster) reconnectAllServers() {
 	for i := 0; i < len(tc.servers); i++ {
 		for j := 0; j < len(tc.servers); j++ {
 			if err := tc.rafts[i].connectPeer(fmt.Sprint(j)); err != nil {
-				tc.t.Fatalf("error reconnecting peer: peer = %d, connectingTo = %d, err = %s", i, j, err.Error())
+				tc.t.Fatalf(
+					"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+					i,
+					j,
+					err.Error(),
+				)
 			}
 		}
 	}
@@ -541,7 +595,12 @@ func (tc *testCluster) disconnectServer(server int) {
 	// indicate that this index is disconnected and will not operate
 	// as expected.
 	if err := tc.rafts[server].disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", server, server, err.Error())
+		tc.t.Fatalf(
+			"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+			server,
+			server,
+			err.Error(),
+		)
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
@@ -549,10 +608,20 @@ func (tc *testCluster) disconnectServer(server int) {
 			continue
 		}
 		if err := tc.rafts[i].disconnectPeer(serverID); err != nil {
-			tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", i, server, err.Error())
+			tc.t.Fatalf(
+				"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+				i,
+				server,
+				err.Error(),
+			)
 		}
 		if err := tc.rafts[server].disconnectPeer(fmt.Sprint(i)); err != nil {
-			tc.t.Fatalf("error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s", server, i, err.Error())
+			tc.t.Fatalf(
+				"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+				server,
+				i,
+				err.Error(),
+			)
 		}
 	}
 

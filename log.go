@@ -13,18 +13,10 @@ var (
 	errLogNotOpen        = errors.New("log is not open")
 )
 
-// Log is an interface representing the internal component of RaftCore that is responsible
-// for durably storing and retrieving log entries.
+// Log represents the internal component of Raft that is responsible
+// for persistently storing and retrieving log entries.
 type Log interface {
-	// Open opens the log for reading and writing.
-	Open() error
-
-	// Replay reads the persisted state of the log into
-	// memory. Log must be open.
-	Replay() error
-
-	// Close closes the log.
-	Close() error
+	PersistentStorage
 
 	// GetEntry returns the log entry located at the specified index.
 	GetEntry(index uint64) (*LogEntry, error)
@@ -67,18 +59,18 @@ type Log interface {
 	SizeInBytes() (int64, error)
 }
 
-// LogEntry represents a log entry in the log.
+// LogEntry is a log entry in the log.
 type LogEntry struct {
-	// The Index of the log entry.
+	// The index of the log entry.
 	Index uint64
 
-	// The Term of the log entry.
+	// The term of the log entry.
 	Term uint64
 
-	// The Offset of the log entry.
+	// The offset of the log entry.
 	Offset int64
 
-	// The Data of the log entry.
+	// The data of the log entry.
 	Data []byte
 }
 
@@ -196,7 +188,11 @@ func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 	for _, entry := range entries {
 		offset, err := l.file.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(err, "failed to seek to offset in log file: offset = %d", offset)
+			return errors.WrapError(
+				err,
+				"failed to seek to offset in log file: offset = %d",
+				offset,
+			)
 		}
 		entry.Offset = offset
 		if err := encodeLogEntry(l.file, entry); err != nil {
@@ -265,7 +261,11 @@ func (l *persistentLog) Compact(index uint64) error {
 	for _, entry := range newEntries {
 		offset, err := compactedFile.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(err, "failed to seek to offset in log file: offset = %d", offset)
+			return errors.WrapError(
+				err,
+				"failed to seek to offset in log file: offset = %d",
+				offset,
+			)
 		}
 		entry.Offset = offset
 		if err := encodeLogEntry(compactedFile, entry); err != nil {

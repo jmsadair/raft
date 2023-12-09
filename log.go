@@ -188,11 +188,7 @@ func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 	for _, entry := range entries {
 		offset, err := l.file.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(
-				err,
-				"failed while appending entries to log",
-				offset,
-			)
+			return errors.WrapError(err, "failed while appending entries to log")
 		}
 		entry.Offset = offset
 		if err := encodeLogEntry(l.file, entry); err != nil {
@@ -261,11 +257,7 @@ func (l *persistentLog) Compact(index uint64) error {
 	for _, entry := range newEntries {
 		offset, err := compactedFile.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(
-				err,
-				"failed to compact log",
-				offset,
-			)
+			return errors.WrapError(err, "failed to compact log")
 		}
 		entry.Offset = offset
 		if err := encodeLogEntry(compactedFile, entry); err != nil {

@@ -22,8 +22,8 @@ type StateStorage interface {
 
 	// State returns the most recently persisted state in the storage. If there is
 	// no pre-existing state or the storage is closed, zero and an empty string
-	// will be returned.
-	State() (uint64, string)
+	// will be returned. If the state storage is not open, an error will be returned.
+	State() (uint64, string, error)
 }
 
 // persistentState is the state that must be persisted in Raft.
@@ -56,7 +56,7 @@ func NewStateStorage(path string) StateStorage {
 func (p *persistentStateStorage) Open() error {
 	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
-		return errors.WrapError(err, "failed to open storage file: path = %s", p.path)
+		return errors.WrapError(err, "failed to open state storage file")
 	}
 	p.file = file
 	return nil
@@ -67,7 +67,7 @@ func (p *persistentStateStorage) Close() error {
 		return nil
 	}
 	if err := p.file.Close(); err != nil {
-		return errors.WrapError(err, "failed to close storage file: path = %s", p.path)
+		return errors.WrapError(err, "failed to close state storage file")
 	}
 	p.state = persistentState{}
 	return nil
@@ -83,7 +83,7 @@ func (p *persistentStateStorage) Replay() error {
 	state, err := decodePersistentState(reader)
 
 	if err != nil && err != io.EOF {
-		return errors.WrapError(err, "failed to decode persistent state")
+		return errors.WrapError(err, "failed while replaying state storage")
 	}
 
 	p.state = state
@@ -91,7 +91,7 @@ func (p *persistentStateStorage) Replay() error {
 	return nil
 }
 
-func (p *persistentStateStorage) SetState(term uint64, vote string) error {
+func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	if p.file == nil {
 		return errStateStorageNotOpen
 	}
@@ -101,34 +101,37 @@ func (p *persistentStateStorage) SetState(term uint64, vote string) error {
 	// be atomic.
 	tmpFile, err := os.Create(p.path + ".tmp")
 	if err != nil {
-		return errors.WrapError(err, "failed to create temporary storage file")
+		return errors.WrapError(err, "failed while persisting state")
 	}
 
 	// Write the new state to the temporary file.
-	p.state = persistentState{term: term, votedFor: vote}
+	p.state = persistentState{term: term, votedFor: votedFor}
 	if err := encodePersistentState(tmpFile, &p.state); err != nil {
-		return errors.WrapError(err, "failed to encode state")
+		return errors.WrapError(err, "failed while persisting state")
 	}
 	if err := tmpFile.Sync(); err != nil {
-		return errors.WrapError(err, "failed to sync storage file")
+		return errors.WrapError(err, "failed while persisting state")
 	}
 
 	// Perform atomic rename to swap the newly persisted state with the old.
 	oldFile := p.file
 	if err := os.Rename(tmpFile.Name(), oldFile.Name()); err != nil {
-		return errors.WrapError(err, "failed to rename temporary storage file")
+		return errors.WrapError(err, "failed while persisting state")
 	}
 
 	p.file = tmpFile
 
 	// Close the previous file.
 	if err := oldFile.Close(); err != nil {
-		return errors.WrapError(err, "failed to close storage file")
+		return errors.WrapError(err, "failed while persisting state")
 	}
 
 	return nil
 }
 
-func (p *persistentStateStorage) State() (uint64, string) {
-	return p.state.term, p.state.votedFor
+func (p *persistentStateStorage) State() (uint64, string, error) {
+	if p.file == nil {
+		return 0, "", errStateStorageNotOpen
+	}
+	return p.state.term, p.state.votedFor, nil
 }

@@ -274,35 +274,38 @@ func NewRaft(
 
 	// Open the state storage to recover persisted state.
 	if err := stateStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open raft stateStorage")
+		return nil, errors.WrapError(err, "failed to open state storage")
 	}
 
 	// Replay the persisted state into memory.
 	if err := stateStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to open raft stateStorage")
+		return nil, errors.WrapError(err, "failed to replay state storage")
 	}
 
 	// Restore the current term and vote if they have been persisted.
-	currentTerm, votedFor := stateStorage.State()
+	currentTerm, votedFor, err := stateStorage.State()
+	if err != nil {
+		return nil, errors.WrapError(err, "failed to retrieve state from state storage")
+	}
 
 	// Open the log for new operations.
 	if err := log.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open raft log")
+		return nil, errors.WrapError(err, "failed to open log")
 	}
 
 	// Replay the persisted state of the log into memory.
 	if err := log.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to recover raft log")
+		return nil, errors.WrapError(err, "failed to replay log")
 	}
 
 	// Open the snapshot stateStorage for new operations.
 	if err := snapshotStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open raft snapshot stateStorage")
+		return nil, errors.WrapError(err, "failed to open snapshot storage")
 	}
 
 	// Replay the persisted snapshots into memory.
 	if err := snapshotStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to recover raft snapshot stateStorage")
+		return nil, errors.WrapError(err, "failed to replay snapshot storage")
 	}
 
 	nextIndex := make(map[string]uint64)
@@ -343,7 +346,7 @@ func NewRaft(
 		raft.lastApplied = snapshot.LastIncludedIndex
 
 		if err := raft.fsm.Restore(&snapshot); err != nil {
-			return nil, errors.WrapError(err, "failed to restore raft state machine")
+			return nil, errors.WrapError(err, "failed to restore state machine")
 		}
 	}
 

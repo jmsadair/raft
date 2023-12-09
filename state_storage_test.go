@@ -22,8 +22,9 @@ func TestPersistentStorageSetGet(t *testing.T) {
 	require.NoError(t, storage.Replay())
 	defer func() { require.NoError(t, storage.Close()) }()
 
-	recoveredTerm, recoveredVotedFor := storage.State()
+	recoveredTerm, recoveredVotedFor, err := storage.State()
 
+	require.NoError(t, err)
 	require.Equal(t, term, recoveredTerm)
 	require.Equal(t, votedFor, recoveredVotedFor)
 }

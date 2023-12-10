@@ -137,7 +137,7 @@ func WithLeaseDuration(leaseDuration time.Duration) Option {
 	}
 }
 
-// WithLogger sets the logger used by the Raft server.
+// WithLogger sets the logger used by the Raft.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
 		if logger == nil {

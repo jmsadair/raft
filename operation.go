@@ -3,14 +3,13 @@ package raft
 import "time"
 
 // OperationTimeoutError represents an error that occurs when an operation submitted to
-// raft times out. It encapsulates the operation associated with the timeout.
+// raft times out.
 type OperationTimeoutError struct {
 	// The operation that was submitted to raft.
 	Operation []byte
 }
 
-// This function implements the error interface for the OperationTimeoutError type.
-// It explains that the operation timed out due to various potential reasons.
+// Implements the Error interface for the OperationTimeoutError type.
 func (e OperationTimeoutError) Error() string {
 	return "The operation timed out while waiting for a response. This could be due to loss of server " +
 		"leadership, a partitioned leader, prolonged processing, or a different reason. Try submitting the " +
@@ -53,7 +52,6 @@ type OperationResponse struct {
 }
 
 // OperationResponseFuture represents a future response for an operation.
-// It encapsulates an operation, a timeout duration, and a channel for receiving responses.
 type OperationResponseFuture struct {
 	// The operation associated with the future response.
 	operation []byte
@@ -66,7 +64,6 @@ type OperationResponseFuture struct {
 }
 
 // NewOperationResponseFuture creates a new OperationResponseFuture instance.
-// It initializes the future with the given operation and timeout.
 func NewOperationResponseFuture(operation []byte, timeout time.Duration) *OperationResponseFuture {
 	return &OperationResponseFuture{
 		operation:  operation,

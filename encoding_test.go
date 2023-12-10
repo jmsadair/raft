@@ -22,16 +22,16 @@ func TestLogEncoderDecoder(t *testing.T) {
 }
 
 func TestStorageEncoderDecoder(t *testing.T) {
-	persistentState := PersistentState{Term: 1, VotedFor: "test"}
+	state := persistentState{term: 1, votedFor: "test"}
 	buf := new(bytes.Buffer)
 
-	require.NoError(t, encodePersistentState(buf, &persistentState))
+	require.NoError(t, encodePersistentState(buf, &state))
 
 	decodedState, err := decodePersistentState(buf)
 	require.NoError(t, err)
 
-	require.Equal(t, persistentState.Term, decodedState.Term)
-	require.Equal(t, persistentState.VotedFor, decodedState.VotedFor)
+	require.Equal(t, state.term, decodedState.term)
+	require.Equal(t, state.votedFor, decodedState.votedFor)
 }
 
 func TestSnapshotEncoderDecoder(t *testing.T) {

@@ -9,7 +9,11 @@ import (
 )
 
 func encodeSnapshot(w io.Writer, snapshot *Snapshot) error {
-	pbSnapshot := &pb.Snapshot{LastIncludedIndex: snapshot.LastIncludedIndex, LastIncludedTerm: snapshot.LastIncludedTerm, Data: snapshot.Data}
+	pbSnapshot := &pb.Snapshot{
+		LastIncludedIndex: snapshot.LastIncludedIndex,
+		LastIncludedTerm:  snapshot.LastIncludedTerm,
+		Data:              snapshot.Data,
+	}
 	buf, err := proto.Marshal(pbSnapshot)
 	if err != nil {
 		return err
@@ -49,8 +53,8 @@ func decodeSnapshot(r io.Reader) (Snapshot, error) {
 	return snapshot, nil
 }
 
-func encodePersistentState(w io.Writer, persistentState *PersistentState) error {
-	pbState := &pb.StorageState{Term: persistentState.Term, VotedFor: persistentState.VotedFor}
+func encodePersistentState(w io.Writer, state *persistentState) error {
+	pbState := &pb.StorageState{Term: state.term, VotedFor: state.votedFor}
 	buf, err := proto.Marshal(pbState)
 	if err != nil {
 		return err
@@ -65,28 +69,28 @@ func encodePersistentState(w io.Writer, persistentState *PersistentState) error 
 	return nil
 }
 
-func decodePersistentState(r io.Reader) (PersistentState, error) {
+func decodePersistentState(r io.Reader) (persistentState, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-		return PersistentState{}, err
+		return persistentState{}, err
 	}
 
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		return PersistentState{}, err
+		return persistentState{}, err
 	}
 
-	pbPersistentState := &pb.StorageState{}
-	if err := proto.Unmarshal(buf, pbPersistentState); err != nil {
-		return PersistentState{}, err
+	pbState := &pb.StorageState{}
+	if err := proto.Unmarshal(buf, pbState); err != nil {
+		return persistentState{}, err
 	}
 
-	persistentState := PersistentState{
-		Term:     pbPersistentState.GetTerm(),
-		VotedFor: pbPersistentState.GetVotedFor(),
+	state := persistentState{
+		term:     pbState.GetTerm(),
+		votedFor: pbState.GetVotedFor(),
 	}
 
-	return persistentState, nil
+	return state, nil
 }
 
 func encodeLogEntry(w io.Writer, entry *LogEntry) error {

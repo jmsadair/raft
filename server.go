@@ -94,7 +94,10 @@ func (s *Server) SubmitOperation(operation []byte, timeout time.Duration) *Opera
 // SubmitReadOnlyOperation submits an operation (as bytes) to the server for
 // processing. It forwards the operation to the underlying Protocol instance for handling
 // and returns a future for the response to the operation.
-func (s *Server) SubmitReadOnlyOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
+func (s *Server) SubmitReadOnlyOperation(
+	operation []byte,
+	timeout time.Duration,
+) *OperationResponseFuture {
 	return s.raft.SubmitReadOnlyOperation(operation, timeout)
 }
 
@@ -107,7 +110,10 @@ func (s *Server) ListSnapshots() []Snapshot {
 // AppendEntries handles the AppendEntries gRPC request.
 // It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.
-func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *Server) AppendEntries(
+	ctx context.Context,
+	request *pb.AppendEntriesRequest,
+) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
 	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
@@ -119,7 +125,10 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 // RequestVote handles the RequestVote gRPC request.
 // It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
 // and returns the response.
-func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (s *Server) RequestVote(
+	ctx context.Context,
+	request *pb.RequestVoteRequest,
+) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
 	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
@@ -131,7 +140,10 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 // InstallSnapshot handles the InstallSnapshot gRPC request.
 // It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
 // and returns the response.
-func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+func (s *Server) InstallSnapshot(
+	ctx context.Context,
+	request *pb.InstallSnapshotRequest,
+) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
 	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {

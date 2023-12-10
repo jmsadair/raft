@@ -110,8 +110,11 @@ func WithHeartbeatInterval(time time.Duration) Option {
 func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 	return func(options *options) error {
 		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
-			return errors.New("maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
-				minMaxEntriesPerRPC, maxMaxEntriesPerRPC)
+			return errors.New(
+				"maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
+				minMaxEntriesPerRPC,
+				maxMaxEntriesPerRPC,
+			)
 		}
 		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil

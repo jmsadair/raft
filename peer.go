@@ -83,7 +83,9 @@ func (p *peer) Connect() error {
 		return nil
 	}
 
-	conn, err := grpc.Dial(p.address.String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
+	conn, err := grpc.Dial(
+		p.address.String(),
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
 		return errors.WrapError(err, "failed to connect to peer: ID = %s, address = %s",
 			p.id, p.address.String())
@@ -123,10 +125,17 @@ func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRespons
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
-	pbResponse, err := p.client.AppendEntries(context.Background(), pbRequest, []grpc.CallOption{}...)
+	pbResponse, err := p.client.AppendEntries(
+		context.Background(),
+		pbRequest,
+		[]grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, errors.WrapError(err, "AppendEntries RPC failed: ID = %s, address = %s",
-			p.id, p.address.String())
+		return AppendEntriesResponse{}, errors.WrapError(
+			err,
+			"AppendEntries RPC failed: ID = %s, address = %s",
+			p.id,
+			p.address.String(),
+		)
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -143,8 +152,12 @@ func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, err
 	pbRequest := makeProtoRequestVoteRequest(request)
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return RequestVoteResponse{}, errors.WrapError(err, "RequestVote RPC failed: ID = %s, address = %s",
-			p.id, p.address.String())
+		return RequestVoteResponse{}, errors.WrapError(
+			err,
+			"RequestVote RPC failed: ID = %s, address = %s",
+			p.id,
+			p.address.String(),
+		)
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
@@ -159,10 +172,17 @@ func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotR
 	}
 
 	pbRequest := makeProtoInstallSnapshotRequest(request)
-	pbResponse, err := p.client.InstallSnapshot(context.Background(), pbRequest, []grpc.CallOption{}...)
+	pbResponse, err := p.client.InstallSnapshot(
+		context.Background(),
+		pbRequest,
+		[]grpc.CallOption{}...)
 	if err != nil {
-		return InstallSnapshotResponse{}, errors.WrapError(err, "InstallSnapshot RPC failed: ID = %s, address = %s",
-			p.id, p.address.String())
+		return InstallSnapshotResponse{}, errors.WrapError(
+			err,
+			"InstallSnapshot RPC failed: ID = %s, address = %s",
+			p.id,
+			p.address.String(),
+		)
 	}
 
 	return makeInstallSnapshotResponse(pbResponse), nil

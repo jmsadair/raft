@@ -984,10 +984,17 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	// Update the next and match index of the peer.
-	if request.PrevLogIndex+uint64(len(entries)) >= r.nextIndex[peer.ID()] {
-		r.nextIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries)) + 1
+	if request.PrevLogIndex+uint64(len(entries)) > r.matchIndex[peer.ID()] {
+		r.nextIndex[peer.ID()] = util.Max(
+			r.nextIndex[peer.ID()],
+			request.PrevLogIndex+uint64(len(entries))+1,
+		)
 		r.matchIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries))
-		r.commitCond.Broadcast()
+		// If a peer's match index exceeds the commit index, check if there are any
+		// log entries that can be committed.
+		if r.matchIndex[peer.ID()] > r.commitIndex {
+			r.commitCond.Broadcast()
+		}
 	}
 }
 
@@ -1390,6 +1397,7 @@ func (r *Raft) becomeLeader() {
 	}
 	r.lease = newLease(r.options.leaseDuration)
 	r.sendAppendEntriesToPeers()
+
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 

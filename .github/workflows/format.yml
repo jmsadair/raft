@@ -49,7 +49,7 @@ jobs:
         run: go install mvdan.cc/gofumpt@latest
 
       - name: Format Go code
-        run: go fumpt -l -w .
+        run: gofumpt -l -w .
       
       - name: Check for modified .go files
         id: git-check-2

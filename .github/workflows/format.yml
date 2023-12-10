@@ -48,8 +48,14 @@ jobs:
       - name: Install gofumpt
         run: go install mvdan.cc/gofumpt@latest
 
+      - name: Install golines
+        run: go install github.com/segmentio/golines@latest
+
       - name: Format Go code
         run: gofumpt -l -w .
+
+      - name: Fix line length
+        run: golines -w .
       
       - name: Check for modified .go files
         id: git-check-2

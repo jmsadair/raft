@@ -1,8 +1,9 @@
 package raft
 
 import (
-	"github.com/jmsadair/raft/internal/errors"
 	"time"
+
+	"github.com/jmsadair/raft/internal/errors"
 )
 
 const (

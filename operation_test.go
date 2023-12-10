@@ -1,9 +1,10 @@
 package raft
 
 import (
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestOperationFutureAwaitSuccess checks that OperationResponseFuture.Await does not return

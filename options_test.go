@@ -1,10 +1,11 @@
 package raft
 
 import (
-	"github.com/jmsadair/raft/internal/logger"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/jmsadair/raft/internal/logger"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWithElectionTimeout checks that the election timeout option only accepts values within the

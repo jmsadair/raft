@@ -11,9 +11,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var (
-	errNoConnectionToPeer = errors.New("no connection with peer")
-)
+var errNoConnectionToPeer = errors.New("no connection with peer")
 
 // Peer is an interface representing a component responsible for establishing a connection
 // with and making RPCs to a Raft server.

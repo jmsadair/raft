@@ -45,8 +45,11 @@ jobs:
         with:
           go-version: 1.19
 
+      - name: Install gofumpt
+        run: go install mvdan.cc/gofumpt@latest
+
       - name: Format Go code
-        run: go fmt ./...
+        run: go fumpt -l -w .
       
       - name: Check for modified .go files
         id: git-check-2

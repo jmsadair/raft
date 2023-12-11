@@ -155,7 +155,11 @@ func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSn
 func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
 	entries := make([]*LogEntry, len(protoEntries))
 	for i, protoEntry := range protoEntries {
-		entry := &LogEntry{Index: protoEntry.GetIndex(), Term: protoEntry.GetTerm(), Data: protoEntry.GetData()}
+		entry := &LogEntry{
+			Index: protoEntry.GetIndex(),
+			Term:  protoEntry.GetTerm(),
+			Data:  protoEntry.GetData(),
+		}
 		entries[i] = entry
 	}
 	return entries
@@ -212,7 +216,9 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 }
 
 // makeProtoInstallSnapshotResponse converts an InstallSnapshotResponse instance to a protobuf InstallSnapshotResponse instance.
-func makeProtoInstallSnapshotResponse(response InstallSnapshotResponse) *pb.InstallSnapshotResponse {
+func makeProtoInstallSnapshotResponse(
+	response InstallSnapshotResponse,
+) *pb.InstallSnapshotResponse {
 	return &pb.InstallSnapshotResponse{
 		Term: response.Term,
 	}

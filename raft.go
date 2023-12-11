@@ -11,9 +11,7 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-var (
-	errShutdown = errors.New("server is shutdown")
-)
+var errShutdown = errors.New("server is shutdown")
 
 // NotLeaderError is an error returned when an operation is submitted to a
 // server, and it is not the leader. Only the leader may submit operations.
@@ -105,13 +103,11 @@ type Status struct {
 // The raft protocol is a distributed consensus algorithm designed for fault-tolerant systems.
 // It provides functions to start and stop the protocol, submit operations, check the status and manage snapshots.
 type Protocol interface {
-	// Start initializes the consensus protocol and prepares it to receive commands.
-	// It may involve establishing network connections, allocating resources etc.
-	// Returns error if the initialization fails.
+	// Start initializes the consensus protocol and prepares it to receive client operations.
+	// Returns an error if the initialization fails.
 	Start() error
 
-	// Stop shuts down the consensus protocol safely. It may involve releasing resources,
-	// closing network connections etc. Returns error if the shutdown fails.
+	// Stop shuts down the consensus protocol.
 	Stop() error
 
 	// SubmitOperation takes a byte array representing an operation and adds it to the
@@ -434,12 +430,12 @@ func (r *Raft) Stop() error {
 	}
 
 	if err := r.stateStorage.Close(); err != nil {
-		r.options.logger.Errorf("server %s failed to close stateStorage: %s", r.id, err.Error())
+		r.options.logger.Errorf("server %s failed to close state storage: %s", r.id, err.Error())
 	}
 
 	if err := r.snapshotStorage.Close(); err != nil {
 		r.options.logger.Errorf(
-			"server %s failed to close snapshot stateStorage: %s",
+			"server %s failed to close snapshot storage: %s",
 			r.id,
 			err.Error(),
 		)
@@ -450,7 +446,7 @@ func (r *Raft) Stop() error {
 	return nil
 }
 
-// SubmitOperation accepts an operation (as bytes) from a client for replication and
+// SubmitOperation accepts an operation from a client for replication and
 // returns a future for the response to the operation. Note that submitting an operation
 // for replication does not guarantee replication if there are failures. Once the operation
 // has been replicated and applied to the state machine, the future will be populated with the
@@ -480,7 +476,7 @@ func (r *Raft) SubmitOperation(operation []byte, timeout time.Duration) *Operati
 	return future
 }
 
-// SubmitReadOnlyOperation accepts an operation (as bytes) from a client and immediately
+// SubmitReadOnlyOperation accepts an operation from a client and immediately
 // applies it to the state machine without replication if this server has a valid lease.
 // Consequently, read-only operations will generally be significantly more performant than
 // replicated operations. However, read-only operations may read stale or incorrect data

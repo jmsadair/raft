@@ -8,9 +8,7 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 )
 
-var (
-	errSnapshotStoreNotOpen = errors.New("snapshot storage is not open")
-)
+var errSnapshotStoreNotOpen = errors.New("snapshot storage is not open")
 
 // Snapshot represents a snapshot of the replicated state machine.
 type Snapshot struct {
@@ -81,7 +79,7 @@ func (p *persistentSnapshotStorage) Open() error {
 		return nil
 	}
 
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
+	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open snapshot storage")
 	}

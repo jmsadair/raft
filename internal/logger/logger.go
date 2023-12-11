@@ -68,7 +68,10 @@ func NewLogger(opts ...Option) (*Logger, error) {
 		options.level = Debug
 	}
 
-	return &Logger{options: options, base: log.New(options.writer, options.prefix, options.flag)}, nil
+	return &Logger{
+		options: options,
+		base:    log.New(options.writer, options.prefix, options.flag),
+	}, nil
 }
 
 // Debug logs a debug message with the given arguments.

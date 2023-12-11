@@ -1,8 +1,9 @@
 package raft
 
 import (
-	"github.com/jmsadair/raft/internal/errors"
 	"time"
+
+	"github.com/jmsadair/raft/internal/errors"
 )
 
 const (
@@ -109,8 +110,11 @@ func WithHeartbeatInterval(time time.Duration) Option {
 func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
 	return func(options *options) error {
 		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
-			return errors.New("maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
-				minMaxEntriesPerRPC, maxMaxEntriesPerRPC)
+			return errors.New(
+				"maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
+				minMaxEntriesPerRPC,
+				maxMaxEntriesPerRPC,
+			)
 		}
 		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil
@@ -133,7 +137,7 @@ func WithLeaseDuration(leaseDuration time.Duration) Option {
 	}
 }
 
-// WithLogger sets the logger used by the Raft server.
+// WithLogger sets the logger used by the Raft.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
 		if logger == nil {

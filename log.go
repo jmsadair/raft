@@ -104,7 +104,7 @@ func NewLog(path string) Log {
 }
 
 func (l *persistentLog) Open() error {
-	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0666)
+	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open log")
 	}

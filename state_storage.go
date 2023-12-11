@@ -7,9 +7,7 @@ import (
 	"github.com/jmsadair/raft/internal/errors"
 )
 
-var (
-	errStateStorageNotOpen = errors.New("state storage is not open")
-)
+var errStateStorageNotOpen = errors.New("state storage is not open")
 
 // StateStorage represents the component of Raft responsible for persistently storing
 // term and vote.
@@ -54,7 +52,7 @@ func NewStateStorage(path string) StateStorage {
 }
 
 func (p *persistentStateStorage) Open() error {
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0666)
+	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open state storage file")
 	}

@@ -1,9 +1,10 @@
 package raft
 
 import (
+	"testing"
+
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 // TestMakeProtoEntries checks that an array of log entries is correctly converted

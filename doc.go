@@ -143,6 +143,7 @@ Note that you can also specify options such as election timeout and lease durati
 Raft instance. For example, the below code will create a Raft instance that uses 500 milliseconds as its
 election timeout. If no options are provided, the default options are used.
 
+
 	raft, err := raft.NewRaft("raft-1", peers, log, storage, snapshotStorage, fsm, responseCh, raft.WithElectionTimeout(500*time.Millisecond))
 
 All that remains is to create a Server instance and start it.
@@ -195,5 +196,4 @@ contents of the response are not valid.
 Be warned that this is a highly simplified example that demonstrates how raft may be used and some of its features.
 This implementation leaves out many details that would typically be associated with a system that uses Raft such
 as duplicate detection and retry mechanisms.
-*/
-package raft
+*/package raft

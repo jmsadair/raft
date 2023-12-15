@@ -23,10 +23,12 @@ func validateLogEntry(
 	expectedIndex uint64,
 	expectedTerm uint64,
 	expectedData []byte,
+	expectedType LogEntryType,
 ) {
 	require.Equal(t, expectedIndex, entry.Index)
 	require.Equal(t, expectedTerm, entry.Term)
 	require.Equal(t, expectedData, entry.Data)
+	require.Equal(t, expectedType, entry.EntryType)
 }
 
 func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
@@ -94,7 +96,8 @@ func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock 
 func (s *stateMachineMock) Apply(operation *Operation) interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if operation.IsReadOnly {
+	if operation.OperationType == LeaseBasedReadOnly ||
+		operation.OperationType == LinearizableReadOnly {
 		return len(s.operations)
 	}
 	s.operations = append(s.operations, *operation)
@@ -142,7 +145,7 @@ func (s *stateMachineMock) appliedOperations() []Operation {
 	// Set the response channel to nil, since these operations will be compared to others.
 	// Not all operations will necessarily have the same response channel.
 	for i := range operationsCopy {
-		operationsCopy[i].ResponseCh = nil
+		operationsCopy[i].responseCh = nil
 	}
 
 	return operationsCopy
@@ -266,7 +269,12 @@ func (tc *testCluster) stopCluster() {
 	close(tc.shutdownCh)
 }
 
-func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, readOnly bool) {
+func (tc *testCluster) submit(
+	operation []byte,
+	retry bool,
+	expectFail bool,
+	operationType OperationType,
+) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
@@ -279,14 +287,8 @@ func (tc *testCluster) submit(operation []byte, retry bool, expectFail bool, rea
 			server := tc.servers[j]
 			tc.mu.Unlock()
 
-			// Submit an operation to a server. It might be a leader.
-			var future *OperationResponseFuture
-			if !readOnly {
-				future = server.SubmitOperation(operation, 200*time.Millisecond)
-			} else {
-				future = server.SubmitReadOnlyOperation(operation, 200*time.Millisecond)
-			}
-
+			// Submit the operation.
+			future := server.SubmitOperation(operation, operationType, 200*time.Millisecond)
 			if response := future.Await(); response.Err == nil {
 				if string(response.Operation.Bytes) != string(operation) {
 					tc.t.Fatalf("response operation does not match submitted operation")

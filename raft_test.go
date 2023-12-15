@@ -22,7 +22,7 @@ func TestNewRaft(t *testing.T) {
 	require.Zero(t, raft.lastIncludedTerm)
 	require.Equal(t, "", raft.votedFor)
 	require.Equal(t, Shutdown, raft.state)
-	require.Nil(t, raft.lease)
+	require.NotNil(t, raft.operationManager)
 
 	require.Equal(t, defaultHeartbeat, raft.options.heartbeatInterval)
 	require.Equal(t, defaultElectionTimeout, raft.options.electionTimeout)
@@ -49,7 +49,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 		LeaderID:     "leader1",
 		Term:         1,
 		LeaderCommit: 1,
-		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"))},
+		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation)},
 	}
 	response := &AppendEntriesResponse{}
 
@@ -61,7 +61,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("operation1"))
+	validateLogEntry(t, entry, 1, 1, []byte("operation1"), StateMachineOperation)
 }
 
 // TestAppendEntriesConflictSuccess checks that raft correctly handles the case where its log entries and
@@ -83,8 +83,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 		LeaderID: "leader1",
 		Term:     2,
 		Entries: []*LogEntry{
-			NewLogEntry(1, 1, []byte("operation1")),
-			NewLogEntry(2, 1, []byte("operation2")),
+			NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation),
+			NewLogEntry(2, 1, []byte("operation2"), StateMachineOperation),
 		},
 	}
 	response := &AppendEntriesResponse{}
@@ -94,8 +94,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	require.Equal(t, uint64(2), response.Term)
 
 	request.Entries = []*LogEntry{
-		NewLogEntry(1, 1, []byte("operation1")),
-		NewLogEntry(2, 2, []byte("operation2")),
+		NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation),
+		NewLogEntry(2, 2, []byte("operation2"), StateMachineOperation),
 	}
 	response = &AppendEntriesResponse{}
 
@@ -105,11 +105,11 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("operation1"))
+	validateLogEntry(t, entry, 1, 1, []byte("operation1"), StateMachineOperation)
 
 	entry, err = raft.log.GetEntry(2)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 2, 2, []byte("operation2"))
+	validateLogEntry(t, entry, 2, 2, []byte("operation2"), StateMachineOperation)
 }
 
 // TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
@@ -179,7 +179,10 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 
 	raft.state = Follower
 	raft.currentTerm = 1
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
+	require.NoError(
+		t,
+		raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation)),
+	)
 
 	request := &AppendEntriesRequest{
 		LeaderID:     "leader",
@@ -358,7 +361,12 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "candidate1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntries([]*LogEntry{NewLogEntry(2, 2, []byte("operation1"))}))
+	require.NoError(
+		t,
+		raft.log.AppendEntries(
+			[]*LogEntry{NewLogEntry(2, 2, []byte("operation1"), StateMachineOperation)},
+		),
+	)
 
 	request := &RequestVoteRequest{
 		CandidateID:  "candidate2",
@@ -457,7 +465,10 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "leader1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
+	require.NoError(
+		t,
+		raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation)),
+	)
 
 	bytes, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 2, LogTerm: 2}},
@@ -513,9 +524,18 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	raft.currentTerm = 1
 	raft.votedFor = "leader1"
 	raft.state = Follower
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"))))
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(2, 1, []byte("operation2"))))
-	require.NoError(t, raft.log.AppendEntry(NewLogEntry(3, 1, []byte("operation3"))))
+	require.NoError(
+		t,
+		raft.log.AppendEntry(NewLogEntry(1, 1, []byte("operation1"), StateMachineOperation)),
+	)
+	require.NoError(
+		t,
+		raft.log.AppendEntry(NewLogEntry(2, 1, []byte("operation2"), StateMachineOperation)),
+	)
+	require.NoError(
+		t,
+		raft.log.AppendEntry(NewLogEntry(3, 1, []byte("operation3"), StateMachineOperation)),
+	)
 
 	bytes, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}},

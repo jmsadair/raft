@@ -22,23 +22,25 @@ func TestAppendEntries(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1Type := StateMachineOperation
+	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 1
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2Type := StateMachineOperation
+	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
 
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
 	// Make sure the added entries are correct.
 	entry1, err = log.GetEntry(entry1Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
+	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
 
 	entry2, err = log.GetEntry(entry2Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
+	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data, entry2Type)
 
 	require.Equal(t, log.LastTerm(), entry2Term)
 	require.Equal(t, log.LastIndex(), entry2Index)
@@ -50,11 +52,11 @@ func TestAppendEntries(t *testing.T) {
 
 	entry1, err = log.GetEntry(entry1Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
+	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
 
 	entry2, err = log.GetEntry(entry2Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data)
+	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data, entry2Type)
 }
 
 func TestTruncate(t *testing.T) {
@@ -73,17 +75,20 @@ func TestTruncate(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1Type := StateMachineOperation
+	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 1
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2Type := StateMachineOperation
+	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
 
 	var entry3Index uint64 = 3
 	var entry3Term uint64 = 2
 	entry3Data := []byte("entry3")
-	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
+	entry3Type := StateMachineOperation
+	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data, entry3Type)
 
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
@@ -93,7 +98,7 @@ func TestTruncate(t *testing.T) {
 	// Make sure the first entry is still present and correct.
 	entry1, err = log.GetEntry(entry1Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
+	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
 
 	require.Equal(t, log.LastTerm(), entry1Term)
 	require.Equal(t, log.LastIndex(), entry1Index)
@@ -105,7 +110,7 @@ func TestTruncate(t *testing.T) {
 
 	entry1, err = log.GetEntry(entry1Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data)
+	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
 }
 
 func TestCompact(t *testing.T) {
@@ -124,17 +129,20 @@ func TestCompact(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1Type := NoOp
+	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 2
 	entry2Data := []byte("entry2")
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2Type := StateMachineOperation
+	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
 
 	var entry3Index uint64 = 3
 	var entry3Term uint64 = 2
 	entry3Data := []byte("entry3")
-	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data)
+	entry3Type := StateMachineOperation
+	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data, entry3Type)
 
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
@@ -144,7 +152,7 @@ func TestCompact(t *testing.T) {
 	// Make sure the third entry is still present and correct.
 	entry3, err = log.GetEntry(entry3Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)
+	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data, entry3Type)
 
 	require.Equal(t, log.LastTerm(), entry3Term)
 	require.Equal(t, log.LastIndex(), entry3Index)
@@ -153,13 +161,14 @@ func TestCompact(t *testing.T) {
 	var entry4Index uint64 = 4
 	var entry4Term uint64 = 2
 	entry4Data := []byte("entry4")
-	entry4 = NewLogEntry(entry4Index, entry4Term, entry4Data)
+	entry4Type := NoOp
+	entry4 = NewLogEntry(entry4Index, entry4Term, entry4Data, entry4Type)
 
 	require.NoError(t, log.AppendEntry(entry4))
 
 	entry4, err = log.GetEntry(entry4Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data)
+	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data, entry4Type)
 
 	// Close and reopen to the log to make sure it was correctly persisted.
 	require.NoError(t, log.Close())
@@ -168,11 +177,11 @@ func TestCompact(t *testing.T) {
 
 	entry3, err = log.GetEntry(entry3Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data)
+	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data, entry3Type)
 
 	entry4, err = log.GetEntry(entry4Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data)
+	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data, entry4Type)
 }
 
 func TestDiscard(t *testing.T) {
@@ -188,12 +197,14 @@ func TestDiscard(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1Type := StateMachineOperation
+	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
 
 	var entry2Index uint64 = 2
 	var entry2Term uint64 = 4
 	entry2Data := []byte("entry2")
-	entry2 := NewLogEntry(entry2Index, entry2Term, entry2Data)
+	entry2Type := StateMachineOperation
+	entry2 := NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
 
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
@@ -223,7 +234,8 @@ func TestContains(t *testing.T) {
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
-	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data)
+	entry1Type := StateMachineOperation
+	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
 	require.NoError(t, log.AppendEntry(entry1))
 
 	// Ensure log contains newly added entry

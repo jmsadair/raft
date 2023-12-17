@@ -290,6 +290,9 @@ func (tc *testCluster) submit(
 			// Submit the operation.
 			future := server.SubmitOperation(operation, operationType, 200*time.Millisecond)
 			if response := future.Await(); response.Err == nil {
+				if expectFail {
+					tc.t.Fatalf("expected response to fail, but it was successful")
+				}
 				if string(response.Operation.Bytes) != string(operation) {
 					tc.t.Fatalf("response operation does not match submitted operation")
 				}

@@ -639,8 +639,8 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			)
 
 			// Find the first index of the conflicting term.
-			var index uint64
-			for index = request.PrevLogIndex - 1; index > r.lastIncludedIndex; index-- {
+			index := request.PrevLogIndex - 1
+			for ; index > r.lastIncludedIndex; index-- {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
 					r.options.logger.Fatalf(
@@ -904,7 +904,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
 	for index := nextIndex; index < r.log.NextIndex(); index++ {
 		// Make sure that the index is in bounds since the log may have been compacted.
-		if index <= r.lastIncludedIndex || len(entries) >= r.options.maxEntriesPerRPC {
+		if index <= r.lastIncludedIndex {
 			break
 		}
 
@@ -959,14 +959,13 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	if !response.Success {
-		r.nextIndex[peer.ID()] = util.Max(1, util.Min(r.log.NextIndex(), response.Index))
-
 		// The log has been compacted and no longer contains the entries the peer needs.
 		// Send the peer a snapshot to catch them up.
-		if r.nextIndex[peer.ID()] <= r.lastIncludedIndex {
+		if response.Index <= r.lastIncludedIndex {
 			go r.sendInstallSnapshot(peer)
+			return
 		}
-
+		r.nextIndex[peer.ID()] = response.Index
 		return
 	}
 
@@ -1082,9 +1081,8 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Only leaders may send snapshots. If the leader has the log entry corresponding to the next
-	// index of a peer, a snapshot is not necessary.
-	if r.state != Leader || r.nextIndex[peer.ID()] > r.lastIncludedIndex {
+	// Only leaders may send snapshots.
+	if r.state != Leader {
 		return
 	}
 

@@ -344,6 +344,25 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 		}
 	}
 
+	for i := 0; i < len(appliedOperationsPerServer); i++ {
+		for j := 0; j < len(appliedOperationsPerServer); j++ {
+			applied1 := appliedOperationsPerServer[i]
+			applied2 := appliedOperationsPerServer[j]
+			if reflect.DeepEqual(applied1, applied2) {
+				continue
+			}
+			for k := 0; k < util.Min(len(applied1), len(applied2)); k++ {
+				op1 := applied1[k]
+				op2 := applied2[k]
+				if reflect.DeepEqual(op1, op2) {
+					continue
+				}
+				tc.t.Fatalf("fsm %d != fsm %d: index1 = %d term1 = %d op1 = %s index2 = %d term2 = %d op2 = %s",
+					i, j, op1.LogIndex, op1.LogTerm, string(op1.Bytes), op2.LogIndex, op2.LogTerm, string(op2.Bytes))
+			}
+		}
+	}
+
 	tc.t.Fatalf("cluster state machines do not match")
 }
 

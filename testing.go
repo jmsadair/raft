@@ -357,8 +357,17 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 				if reflect.DeepEqual(op1, op2) {
 					continue
 				}
-				tc.t.Fatalf("fsm %d != fsm %d: index1 = %d term1 = %d op1 = %s index2 = %d term2 = %d op2 = %s",
-					i, j, op1.LogIndex, op1.LogTerm, string(op1.Bytes), op2.LogIndex, op2.LogTerm, string(op2.Bytes))
+				tc.t.Fatalf(
+					"fsm %d != fsm %d: index1 = %d term1 = %d op1 = %s index2 = %d term2 = %d op2 = %s",
+					i,
+					j,
+					op1.LogIndex,
+					op1.LogTerm,
+					string(op1.Bytes),
+					op2.LogIndex,
+					op2.LogTerm,
+					string(op2.Bytes),
+				)
 			}
 		}
 	}

@@ -4,13 +4,39 @@ import (
 	"time"
 )
 
+// OperationType is the type of the operation that is being submitted to
+// raft.
 type OperationType uint32
 
 const (
+	// Replicated indicates that the provided operation will be written to the
+	// log and guarantees linearizable semantics.
 	Replicated OperationType = iota
+
+	// LinearizableReadOnly indicates that the provided operation will not be written
+	// to the log and requires that the recieving server verify its leadership through
+	// a round  of heartbeats to its peers. Guarantees linearizable semantics.
 	LinearizableReadOnly
+
+	// LeaseBasedReadOnly indicates that the provided operation will not be written
+	// to the log and requires that the server verify its leadership via its lease.
+	// This operation type does not guarantee linearizable semantics.
 	LeaseBasedReadOnly
 )
+
+// String converts an OperationType to a string.
+func (o OperationType) String() string {
+	switch o {
+	case Replicated:
+		return "replicated"
+	case LinearizableReadOnly:
+		return "linearizable read only"
+	case LeaseBasedReadOnly:
+		return "lease based read only"
+	default:
+		panic("invalid operation type")
+	}
+}
 
 // OperationTimeoutError represents an error that occurs when an operation submitted to
 // raft times out.

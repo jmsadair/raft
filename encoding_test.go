@@ -8,7 +8,7 @@ import (
 )
 
 func TestLogEncoderDecoder(t *testing.T) {
-	entry := NewLogEntry(1, 1, []byte("test"), StateMachineOperation)
+	entry := NewLogEntry(1, 1, []byte("test"), OperationEntry)
 	buf := new(bytes.Buffer)
 
 	require.NoError(t, encodeLogEntry(buf, entry))

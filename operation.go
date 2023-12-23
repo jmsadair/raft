@@ -147,9 +147,10 @@ type operationManager struct {
 
 func newOperationManager(leaseDuration time.Duration) *operationManager {
 	return &operationManager{
-		pendingReadOnly:   make(map[*Operation]bool),
-		pendingReplicated: make(map[uint64]chan OperationResponse),
-		leaderLease:       newLease(leaseDuration),
+		pendingReadOnly:    make(map[*Operation]bool),
+		pendingReplicated:  make(map[uint64]chan OperationResponse),
+		leaderLease:        newLease(leaseDuration),
+		shouldVerifyQuorum: true,
 	}
 }
 

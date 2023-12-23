@@ -822,7 +822,7 @@ func (r *Raft) submitReplicatedOperation(
 		return future
 	}
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, StateMachineOperation)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, OperationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatalf("server %s failed to append entry to log: %s", err.Error())
 	}
@@ -1252,7 +1252,7 @@ func (r *Raft) applyLoop() {
 					err.Error(),
 				)
 			}
-			if entry.EntryType == NoOp {
+			if entry.EntryType == NoOpEntry {
 				r.lastApplied++
 				continue
 			}
@@ -1355,7 +1355,7 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOp)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
 	}

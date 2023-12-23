@@ -9,7 +9,7 @@ message LogEntry {
     bytes  data   = 4;
     enum LogEntryType {
         LOG_ENTRY_TYPE_NOOP_UNSPECIFIED      = 0;
-        LOG_ENTRY_TYPE_STATEMACHINEOPERATION = 1;
+        LOG_ENTRY_TYPE_OPERATION = 1;
     }
     LogEntryType entry_type = 5;
 }

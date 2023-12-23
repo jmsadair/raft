@@ -62,8 +62,8 @@ type Log interface {
 type LogEntryType uint32
 
 const (
-	NoOp LogEntryType = iota
-	StateMachineOperation
+	NoOpEntry LogEntryType = iota
+	OperationEntry
 )
 
 // LogEntry is a log entry in the log.

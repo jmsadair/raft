@@ -1257,12 +1257,17 @@ func (r *Raft) applyLoop() {
 				continue
 			}
 
+			responseCh, ok := r.operationManager.pendingReplicated[entry.Index]
+			if ok {
+				delete(r.operationManager.pendingReplicated, entry.Index)
+			}
+
 			operation := Operation{
 				LogIndex:      entry.Index,
 				LogTerm:       entry.Term,
 				Bytes:         entry.Data,
 				OperationType: Replicated,
-				responseCh:    r.operationManager.pendingReplicated[entry.Index],
+				responseCh:    responseCh,
 			}
 			response := OperationResponse{Operation: operation}
 

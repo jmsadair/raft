@@ -23,44 +23,55 @@ type NotLeaderError struct {
 	KnownLeader string
 }
 
-// This function implements the error interface for the NotLeaderError type.
-// It formats and returns an error message indicating that the server with
+// Error formats and returns an error message indicating that the server with
 // the ID e.ServerID is not the leader, and the known leader is e.KnownLeader.
 func (e NotLeaderError) Error() string {
 	return fmt.Sprintf("server %s is not the leader: knownLeader = %s", e.ServerID, e.KnownLeader)
 }
 
-// InvalidLeaseError is returned when a read-only operation is submitted but the lease expires or the server
-// loses leadership before it can be applied to the state machine.
+// InvalidLeaseError is returned when a lease-based read-only operation is
+// submitted but the lease expires or the server loses leadership before
+// it can be applied to the state machine.
 type InvalidLeaseError struct {
 	// The ID of the server that the operation was submitted to.
 	ServerID string
 }
 
-// This function implements the error interface for the InvalidLeaseError type.
-// It formats and returns an error message indicating that the server with
+// Error formats and returns an error message indicating that the server with
 // the ID e.ServerID does not have a valid lease.
 func (e InvalidLeaseError) Error() string {
 	return fmt.Sprintf("server %s does not have a valid lease", e.ServerID)
 }
 
-// State represents the current state of a Raft server.
-// A Raft server may either be shutdown, the leader, or a follower.
+// InvalidOperationTypeError is returned when an operation type is submitted that is
+// not supported.
+type InvalidOperationTypeError struct {
+	// The operation type that is invalid.
+	OperationType OperationType
+}
+
+// Error formats and returns an error message indicating that operation type
+// e.OperationType is not valid.
+func (e InvalidOperationTypeError) Error() string {
+	return fmt.Sprintf("operation type '%s' is not a supported operation type", e.OperationType)
+}
+
+// State represents the current state of a raft node.
+// A raft node may either be shutdown, the leader, or a follower.
 type State uint32
 
 const (
-	// Leader is a state indicating that a server is responsible for replicating and
-	// committing log entries. Typically, only one server in a cluster will be the leader.
+	// Leader is a state indicating that the raft node is responsible for replicating and
+	// committing log entries. Typically, only one raft node in a cluster will be the leader.
 	// However, if there are partitions or other failures, it is possible there is more than
 	// one leader.
 	Leader State = iota
 
-	// Follower is a state indicating that a server is responsible for accepting log entries replicated
-	// by the leader.
-	// A server in the follower state may not accept operations for replication.
+	// Follower is a state indicating that a raft node  is responsible for accepting log entries replicated
+	// by the leader. A node in the follower state may not accept operations for replication.
 	Follower
 
-	// Shutdown is a state indicating that the server is currently offline.
+	// Shutdown is a state indicating that the raft node is currently offline.
 	Shutdown
 )
 
@@ -78,12 +89,12 @@ func (s State) String() string {
 	}
 }
 
-// Status is the status of a Raft instance.
+// Status is the status of a raft node.
 type Status struct {
-	// The ID of the Raft instance.
+	// The ID of the raft node.
 	ID string
 
-	// The Address of the Raft instance.
+	// The address of the raft node.
 	Address net.Addr
 
 	// The current term.
@@ -95,7 +106,7 @@ type Status struct {
 	// The index of the last log entry applied to the state machine.
 	LastApplied uint64
 
-	// The current state of Raft instance: leader, follower, shutdown.
+	// The current state of the raft node: leader, follower, shutdown.
 	State State
 }
 
@@ -147,19 +158,19 @@ type Protocol interface {
 // logic for an actual server, as it solely encapsulates the core functionality of Raft and cannot operate
 // as a standalone server.
 type Raft struct {
-	// The ID of this Raft instance.
+	// The ID of this raft node.
 	id string
 
-	// The ID that Raft instance believes is the leader. Used to redirect clients.
+	// The ID that this raft node believes is the leader. Used to redirect clients.
 	leaderId string
 
-	// The configuration options for this Raft instance.
+	// The configuration options for this raft node.
 	options options
 
-	// The peers of this Raft instance.
+	// The peers of this raft node.
 	peers map[string]Peer
 
-	// Manages both read-only and replicated operations
+	// Manages both read-only and replicated operations.
 	operationManager *operationManager
 
 	// This contains the next log index to send to each server.
@@ -168,28 +179,30 @@ type Raft struct {
 	// This contains the highest log entry known to be replicated on each sever.
 	matchIndex map[string]uint64
 
-	// This stores and retrieves log entries in a durable manner.
+	// This stores and retrieves persisted log entries.
 	log Log
 
-	// This stores and retrieves the vote and term in a durable manner.
+	// This stores and retrieves persisted vote and term.
 	stateStorage StateStorage
 
-	// This stores and retrieves snapshots in a durable manner.
+	// This stores and retrieves persisted snapshots.
 	snapshotStorage SnapshotStorage
 
 	// The state machine provided by the client that operations will be applied to.
 	fsm StateMachine
 
-	// Notifies the apply loop that the commit index has been updated.
+	// Notifies the apply loop that the commit index has been updated and that
+	// replicated operation may be applied to the state machine.
 	applyCond *sync.Cond
 
 	// Notifies the commit loop that new log entries may be ready to be committed.
 	commitCond *sync.Cond
 
-	// Notifies read-only loop that some operations may be able to be applied to the state machine.
+	// Notifies read-only loop that read-only operations may be able to be applied
+	// to the state machine.
 	readOnlyCond *sync.Cond
 
-	// The current state of this raft instance: leader, follower, or shutdown.
+	// The current state of this raft node: leader, follower, or shutdown.
 	state State
 
 	// Index of the last log entry that was committed.
@@ -198,7 +211,7 @@ type Raft struct {
 	// Index of the last log entry that was applied.
 	lastApplied uint64
 
-	// The current term of this Raft instance. Must be persisted.
+	// The current term of this raft node. Must be persisted.
 	currentTerm uint64
 
 	// The last included index of the most recent snapshot.
@@ -207,23 +220,20 @@ type Raft struct {
 	// The last included term of the most recent snapshot.
 	lastIncludedTerm uint64
 
-	// ID of the candidate that this Raft instance voted for. Must be persisted.
+	// ID of the candidate that this raft node voted for. Must be persisted.
 	votedFor string
 
 	// The timestamp representing the time of the last contact by the leader.
 	lastContact time.Time
 
-	// Ensures go routines have exited upon stopping.
 	wg sync.WaitGroup
 
-	// A mutex used for synchronization within the Raft struct
 	mu sync.Mutex
 }
 
-// NewRaft creates a new instance of Raft that is configured with the provided options. Responses from
-// applying operations to the state machine will be sent over the provided response channel. If the log,
-// state storage, or snapshot storage contain any persisted state, it will be read into memory and Raft
-// will be initialized with that state.
+// NewRaft creates a new instance of Raft that is configured with the provided options. If the log,
+// state storage, or snapshot storage contain any persisted state, it will be read into memory and
+// Raft will be initialized with that state.
 func NewRaft(
 	id string,
 	peers map[string]Peer,
@@ -434,11 +444,10 @@ func (r *Raft) Stop() error {
 	return nil
 }
 
-// SubmitOperation accepts an operation from a client for replication and
-// returns a future for the response to the operation. Note that submitting an operation
-// for replication does not guarantee replication if there are failures. Once the operation
-// has been replicated and applied to the state machine, the future will be populated with the
-// response.
+// SubmitOperation accepts an operation from a client for replication andcreturns a future
+// for the response to the operation. Note that submitting an operation for replication does
+// not guarantee replication if there are failures. Once the operation has been applied to
+// the state machine, the future will be populated with the response.
 func (r *Raft) SubmitOperation(
 	operation []byte,
 	operationType OperationType,
@@ -449,10 +458,11 @@ func (r *Raft) SubmitOperation(
 		return r.submitReplicatedOperation(operation, timeout)
 	case LeaseBasedReadOnly, LinearizableReadOnly:
 		return r.submitReadOnlyOperation(operation, operationType, timeout)
+	default:
+		future := NewOperationResponseFuture(operation, timeout)
+		future.responseCh <- OperationResponse{Err: InvalidOperationTypeError{OperationType: operationType}}
+		return future
 	}
-
-	// FIX ME: return appropriate error.
-	return nil
 }
 
 // Status returns the status of the Raft instance. The status includes
@@ -859,8 +869,6 @@ func (r *Raft) submitReadOnlyOperation(
 	return future
 }
 
-// sendAppendEntriesToPeers sends an AppendEntries RPC to all peers concurrently.
-// Expects lock to be held.
 func (r *Raft) sendAppendEntriesToPeers() {
 	numResponses := 1
 	for _, peer := range r.peers {
@@ -868,7 +876,6 @@ func (r *Raft) sendAppendEntriesToPeers() {
 	}
 }
 
-// sendAppendEntries sends an AppendEntries RPC to the provided peer.
 func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -982,15 +989,12 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 }
 
-// sendRequestVoteToPeers sends a RequestVote RPC to all peers concurrent. Expects
-// lock to be held.
 func (r *Raft) sendRequestVoteToPeers(votes *int) {
 	for _, peer := range r.peers {
 		go r.sendRequestVote(peer, votes)
 	}
 }
 
-// sendRequestVote sends a RequestVote RPC to the provided peer.
 func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1041,9 +1045,6 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 	}
 }
 
-// takeSnapshot takes a snapshot of the current state of the state machine,
-// persists the snapshot, and compacts the log up to and including the
-// last included index of the snapshot.
 func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
 	if lastIncludedIndex >= r.log.LastIndex() {
 		return
@@ -1076,7 +1077,6 @@ func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
 		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
 }
 
-// sendInstallSnapshot sends an InstallSnapshot RPC to the provided peer.
 func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1120,8 +1120,6 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 	r.matchIndex[peer.ID()] = request.LastIncludedIndex
 }
 
-// heartbeatLoop is a long-running loop that periodically sends AppendEntries RPCs
-// to all the peers if this server is the leader.
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
@@ -1144,8 +1142,6 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-// electionLoop is a long-running loop that kicks off an election if this server
-// has not heard from the leader within the election timeout.
 func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
@@ -1167,7 +1163,6 @@ func (r *Raft) electionLoop() {
 	}
 }
 
-// election makes this server a candidate and sends RequestVote RPCs to all peers.
 func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1183,7 +1178,6 @@ func (r *Raft) election() {
 	r.sendRequestVoteToPeers(&votesReceived)
 }
 
-// commitLoop is a long-running loop that updates the commit index when signalled.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1239,7 +1233,6 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-// applyLoop is a long-running loop that applies operations to the state machine when signalled.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1348,8 +1341,6 @@ func (r *Raft) readOnlyLoop() {
 	}
 }
 
-// becomeCandidate transitions this server to the candidate state. It increments the term and sets this
-// server's vote as itself. Expects lock to be held.
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
@@ -1361,8 +1352,6 @@ func (r *Raft) becomeCandidate() {
 	)
 }
 
-// becomeLeader transitions this server to the leader state. It sets the next index for all peers to the index
-// following the last log index and sets the match index for all peers to zero. Expects lock to be held.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 
@@ -1383,9 +1372,6 @@ func (r *Raft) becomeLeader() {
 	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
 }
 
-// becomeFollower transitions this server to the follower state. It clears the vote, sets the term to
-// the provided term, and sets the leader ID to the provided ID. Additionally, it responds to any pending futures
-// with a NotLeaderError. Expects lock to be held.
 func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.state = Follower
 	r.currentTerm = term
@@ -1404,22 +1390,16 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 }
 
-// hasQuorum indicates whether the provided count constitutes a majority
-// of the cluster. Expects lock to be held.
 func (r *Raft) hasQuorum(count int) bool {
 	return count > len(r.peers)/2
 }
 
-// persistTermAndVote writes the term and vote to the provided state stateStorage mechanism.
-// Expects lock to be held.
 func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
 		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", r.id, err.Error())
 	}
 }
 
-// disconnectPeer disconnects the peer with the provided ID from this server. This
-// is primarily for testing purposes.
 func (r *Raft) disconnectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1429,8 +1409,6 @@ func (r *Raft) disconnectPeer(id string) error {
 	return nil
 }
 
-// connectPeer connects the peer with the provided ID from this server. This
-// is primarily for testing purposes.
 func (r *Raft) connectPeer(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1440,7 +1418,6 @@ func (r *Raft) connectPeer(id string) error {
 	return nil
 }
 
-// sendResponseWithoutBlocking sends the provided response over the provided channel without blocking.
 func (r *Raft) sendResponseWithoutBlocking(
 	responseCh chan OperationResponse,
 	response OperationResponse,

@@ -31,11 +31,6 @@ func TestSnapshotStore(t *testing.T) {
 	require.NotNil(t, last2)
 	validateSnapshot(t, snapshot2, last2)
 
-	snapshots, err := snapshotStore.ListSnapshots()
-	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 2)
-
 	require.NoError(t, snapshotStore.Close())
 	require.NoError(t, snapshotStore.Open())
 	require.NoError(t, snapshotStore.Replay())
@@ -44,9 +39,4 @@ func TestSnapshotStore(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, last2)
 	validateSnapshot(t, snapshot2, last2)
-
-	snapshots, err = snapshotStore.ListSnapshots()
-	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 2)
 }

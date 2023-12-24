@@ -95,12 +95,6 @@ func (s *Server) SubmitOperation(
 	return s.raft.SubmitOperation(operation, operationType, timeout)
 }
 
-// ListSnapshots returns an array of all the snapshots that the underlying
-// Raft instance has taken.
-func (s *Server) ListSnapshots() []Snapshot {
-	return s.raft.ListSnapshots()
-}
-
 // AppendEntries handles the AppendEntries gRPC request.
 // It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.

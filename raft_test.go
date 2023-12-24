@@ -438,11 +438,10 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 	require.Equal(t, uint64(1), raft.lastIncludedIndex)
 	require.Equal(t, uint64(1), raft.lastIncludedTerm)
 
-	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	snapshot, err := raft.snapshotStorage.LastSnapshot()
 	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 1)
-	require.Equal(t, bytes, snapshots[0].Data)
+	require.NotNil(t, snapshot)
+	require.Equal(t, bytes, snapshot.Data)
 
 	// Make sure that the state machine was restored after installing the snapshot.
 	// The data from the snapshot from the state machine should match the data from the request.
@@ -492,11 +491,10 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	require.Equal(t, uint64(2), raft.lastIncludedIndex)
 	require.Equal(t, uint64(2), raft.lastIncludedTerm)
 
-	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	snapshot, err := raft.snapshotStorage.LastSnapshot()
 	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 1)
-	require.Equal(t, bytes, snapshots[0].Data)
+	require.NotNil(t, snapshot)
+	require.Equal(t, bytes, snapshot.Data)
 
 	require.Equal(t, uint64(2), raft.log.LastIndex())
 	require.Equal(t, uint64(2), raft.log.LastTerm())
@@ -559,11 +557,10 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.Equal(t, uint64(3), raft.lastIncludedIndex)
 	require.Equal(t, uint64(1), raft.lastIncludedTerm)
 
-	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	snapshot, err := raft.snapshotStorage.LastSnapshot()
 	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 1)
-	require.Equal(t, bytes, snapshots[0].Data)
+	require.NotNil(t, snapshot)
+	require.Equal(t, bytes, snapshot.Data)
 
 	require.Equal(t, uint64(3), raft.log.LastIndex())
 	require.Equal(t, uint64(1), raft.log.LastTerm())
@@ -644,8 +641,7 @@ func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	require.Equal(t, uint64(0), raft.lastIncludedIndex)
 	require.Equal(t, uint64(0), raft.lastIncludedTerm)
 
-	snapshots, err := raft.snapshotStorage.ListSnapshots()
+	snapshot, err := raft.snapshotStorage.LastSnapshot()
 	require.NoError(t, err)
-	require.NotNil(t, snapshots)
-	require.Len(t, snapshots, 0)
+	require.Nil(t, snapshot)
 }

@@ -148,10 +148,6 @@ type Protocol interface {
 	// install a snapshot and fills the response with the result of the installation. It returns an
 	// error if the snapshot installation process fails.
 	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
-
-	// ListSnapshots returns a list of all snapshots currently stored by the protocol.
-	// Snapshots are used for log compaction and to bring new servers up to date.
-	ListSnapshots() []Snapshot
 }
 
 // Raft implements the Protocol interface. This implementation of Raft should be utilized as the internal
@@ -792,17 +788,6 @@ func (r *Raft) InstallSnapshot(
 	}
 
 	return nil
-}
-
-// ListSnapshots returns an array of all the snapshots that have been taken.
-func (r *Raft) ListSnapshots() []Snapshot {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	snapshots, err := r.snapshotStorage.ListSnapshots()
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed while listing snapshots: %s", r.id, err.Error())
-	}
-	return snapshots
 }
 
 func (r *Raft) submitReplicatedOperation(

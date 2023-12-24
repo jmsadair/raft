@@ -63,10 +63,6 @@ type options struct {
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
 
-	// The maximum number of log entries that will be transmitted via
-	// an AppendEntries RPC.
-	maxEntriesPerRPC int
-
 	// The duration that a lease remains valid upon renewal.
 	leaseDuration time.Duration
 

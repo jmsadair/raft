@@ -377,12 +377,11 @@ func (r *Raft) Start() error {
 	go r.commitLoop()
 
 	r.options.logger.Infof(
-		"server %s started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v, maxLogEntriesPerRPC = %v",
+		"server %s started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
 		r.id,
 		r.options.electionTimeout,
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
-		r.options.maxEntriesPerRPC,
 	)
 
 	return nil

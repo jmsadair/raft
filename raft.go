@@ -883,8 +883,11 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 
 	// Handle the single server case.
 	if peer.ID() == r.id {
-		if len(r.peers) == 1 && r.log.LastIndex() > r.commitIndex {
-			r.commitCond.Broadcast()
+		if len(r.peers) == 1 {
+			if r.log.LastIndex() > r.commitIndex {
+				r.commitCond.Broadcast()
+			}
+			r.tryApplyReadOnlyOperations()
 		}
 		return
 	}
@@ -952,10 +955,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	if numResponses != nil {
 		*numResponses += 1
 		if r.hasQuorum(*numResponses) {
-			r.operationManager.markAsVerified()
-			r.readOnlyCond.Broadcast()
-			r.operationManager.shouldVerifyQuorum = true
-			r.operationManager.leaderLease.renew()
+			r.tryApplyReadOnlyOperations()
 			numResponses = nil
 		}
 	}
@@ -1312,9 +1312,7 @@ func (r *Raft) readOnlyLoop() {
 		for _, operation := range appliableOperations {
 			response := OperationResponse{Operation: *operation}
 
-			// Only check the validity of the lease if this is not a single server
-			// cluster. In the single server case, the lease is irrelevant.
-			if len(r.peers) > 1 && operation.OperationType == LeaseBasedReadOnly &&
+			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
 				response.Err = InvalidLeaseError{ServerID: r.id}
 				r.sendResponseWithoutBlocking(operation.responseCh, response)
@@ -1388,6 +1386,13 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	// Cancel any pending operations.
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
+}
+
+func (r *Raft) tryApplyReadOnlyOperations() {
+	r.operationManager.markAsVerified()
+	r.operationManager.leaderLease.renew()
+	r.operationManager.shouldVerifyQuorum = true
+	r.readOnlyCond.Broadcast()
 }
 
 func (r *Raft) hasQuorum(count int) bool {

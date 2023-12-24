@@ -17,7 +17,7 @@ const (
 
 	minLeaseDuration     = time.Duration(25 * time.Millisecond)
 	maxLeaseDuration     = time.Duration(1000 * time.Millisecond)
-	defaultLeaseDuration = time.Duration(300 * time.Millisecond)
+	defaultLeaseDuration = time.Duration(100 * time.Millisecond)
 )
 
 // Logger supports logging messages at the debug, info, warn, error, and fatal level.

@@ -265,9 +265,6 @@ func NewRaft(
 	if options.electionTimeout == 0 {
 		options.electionTimeout = defaultElectionTimeout
 	}
-	if options.maxEntriesPerRPC == 0 {
-		options.maxEntriesPerRPC = defaultMaxEntriesPerRPC
-	}
 	if options.leaseDuration == 0 {
 		options.leaseDuration = defaultLeaseDuration
 	}
@@ -955,11 +952,9 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	if numResponses != nil {
 		*numResponses += 1
 		if r.hasQuorum(*numResponses) {
-			if !r.operationManager.shouldVerifyQuorum {
-				r.operationManager.markAsVerified()
-				r.readOnlyCond.Broadcast()
-				r.operationManager.shouldVerifyQuorum = true
-			}
+			r.operationManager.markAsVerified()
+			r.readOnlyCond.Broadcast()
+			r.operationManager.shouldVerifyQuorum = true
 			r.operationManager.leaderLease.renew()
 			numResponses = nil
 		}
@@ -1293,7 +1288,7 @@ func (r *Raft) applyLoop() {
 			}
 		}
 
-		if r.state == Leader && len(r.operationManager.pendingReadOnly) > 0 {
+		if r.state == Leader {
 			r.readOnlyCond.Broadcast()
 		}
 	}

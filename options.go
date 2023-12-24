@@ -15,10 +15,6 @@ const (
 	maxHeartbeat     = time.Duration(300 * time.Millisecond)
 	defaultHeartbeat = time.Duration(50 * time.Millisecond)
 
-	minMaxEntriesPerRPC     = 50
-	maxMaxEntriesPerRPC     = 500
-	defaultMaxEntriesPerRPC = 100
-
 	minLeaseDuration     = time.Duration(25 * time.Millisecond)
 	maxLeaseDuration     = time.Duration(1000 * time.Millisecond)
 	defaultLeaseDuration = time.Duration(300 * time.Millisecond)
@@ -101,22 +97,6 @@ func WithHeartbeatInterval(time time.Duration) Option {
 				minHeartbeat, maxHeartbeat)
 		}
 		options.heartbeatInterval = time
-		return nil
-	}
-}
-
-// WithMaxEntriesPerRPC sets the maximum number of log entries that can be
-// transmitted via an AppendEntries RPC.
-func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
-	return func(options *options) error {
-		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
-			return errors.New(
-				"maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
-				minMaxEntriesPerRPC,
-				maxMaxEntriesPerRPC,
-			)
-		}
-		options.maxEntriesPerRPC = maxEntriesPerRPC
 		return nil
 	}
 }

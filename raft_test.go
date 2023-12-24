@@ -26,7 +26,6 @@ func TestNewRaft(t *testing.T) {
 
 	require.Equal(t, defaultHeartbeat, raft.options.heartbeatInterval)
 	require.Equal(t, defaultElectionTimeout, raft.options.electionTimeout)
-	require.Equal(t, defaultMaxEntriesPerRPC, raft.options.maxEntriesPerRPC)
 	require.Equal(t, defaultLeaseDuration, raft.options.leaseDuration)
 	require.NotNil(t, raft.options.logger)
 }

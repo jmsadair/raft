@@ -661,7 +661,7 @@ func TestBasicReadOnly(t *testing.T) {
 	cluster.submit([]byte{}, true, false, LeaseBasedReadOnly)
 }
 
-// TestSingleServerReadOnly checks that a read-only operations are successful in the single server case.
+// TestSingleServerReadOnly checks that read-only operations are successful in the single server case.
 func TestSingleServerReadOnly(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 1*time.Second)
 
@@ -678,6 +678,7 @@ func TestSingleServerReadOnly(t *testing.T) {
 	}
 
 	cluster.submit([]byte{}, true, false, LeaseBasedReadOnly)
+	cluster.submit([]byte{}, true, false, LinearizableReadOnly)
 }
 
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
@@ -696,6 +697,10 @@ func TestReadOnlyFail(t *testing.T) {
 	// Disconnect the other two servers in the cluster.
 	cluster.disconnectServer((leader + 1) % 3)
 	cluster.disconnectServer((leader + 2) % 3)
+
+	// Linearizable read-only operation should fail since the heartbeats
+	// of the leader will not be succesful.
+	cluster.submit([]byte{}, true, true, LinearizableReadOnly)
 
 	// Give the lease some time to expire.
 	time.Sleep(defaultLeaseDuration)

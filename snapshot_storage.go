@@ -91,9 +91,9 @@ func (p *persistentSnapshotStorage) Replay() error {
 
 	reader := bufio.NewReader(p.file)
 
-	var snapshot Snapshot
-	var err error
 	for {
+		var snapshot Snapshot
+		var err error
 		snapshot, err = decodeSnapshot(reader)
 		if err == io.EOF {
 			break

@@ -87,18 +87,12 @@ func (s *Server) IsStarted() bool {
 // SubmitOperation submits an operation (as bytes) to the server for processing.
 // It forwards the operation to the underlying Protocol instance for handling
 // and returns a future for the response to the operation.
-func (s *Server) SubmitOperation(operation []byte, timeout time.Duration) *OperationResponseFuture {
-	return s.raft.SubmitOperation(operation, timeout)
-}
-
-// SubmitReadOnlyOperation submits an operation (as bytes) to the server for
-// processing. It forwards the operation to the underlying Protocol instance for handling
-// and returns a future for the response to the operation.
-func (s *Server) SubmitReadOnlyOperation(
+func (s *Server) SubmitOperation(
 	operation []byte,
+	operationType OperationType,
 	timeout time.Duration,
 ) *OperationResponseFuture {
-	return s.raft.SubmitReadOnlyOperation(operation, timeout)
+	return s.raft.SubmitOperation(operation, operationType, timeout)
 }
 
 // ListSnapshots returns an array of all the snapshots that the underlying

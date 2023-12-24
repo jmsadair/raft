@@ -88,7 +88,12 @@ type InstallSnapshotResponse struct {
 func makeProtoEntries(entries []*LogEntry) []*pb.LogEntry {
 	protoEntries := make([]*pb.LogEntry, len(entries))
 	for i, entry := range entries {
-		protoEntry := &pb.LogEntry{Index: entry.Index, Term: entry.Term, Data: entry.Data}
+		protoEntry := &pb.LogEntry{
+			Index:     entry.Index,
+			Term:      entry.Term,
+			Data:      entry.Data,
+			EntryType: pb.LogEntry_LogEntryType(entry.EntryType),
+		}
 		protoEntries[i] = protoEntry
 	}
 	return protoEntries
@@ -156,9 +161,10 @@ func makeEntries(protoEntries []*pb.LogEntry) []*LogEntry {
 	entries := make([]*LogEntry, len(protoEntries))
 	for i, protoEntry := range protoEntries {
 		entry := &LogEntry{
-			Index: protoEntry.GetIndex(),
-			Term:  protoEntry.GetTerm(),
-			Data:  protoEntry.GetData(),
+			Index:     protoEntry.GetIndex(),
+			Term:      protoEntry.GetTerm(),
+			Data:      protoEntry.GetData(),
+			EntryType: LogEntryType(protoEntry.EntryType),
 		}
 		entries[i] = entry
 	}

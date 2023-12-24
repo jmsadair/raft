@@ -95,10 +95,11 @@ func decodePersistentState(r io.Reader) (persistentState, error) {
 
 func encodeLogEntry(w io.Writer, entry *LogEntry) error {
 	pbEntry := &pb.LogEntry{
-		Index:  entry.Index,
-		Term:   entry.Term,
-		Data:   entry.Data,
-		Offset: entry.Offset,
+		Index:     entry.Index,
+		Term:      entry.Term,
+		Data:      entry.Data,
+		Offset:    entry.Offset,
+		EntryType: pb.LogEntry_LogEntryType(entry.EntryType),
 	}
 
 	buf, err := proto.Marshal(pbEntry)
@@ -135,10 +136,11 @@ func decodeLogEntry(r io.Reader) (LogEntry, error) {
 	}
 
 	entry := LogEntry{
-		Index:  pbEntry.GetIndex(),
-		Term:   pbEntry.GetTerm(),
-		Data:   pbEntry.GetData(),
-		Offset: pbEntry.GetOffset(),
+		Index:     pbEntry.GetIndex(),
+		Term:      pbEntry.GetTerm(),
+		Data:      pbEntry.GetData(),
+		Offset:    pbEntry.GetOffset(),
+		EntryType: LogEntryType(pbEntry.EntryType),
 	}
 
 	return entry, nil

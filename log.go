@@ -59,6 +59,13 @@ type Log interface {
 	SizeInBytes() (int64, error)
 }
 
+type LogEntryType uint32
+
+const (
+	NoOpEntry LogEntryType = iota
+	OperationEntry
+)
+
 // LogEntry is a log entry in the log.
 type LogEntry struct {
 	// The index of the log entry.
@@ -72,12 +79,15 @@ type LogEntry struct {
 
 	// The data of the log entry.
 	Data []byte
+
+	// The type of the log entry.
+	EntryType LogEntryType
 }
 
 // NewLogEntry creates a new instance of LogEntry with the provided
 // index, term, and data.
-func NewLogEntry(index uint64, term uint64, data []byte) *LogEntry {
-	return &LogEntry{Index: index, Term: term, Data: data}
+func NewLogEntry(index uint64, term uint64, data []byte, entryType LogEntryType) *LogEntry {
+	return &LogEntry{Index: index, Term: term, Data: data, EntryType: entryType}
 }
 
 // IsConflict checks whether the current log entry conflicts with another log entry.
@@ -130,7 +140,7 @@ func (l *persistentLog) Replay() error {
 	// The log must always contain at least one entry.
 	// The first entry is a placeholder entry used for indexing into the log.
 	if len(l.entries) == 0 {
-		entry := NewLogEntry(0, 0, nil)
+		entry := &LogEntry{}
 		if err := encodeLogEntry(l.file, entry); err != nil {
 			return errors.WrapError(err, "failed while replaying log")
 		}

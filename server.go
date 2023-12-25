@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
@@ -84,33 +85,23 @@ func (s *Server) IsStarted() bool {
 }
 
 // SubmitOperation submits an operation (as bytes) to the server for processing.
-// It forwards the operation to the underlying Raft instance for handling
-// and returns the index and term assigned to the operation, as well as
-// an error if submitting the operation failed.
-func (s *Server) SubmitOperation(operation []byte) (uint64, uint64, error) {
-	return s.raft.SubmitOperation(operation)
-}
-
-// SubmitReadOnlyOperation submits an operation (as bytes) to the server for
-// processing. It forwards the operation to the underlying Raft instance for handling
-// and returns an error if submitting the operation failed. Read-only operations are
-// generally much more performant than standard, replicated operations. However,
-// be warned that read-only operations are NOT safe. It is possible that stale or
-// incorrect data may be returned under certain conditions.
-func (s *Server) SubmitReadOnlyOperation(operation []byte) error {
-	return s.raft.SubmitReadOnlyOperation(operation)
-}
-
-// ListSnapshots returns an array of all the snapshots that the underlying
-// Raft instance has taken.
-func (s *Server) ListSnapshots() []Snapshot {
-	return s.raft.ListSnapshots()
+// It forwards the operation to the underlying Protocol instance for handling
+// and returns a future for the response to the operation.
+func (s *Server) SubmitOperation(
+	operation []byte,
+	operationType OperationType,
+	timeout time.Duration,
+) *OperationResponseFuture {
+	return s.raft.SubmitOperation(operation, operationType, timeout)
 }
 
 // AppendEntries handles the AppendEntries gRPC request.
 // It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
 // and returns the response.
-func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
+func (s *Server) AppendEntries(
+	ctx context.Context,
+	request *pb.AppendEntriesRequest,
+) (*pb.AppendEntriesResponse, error) {
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
 	if err := s.raft.AppendEntries(&appendEntriesRequest, appendEntriesResponse); err != nil {
@@ -122,7 +113,10 @@ func (s *Server) AppendEntries(ctx context.Context, request *pb.AppendEntriesReq
 // RequestVote handles the RequestVote gRPC request.
 // It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
 // and returns the response.
-func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
+func (s *Server) RequestVote(
+	ctx context.Context,
+	request *pb.RequestVoteRequest,
+) (*pb.RequestVoteResponse, error) {
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
 	if err := s.raft.RequestVote(&requestVoteRequest, requestVoteResponse); err != nil {
@@ -134,7 +128,10 @@ func (s *Server) RequestVote(ctx context.Context, request *pb.RequestVoteRequest
 // InstallSnapshot handles the InstallSnapshot gRPC request.
 // It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
 // and returns the response.
-func (s *Server) InstallSnapshot(ctx context.Context, request *pb.InstallSnapshotRequest) (*pb.InstallSnapshotResponse, error) {
+func (s *Server) InstallSnapshot(
+	ctx context.Context,
+	request *pb.InstallSnapshotRequest,
+) (*pb.InstallSnapshotResponse, error) {
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
 	if err := s.raft.InstallSnapshot(&installSnapshotRequest, installSnapshotResponse); err != nil {

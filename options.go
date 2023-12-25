@@ -1,8 +1,9 @@
 package raft
 
 import (
-	"github.com/jmsadair/raft/internal/errors"
 	"time"
+
+	"github.com/jmsadair/raft/internal/errors"
 )
 
 const (
@@ -14,13 +15,9 @@ const (
 	maxHeartbeat     = time.Duration(300 * time.Millisecond)
 	defaultHeartbeat = time.Duration(50 * time.Millisecond)
 
-	minMaxEntriesPerRPC     = 50
-	maxMaxEntriesPerRPC     = 500
-	defaultMaxEntriesPerRPC = 100
-
 	minLeaseDuration     = time.Duration(25 * time.Millisecond)
 	maxLeaseDuration     = time.Duration(1000 * time.Millisecond)
-	defaultLeaseDuration = time.Duration(300 * time.Millisecond)
+	defaultLeaseDuration = time.Duration(100 * time.Millisecond)
 )
 
 // Logger supports logging messages at the debug, info, warn, error, and fatal level.
@@ -66,10 +63,6 @@ type options struct {
 	// the leader will send to the followers.
 	heartbeatInterval time.Duration
 
-	// The maximum number of log entries that will be transmitted via
-	// an AppendEntries RPC.
-	maxEntriesPerRPC int
-
 	// The duration that a lease remains valid upon renewal.
 	leaseDuration time.Duration
 
@@ -104,19 +97,6 @@ func WithHeartbeatInterval(time time.Duration) Option {
 	}
 }
 
-// WithMaxEntriesPerRPC sets the maximum number of log entries that can be
-// transmitted via an AppendEntries RPC.
-func WithMaxEntriesPerRPC(maxEntriesPerRPC int) Option {
-	return func(options *options) error {
-		if maxEntriesPerRPC < minMaxEntriesPerRPC || maxEntriesPerRPC > maxMaxEntriesPerRPC {
-			return errors.New("maximum entries per RPC value is invalid: minimum = %v, maximum = %v",
-				minMaxEntriesPerRPC, maxMaxEntriesPerRPC)
-		}
-		options.maxEntriesPerRPC = maxEntriesPerRPC
-		return nil
-	}
-}
-
 // WithLeaseDuration sets the duration for which a lease remains valid upon
 // renewal. A longer lease duration generally corresponds to higher performance
 // of read-only operations but increases the likelihood that stale data is read.
@@ -133,7 +113,7 @@ func WithLeaseDuration(leaseDuration time.Duration) Option {
 	}
 }
 
-// WithLogger sets the logger used by the Raft server.
+// WithLogger sets the logger used by the Raft.
 func WithLogger(logger Logger) Option {
 	return func(options *options) error {
 		if logger == nil {

@@ -1,10 +1,11 @@
 package raft
 
 import (
-	"github.com/jmsadair/raft/internal/logger"
-	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
+
+	"github.com/jmsadair/raft/internal/logger"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWithElectionTimeout checks that the election timeout option only accepts values within the
@@ -35,21 +36,6 @@ func TestWithHeartbeatInterval(t *testing.T) {
 
 	// Test valid input
 	require.NoError(t, WithHeartbeatInterval(250*time.Millisecond)(options))
-}
-
-// TestWithMaxEntriesPerRPC checks that the max entries per RPC option only accepts values within the
-// defined range.
-func TestWithMaxEntriesPerRPC(t *testing.T) {
-	options := &options{}
-
-	// Test minimum bound
-	require.Error(t, WithMaxEntriesPerRPC(minMaxEntriesPerRPC-1)(options))
-
-	// Test maximum bound
-	require.Error(t, WithMaxEntriesPerRPC(maxMaxEntriesPerRPC+1)(options))
-
-	// Test valid input
-	require.NoError(t, WithMaxEntriesPerRPC(200)(options))
 }
 
 // TestWithLeaseDuration checks that the lease duration option only accepts values within the

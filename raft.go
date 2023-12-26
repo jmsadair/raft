@@ -1307,7 +1307,7 @@ func (r *Raft) readOnlyLoop() {
 			response.Response = r.fsm.Apply(operation)
 			r.sendResponseWithoutBlocking(
 				operation.responseCh,
-				OperationResponse{Response: response},
+				response,
 			)
 			r.options.logger.Debugf(
 				"server %s applied read-only operation: readIndex = %d",

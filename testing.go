@@ -129,10 +129,10 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	return nil
 }
 
-func (s *stateMachineMock) NeedSnapshot(logSizeInBytes int64) bool {
+func (s *stateMachineMock) NeedSnapshot(logSize int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
+	return s.snapshotting && logSize%s.snapshotSize == 0
 }
 
 func (s *stateMachineMock) appliedOperations() []Operation {

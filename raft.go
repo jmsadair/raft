@@ -1025,7 +1025,7 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 }
 
 func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
-	if lastIncludedIndex >= r.log.LastIndex() {
+	if lastIncludedIndex <= r.lastIncludedIndex {
 		return
 	}
 
@@ -1263,11 +1263,7 @@ func (r *Raft) applyLoop() {
 
 			r.lastApplied++
 
-			logSizeInBytes, err := r.log.SizeInBytes()
-			if err != nil {
-				r.options.logger.Fatalf("failed to get log size: %s", err.Error())
-			}
-			if r.fsm.NeedSnapshot(logSizeInBytes) {
+			if r.fsm.NeedSnapshot(r.log.Size()) {
 				r.takeSnapshot(operation.LogIndex, operation.LogTerm)
 			}
 		}
@@ -1337,14 +1333,14 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
-	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
-	}
-
 	for _, peer := range r.peers {
 		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
 		r.matchIndex[peer.ID()] = 0
+	}
+
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
 	}
 
 	r.operationManager = newOperationManager(r.options.leaseDuration)

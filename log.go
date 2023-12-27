@@ -55,8 +55,8 @@ type Log interface {
 	// NextIndex returns the next index to append to the log.
 	NextIndex() uint64
 
-	// SizeInBytes returns the size of the log in bytes.
-	SizeInBytes() (int64, error)
+	// Size returns the number of entries in the log.
+	Size() int
 }
 
 type LogEntryType uint32
@@ -333,6 +333,6 @@ func (l *persistentLog) NextIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index + 1
 }
 
-func (l *persistentLog) SizeInBytes() (int64, error) {
-	return l.file.Seek(0, io.SeekCurrent)
+func (l *persistentLog) Size() int {
+	return len(l.entries)
 }

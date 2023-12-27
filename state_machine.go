@@ -16,6 +16,6 @@ type StateMachine interface {
 	Restore(snapshot *Snapshot) error
 
 	// NeedSnapshot returns true if a snapshot should be taken of the state machine and false
-	// otherwise.
-	NeedSnapshot(logSizeInBytes int64) bool
+	// otherwise. The provided log size is the number of entries currently in the log.
+	NeedSnapshot(logSize int) bool
 }

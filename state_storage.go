@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"io"
 	"os"
 
@@ -97,7 +98,7 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	// Create a temporary file that will replace the file currently associated with storage.
 	// Note that it is NOT safe to truncate the file and then write the new state - it must
 	// be atomic.
-	tmpFile, err := os.Create(p.path + ".tmp")
+	tmpFile, err := os.Create(fmt.Sprintf("%s.tmp", p.file.Name()))
 	if err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}

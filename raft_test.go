@@ -11,8 +11,8 @@ import (
 func TestNewRaft(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -35,8 +35,8 @@ func TestNewRaft(t *testing.T) {
 func TestAppendEntriesSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -69,8 +69,8 @@ func TestAppendEntriesSuccess(t *testing.T) {
 func TestAppendEntriesConflictSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -116,8 +116,8 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -146,8 +146,8 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -171,8 +171,8 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -202,8 +202,8 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 func TestAppendEntriesShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -222,8 +222,8 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 func TestRequestVoteSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -248,8 +248,8 @@ func TestRequestVoteSuccess(t *testing.T) {
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -276,8 +276,8 @@ func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -300,8 +300,8 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -326,8 +326,8 @@ func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -352,8 +352,8 @@ func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -386,8 +386,8 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 func TestRequestVoteShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -406,8 +406,8 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 func TestInstallSnapshotSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -455,8 +455,8 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -513,8 +513,8 @@ func TestInstallSnapshotDiscardSuccess(t *testing.T) {
 func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -575,8 +575,8 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 
@@ -610,8 +610,8 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir+"/log.bin"),
-		NewStateStorage(tmpDir+"/storage.bin"), NewSnapshotStorage(tmpDir+"/snapshot.bin"),
+	raft, err := NewRaft("raft", make(map[string]Peer), NewLog(tmpDir),
+		NewStateStorage(tmpDir), NewSnapshotStorage(tmpDir),
 		newStateMachineMock(false, 0))
 	require.NoError(t, err)
 

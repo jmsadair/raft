@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jmsadair/raft/internal/errors"
 )
@@ -55,7 +56,7 @@ type persistentSnapshotStorage struct {
 	// and nil otherwise.
 	snapshot *Snapshot
 
-	// The path to where snapshots are persisted.
+	// The directory where snapshots are persisted.
 	path string
 
 	// The file that the snapshots are persisted to. This value is nil if the storage
@@ -74,7 +75,8 @@ func (p *persistentSnapshotStorage) Open() error {
 		return nil
 	}
 
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0o666)
+	fileName := filepath.Join(p.path, "snapshots.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open snapshot storage")
 	}

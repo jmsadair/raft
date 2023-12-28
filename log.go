@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jmsadair/raft/internal/errors"
 )
@@ -104,7 +105,7 @@ type persistentLog struct {
 	// The file that the log is written to.
 	file *os.File
 
-	// The path to the file that the log is written to.
+	// The directory where the log is persisted to.
 	path string
 }
 
@@ -114,7 +115,8 @@ func NewLog(path string) Log {
 }
 
 func (l *persistentLog) Open() error {
-	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o666)
+	fileName := filepath.Join(l.path, "log.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open log")
 	}
@@ -257,7 +259,7 @@ func (l *persistentLog) Compact(index uint64) error {
 	copy(newEntries[:], l.entries[logIndex:])
 
 	// Create a temporary file to write the compacted log to.
-	compactedFile, err := os.Create(l.path + ".bin")
+	tmpFile, err := os.CreateTemp(l.path, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
@@ -265,27 +267,30 @@ func (l *persistentLog) Compact(index uint64) error {
 	// Write the entries contained in the compacted log to the
 	// temporary file.
 	for _, entry := range newEntries {
-		offset, err := compactedFile.Seek(0, io.SeekCurrent)
+		offset, err := tmpFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, "failed to compact log")
 		}
 		entry.Offset = offset
-		if err := encodeLogEntry(compactedFile, entry); err != nil {
+		if err := encodeLogEntry(tmpFile, entry); err != nil {
 			return errors.WrapError(err, "failed to compact log")
 		}
 	}
 
-	if err := compactedFile.Sync(); err != nil {
+	if err := tmpFile.Sync(); err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
 
 	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(compactedFile.Name(), l.path); err != nil {
+	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
 
-	l.file = compactedFile
 	l.entries = newEntries
+
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
 
 	return nil
 }
@@ -296,27 +301,30 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	}
 
 	// Create a temporary file for the new log.
-	newLogFile, err := os.Create(l.path + ".tmp")
+	tmpFile, err := os.CreateTemp(l.path, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
 	// Write a placeholder entry to the temporary file with the provided term and index.
 	entry := &LogEntry{Index: index, Term: term}
-	if err := encodeLogEntry(newLogFile, entry); err != nil {
+	if err := encodeLogEntry(tmpFile, entry); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
-	if err := newLogFile.Sync(); err != nil {
+	if err := tmpFile.Sync(); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
 	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(newLogFile.Name(), l.path); err != nil {
+	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
-	l.file = newLogFile
 	l.entries = []*LogEntry{entry}
+
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed to discard log entries")
+	}
 
 	return nil
 }

@@ -382,6 +382,8 @@ func (r *Raft) Start() error {
 		r.options.electionTimeout,
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
+		r.log.LastIndex(),
+		r.lastIncludedIndex,
 	)
 
 	return nil
@@ -763,7 +765,7 @@ func (r *Raft) InstallSnapshot(
 		r.commitIndex = request.LastIncludedIndex
 		r.lastApplied = request.LastIncludedIndex
 
-		r.options.logger.Warn("server %s discarding log", r.id)
+		r.options.logger.Warnf("server %s discarding log", r.id)
 		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
 			r.options.logger.Fatalf(
 				"server %s failed to discard log entries: %s",
@@ -771,7 +773,7 @@ func (r *Raft) InstallSnapshot(
 				err.Error(),
 			)
 		}
-		r.options.logger.Warn("server %s restoring state machine", r.id)
+		r.options.logger.Warnf("server %s restoring state machine", r.id)
 		if err := r.fsm.Restore(snapshot); err != nil {
 			r.options.logger.Fatalf(
 				"server %s failed to reset state machine with snapshot: %s",
@@ -1258,6 +1260,8 @@ func (r *Raft) applyLoop() {
 			}
 			response := OperationResponse{Operation: operation}
 
+			lastApplied := r.lastApplied
+
 			r.mu.Unlock()
 			response.Response = r.fsm.Apply(&operation)
 			r.sendResponseWithoutBlocking(operation.responseCh, response)
@@ -1269,6 +1273,9 @@ func (r *Raft) applyLoop() {
 			)
 			r.mu.Lock()
 
+			if r.lastApplied != lastApplied {
+				continue
+			}
 			r.lastApplied++
 
 			if r.fsm.NeedSnapshot(r.log.Size()) {

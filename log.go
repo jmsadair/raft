@@ -234,6 +234,9 @@ func (l *persistentLog) Truncate(index uint64) error {
 	if err := l.file.Truncate(size); err != nil {
 		return errors.WrapError(err, "failed to truncate log")
 	}
+	if err := l.file.Sync(); err != nil {
+		return errors.WrapError(err, "failed to truncate log")
+	}
 
 	// Update to I/O offset to the new size.
 	if _, err := l.file.Seek(size, io.SeekStart); err != nil {
@@ -276,21 +279,34 @@ func (l *persistentLog) Compact(index uint64) error {
 			return errors.WrapError(err, "failed to compact log")
 		}
 	}
-
 	if err := tmpFile.Sync(); err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
 
-	// Atomically rename the temporary file to the actual file.
+	// Close the files to prepare for the rename.
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+	if err := l.file.Close(); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+
+	// Atomically rename the temporary file to the log file.
 	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
 
-	l.entries = newEntries
-
-	if err := tmpFile.Close(); err != nil {
+	// Open the log file and prepare it for new writes.
+	fileName := filepath.Join(l.path, "log.bin")
+	l.file, err = os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
+	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+
+	l.entries = newEntries
 
 	return nil
 }
@@ -315,16 +331,30 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
+	// Close the files to prepare for the rename.
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+	if err := l.file.Close(); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+
 	// Atomically rename the temporary file to the actual file.
 	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
-	l.entries = []*LogEntry{entry}
-
-	if err := tmpFile.Close(); err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
+	// Open the log file and prepare it for new writes.
+	fileName := filepath.Join(l.path, "log.bin")
+	l.file, err = os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
+		return errors.WrapError(err, "failed to compact log")
 	}
+	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+		return errors.WrapError(err, "failed to compact log")
+	}
+
+	l.entries = []*LogEntry{entry}
 
 	return nil
 }

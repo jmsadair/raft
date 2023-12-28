@@ -113,12 +113,26 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 
+	// Close the files to prepare for the rename.
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
+	if err := p.file.Close(); err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
+
 	// Perform atomic rename to swap the newly persisted state with the old.
 	if err := os.Rename(tmpFile.Name(), p.file.Name()); err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 
-	if err := tmpFile.Close(); err != nil {
+	// Open the state storage for future writes.
+	fileName := filepath.Join(p.path, "state.bin")
+	p.file, err = os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
+	if _, err := p.file.Seek(0, io.SeekEnd); err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 

@@ -757,26 +757,26 @@ func (r *Raft) InstallSnapshot(
 
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
+	r.commitIndex = request.LastIncludedIndex
+	r.lastApplied = request.LastIncludedIndex
+
+	r.options.logger.Warnf("server %s restoring state machine", r.id)
+	if err := r.fsm.Restore(snapshot); err != nil {
+		r.options.logger.Fatalf(
+			"server %s failed to reset state machine with snapshot: %s",
+			r.id,
+			err.Error(),
+		)
+	}
 
 	// If the log either does not have an entry at the last included index or the log has an
 	// entry at the last included index but its term does not match the last included term, then
 	// discard the log and reset the state machine with the data from the snapshot.
 	if entry == nil || entry.Term != request.LastIncludedTerm {
-		r.commitIndex = request.LastIncludedIndex
-		r.lastApplied = request.LastIncludedIndex
-
 		r.options.logger.Warnf("server %s discarding log", r.id)
 		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
 			r.options.logger.Fatalf(
 				"server %s failed to discard log entries: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-		r.options.logger.Warnf("server %s restoring state machine", r.id)
-		if err := r.fsm.Restore(snapshot); err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed to reset state machine with snapshot: %s",
 				r.id,
 				err.Error(),
 			)

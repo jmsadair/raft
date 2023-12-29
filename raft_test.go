@@ -554,8 +554,8 @@ func TestInstallSnapshotCompactSuccess(t *testing.T) {
 	require.NoError(t, raft.InstallSnapshot(request, response))
 	require.Equal(t, uint64(1), response.Term)
 
-	require.Equal(t, uint64(1), raft.commitIndex)
-	require.Equal(t, uint64(1), raft.lastApplied)
+	require.Equal(t, uint64(3), raft.commitIndex)
+	require.Equal(t, uint64(3), raft.lastApplied)
 	require.Equal(t, uint64(3), raft.lastIncludedIndex)
 	require.Equal(t, uint64(1), raft.lastIncludedTerm)
 

@@ -382,8 +382,6 @@ func (r *Raft) Start() error {
 		r.options.electionTimeout,
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
-		r.log.LastIndex(),
-		r.lastIncludedIndex,
 	)
 
 	return nil

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jmsadair/raft/internal/errors"
 )
@@ -55,8 +56,8 @@ type Log interface {
 	// NextIndex returns the next index to append to the log.
 	NextIndex() uint64
 
-	// SizeInBytes returns the size of the log in bytes.
-	SizeInBytes() (int64, error)
+	// Size returns the number of entries in the log.
+	Size() int
 }
 
 type LogEntryType uint32
@@ -104,7 +105,7 @@ type persistentLog struct {
 	// The file that the log is written to.
 	file *os.File
 
-	// The path to the file that the log is written to.
+	// The directory where the log is persisted to.
 	path string
 }
 
@@ -114,7 +115,8 @@ func NewLog(path string) Log {
 }
 
 func (l *persistentLog) Open() error {
-	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o666)
+	fileName := filepath.Join(l.path, "log.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open log")
 	}
@@ -232,6 +234,9 @@ func (l *persistentLog) Truncate(index uint64) error {
 	if err := l.file.Truncate(size); err != nil {
 		return errors.WrapError(err, "failed to truncate log")
 	}
+	if err := l.file.Sync(); err != nil {
+		return errors.WrapError(err, "failed to truncate log")
+	}
 
 	// Update to I/O offset to the new size.
 	if _, err := l.file.Seek(size, io.SeekStart); err != nil {
@@ -257,7 +262,7 @@ func (l *persistentLog) Compact(index uint64) error {
 	copy(newEntries[:], l.entries[logIndex:])
 
 	// Create a temporary file to write the compacted log to.
-	compactedFile, err := os.Create(l.path + ".bin")
+	tmpFile, err := os.CreateTemp(l.path, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
@@ -265,26 +270,21 @@ func (l *persistentLog) Compact(index uint64) error {
 	// Write the entries contained in the compacted log to the
 	// temporary file.
 	for _, entry := range newEntries {
-		offset, err := compactedFile.Seek(0, io.SeekCurrent)
+		offset, err := tmpFile.Seek(0, io.SeekCurrent)
 		if err != nil {
 			return errors.WrapError(err, "failed to compact log")
 		}
 		entry.Offset = offset
-		if err := encodeLogEntry(compactedFile, entry); err != nil {
+		if err := encodeLogEntry(tmpFile, entry); err != nil {
 			return errors.WrapError(err, "failed to compact log")
 		}
 	}
 
-	if err := compactedFile.Sync(); err != nil {
-		return errors.WrapError(err, "failed to compact log")
+	// Atomic rename.
+	if err := l.rename(tmpFile); err != nil {
+		return errors.WrapError(err, "failed to discard log entries")
 	}
 
-	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(compactedFile.Name(), l.path); err != nil {
-		return errors.WrapError(err, "failed to compact log")
-	}
-
-	l.file = compactedFile
 	l.entries = newEntries
 
 	return nil
@@ -296,26 +296,22 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	}
 
 	// Create a temporary file for the new log.
-	newLogFile, err := os.Create(l.path + ".tmp")
+	tmpFile, err := os.CreateTemp(l.path, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
 	// Write a placeholder entry to the temporary file with the provided term and index.
 	entry := &LogEntry{Index: index, Term: term}
-	if err := encodeLogEntry(newLogFile, entry); err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
-	}
-	if err := newLogFile.Sync(); err != nil {
+	if err := encodeLogEntry(tmpFile, entry); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
-	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(newLogFile.Name(), l.path); err != nil {
+	// Atomic rename.
+	if err := l.rename(tmpFile); err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
 
-	l.file = newLogFile
 	l.entries = []*LogEntry{entry}
 
 	return nil
@@ -333,6 +329,39 @@ func (l *persistentLog) NextIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index + 1
 }
 
-func (l *persistentLog) SizeInBytes() (int64, error) {
-	return l.file.Seek(0, io.SeekCurrent)
+func (l *persistentLog) Size() int {
+	return len(l.entries)
+}
+
+func (l *persistentLog) rename(tmpFile *os.File) error {
+	// Make sure all changes have been flushed to disk.
+	if err := tmpFile.Sync(); err != nil {
+		return err
+	}
+
+	// Close the files to prepare for the rename.
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	if err := l.file.Close(); err != nil {
+		return err
+	}
+
+	// Atomically rename the temporary file to the actual file.
+	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
+		return err
+	}
+
+	// Open the log file and prepare it for new writes.
+	fileName := filepath.Join(l.path, "log.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
+		return err
+	}
+	l.file = file
+	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+
+	return nil
 }

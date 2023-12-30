@@ -6,10 +6,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPersistentStorageSetGet(t *testing.T) {
+func TestStateStorageSetGet(t *testing.T) {
 	tmpDir := t.TempDir()
-	storageFile := tmpDir + "/test-storage.bin"
-	storage := NewStateStorage(storageFile)
+	storage := NewStateStorage(tmpDir)
 
 	require.NoError(t, storage.Open())
 

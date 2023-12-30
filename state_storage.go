@@ -3,6 +3,7 @@ package raft
 import (
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jmsadair/raft/internal/errors"
 )
@@ -36,7 +37,7 @@ type persistentState struct {
 // persistentStateStorage implements the StateStorage interface.
 // This implementation is not concurrent safe.
 type persistentStateStorage struct {
-	// The path to the file where the storage is persisted.
+	// The directory where the state will be persisted.
 	path string
 
 	// The file associated with the storage, nil if storage is closed.
@@ -52,7 +53,8 @@ func NewStateStorage(path string) StateStorage {
 }
 
 func (p *persistentStateStorage) Open() error {
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0o666)
+	fileName := filepath.Join(p.path, "state.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed to open state storage file")
 	}
@@ -97,7 +99,7 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	// Create a temporary file that will replace the file currently associated with storage.
 	// Note that it is NOT safe to truncate the file and then write the new state - it must
 	// be atomic.
-	tmpFile, err := os.Create(p.path + ".tmp")
+	tmpFile, err := os.CreateTemp(p.path, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
@@ -111,16 +113,26 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 
-	// Perform atomic rename to swap the newly persisted state with the old.
-	oldFile := p.file
-	if err := os.Rename(tmpFile.Name(), oldFile.Name()); err != nil {
+	// Close the files to prepare for the rename.
+	if err := tmpFile.Close(); err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
+	if err := p.file.Close(); err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 
-	p.file = tmpFile
+	// Perform atomic rename to swap the newly persisted state with the old.
+	if err := os.Rename(tmpFile.Name(), p.file.Name()); err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
 
-	// Close the previous file.
-	if err := oldFile.Close(); err != nil {
+	// Open the state storage for future writes.
+	fileName := filepath.Join(p.path, "state.bin")
+	p.file, err = os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
+		return errors.WrapError(err, "failed while persisting state")
+	}
+	if _, err := p.file.Seek(0, io.SeekEnd); err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
 

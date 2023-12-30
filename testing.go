@@ -129,10 +129,10 @@ func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
 	return nil
 }
 
-func (s *stateMachineMock) NeedSnapshot(logSizeInBytes int64) bool {
+func (s *stateMachineMock) NeedSnapshot(logSize int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.snapshotting && len(s.operations)%s.snapshotSize == 0
+	return s.snapshotting && logSize%s.snapshotSize == 0
 }
 
 func (s *stateMachineMock) appliedOperations() []Operation {
@@ -206,22 +206,17 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	fsm := make([]*stateMachineMock, numServers)
 	disconnected := make([]bool, numServers)
 
-	// The paths for all the persistent storage associated with the cluster.
-	tmpDir := t.TempDir()
-	snapshotFileFmt := tmpDir + "/raft-snapshots-%d"
-	logFileFmt := tmpDir + "/raft-log-%d"
-	storageFileFmt := tmpDir + "/raft-storage-%d"
-
 	// Make peer map for each server.
 	peers := makePeerMaps(numServers)
 
 	// Create the raft and server instances.
 	for i := 0; i < numServers; i++ {
 		id := fmt.Sprint(i)
+		tmpDir := t.TempDir()
 		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
-		logs[i] = NewLog(fmt.Sprintf(logFileFmt, i))
-		snapshotStores[i] = NewSnapshotStorage(fmt.Sprintf(storageFileFmt, i))
-		stores[i] = NewStateStorage(fmt.Sprintf(snapshotFileFmt, i))
+		logs[i] = NewLog(tmpDir)
+		snapshotStores[i] = NewSnapshotStorage(tmpDir)
+		stores[i] = NewStateStorage(tmpDir)
 
 		raft, err := NewRaft(id, peers[i], logs[i], stores[i], snapshotStores[i], fsm[i])
 		if err != nil {

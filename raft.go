@@ -675,7 +675,6 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		}
 
 		r.options.logger.Warnf("server %s truncating log: index = %d", r.id, entry.Index)
-
 		if err := r.log.Truncate(entry.Index); err != nil {
 			r.options.logger.Fatalf("server %s failed truncating log: %s", err.Error())
 		}
@@ -754,25 +753,28 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
 	}
 
-	r.commitIndex = request.LastIncludedIndex
-	r.lastApplied = request.LastIncludedIndex
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
+	r.commitIndex = request.LastIncludedIndex
+	r.lastApplied = request.LastIncludedIndex
+
+	r.options.logger.Warnf("server %s restoring state machine", r.id)
+	if err := r.fsm.Restore(snapshot); err != nil {
+		r.options.logger.Fatalf(
+			"server %s failed to reset state machine with snapshot: %s",
+			r.id,
+			err.Error(),
+		)
+	}
 
 	// If the log either does not have an entry at the last included index or the log has an
 	// entry at the last included index but its term does not match the last included term, then
 	// discard the log and reset the state machine with the data from the snapshot.
 	if entry == nil || entry.Term != request.LastIncludedTerm {
+		r.options.logger.Warnf("server %s discarding log", r.id)
 		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
 			r.options.logger.Fatalf(
 				"server %s failed to discard log entries: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-		if err := r.fsm.Restore(snapshot); err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed to reset state machine with snapshot: %s",
 				r.id,
 				err.Error(),
 			)
@@ -782,6 +784,7 @@ func (r *Raft) InstallSnapshot(
 
 	// Otherwise, if the log has an entry at last included index with a term that matches the last included
 	// term, then compact the log up to and including that entry.
+	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, request.LastIncludedIndex)
 	if err := r.log.Compact(request.LastIncludedIndex); err != nil {
 		r.options.logger.Fatalf("server %s failed to compact log: %s", r.id, err.Error())
 	}
@@ -1024,8 +1027,8 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 	}
 }
 
-func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
-	if lastIncludedIndex >= r.log.LastIndex() {
+func (r *Raft) takeSnapshot() {
+	if r.lastApplied <= r.lastIncludedIndex {
 		return
 	}
 
@@ -1038,16 +1041,20 @@ func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
 		)
 	}
 
-	r.lastIncludedIndex = lastIncludedIndex
-	r.lastIncludedTerm = lastIncludedTerm
-	snapshot := NewSnapshot(r.lastIncludedIndex, r.lastIncludedTerm, snapshotBytes)
+	lastAppliedEntry, err := r.log.GetEntry(r.lastApplied)
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
+	}
+
+	r.lastIncludedIndex = lastAppliedEntry.Index
+	r.lastIncludedTerm = lastAppliedEntry.Term
+	snapshot := NewSnapshot(lastAppliedEntry.Index, lastAppliedEntry.Term, snapshotBytes)
 
 	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
 		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
 
 	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, r.lastIncludedIndex)
-
 	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
 		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
@@ -1222,8 +1229,8 @@ func (r *Raft) applyLoop() {
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed.
-		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
-			entry, err := r.log.GetEntry(index)
+		for r.lastApplied < r.commitIndex {
+			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
 				r.options.logger.Fatalf(
 					"server %s failed getting entry from log: %s",
@@ -1231,6 +1238,7 @@ func (r *Raft) applyLoop() {
 					err.Error(),
 				)
 			}
+
 			if entry.EntryType == NoOpEntry {
 				r.lastApplied++
 				continue
@@ -1250,6 +1258,8 @@ func (r *Raft) applyLoop() {
 			}
 			response := OperationResponse{Operation: operation}
 
+			lastApplied := r.lastApplied
+
 			r.mu.Unlock()
 			response.Response = r.fsm.Apply(&operation)
 			r.sendResponseWithoutBlocking(operation.responseCh, response)
@@ -1261,14 +1271,13 @@ func (r *Raft) applyLoop() {
 			)
 			r.mu.Lock()
 
+			if r.lastApplied != lastApplied {
+				continue
+			}
 			r.lastApplied++
 
-			logSizeInBytes, err := r.log.SizeInBytes()
-			if err != nil {
-				r.options.logger.Fatalf("failed to get log size: %s", err.Error())
-			}
-			if r.fsm.NeedSnapshot(logSizeInBytes) {
-				r.takeSnapshot(operation.LogIndex, operation.LogTerm)
+			if r.fsm.NeedSnapshot(r.log.Size()) {
+				r.takeSnapshot()
 			}
 		}
 
@@ -1307,7 +1316,7 @@ func (r *Raft) readOnlyLoop() {
 			response.Response = r.fsm.Apply(operation)
 			r.sendResponseWithoutBlocking(
 				operation.responseCh,
-				OperationResponse{Response: response},
+				response,
 			)
 			r.options.logger.Debugf(
 				"server %s applied read-only operation: readIndex = %d",
@@ -1337,14 +1346,14 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
-	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
-	}
-
 	for _, peer := range r.peers {
 		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
 		r.matchIndex[peer.ID()] = 0
+	}
+
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
 	}
 
 	r.operationManager = newOperationManager(r.options.leaseDuration)

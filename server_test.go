@@ -308,7 +308,7 @@ func TestUnreliableNetwork(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime := util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Disconnect two random servers.
@@ -318,7 +318,7 @@ func TestUnreliableNetwork(t *testing.T) {
 			cluster.disconnectServer(disconnect2)
 
 			// Allow the cluster to make progress while the servers are disconnected.
-			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Reconnect the servers.
@@ -392,14 +392,14 @@ func TestMultiPartition(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime := util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Make a new partition.
 			cluster.createPartition()
 
 			// Allow the cluster to make progress with the partition.
-			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Heal the partition.
@@ -502,7 +502,7 @@ func TestMultiCrash(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime := util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash two random servers.
@@ -512,7 +512,7 @@ func TestMultiCrash(t *testing.T) {
 			cluster.crashServer(crash2)
 
 			// Allow the cluster to make progress while the servers are offline.
-			randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the servers back online.
@@ -555,7 +555,7 @@ func TestDisconnectCrashPartition(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+			randomTime := util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Choose a random type of failure.
@@ -566,20 +566,20 @@ func TestDisconnectCrashPartition(t *testing.T) {
 			case 0:
 				crash := util.RandomInt(0, 5)
 				cluster.crashServer(crash)
-				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.restartServer(crash)
 			// Disconnect a single server.
 			case 1:
 				disconnect := util.RandomInt(0, 5)
 				cluster.disconnectServer(disconnect)
-				randomTime = util.RandomTimeout(200*time.Millisecond, 400*time.Millisecond)
+				randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.reconnectAllServers()
 			// Partition the servers into two separate groups.
 			case 2:
 				cluster.createPartition()
-				randomTime = util.RandomTimeout(700*time.Millisecond, 900*time.Millisecond)
+				randomTime = util.RandomTimeout(200*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.reconnectAllServers()
 			}

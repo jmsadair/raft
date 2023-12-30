@@ -66,10 +66,6 @@ message SnapshotMetadata {
   uint64 last_included_term = 3;
 }
 
-message Snapshot {
-  bytes  data = 1;
-}
-
 service Raft {
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
   rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse) {}

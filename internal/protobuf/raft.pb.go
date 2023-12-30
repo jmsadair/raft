@@ -681,53 +681,6 @@ func (x *SnapshotMetadata) GetLastIncludedTerm() uint64 {
 	return 0
 }
 
-type Snapshot struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Data []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
-}
-
-func (x *Snapshot) Reset() {
-	*x = Snapshot{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_internal_protobuf_raft_proto_msgTypes[9]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *Snapshot) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Snapshot) ProtoMessage() {}
-
-func (x *Snapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_protobuf_raft_proto_msgTypes[9]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Snapshot.ProtoReflect.Descriptor instead.
-func (*Snapshot) Descriptor() ([]byte, []int) {
-	return file_internal_protobuf_raft_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *Snapshot) GetData() []byte {
-	if x != nil {
-		return x.Data
-	}
-	return nil
-}
-
 var File_internal_protobuf_raft_proto protoreflect.FileDescriptor
 
 var file_internal_protobuf_raft_proto_rawDesc = []byte{
@@ -811,9 +764,7 @@ var file_internal_protobuf_raft_proto_rawDesc = []byte{
 	0x64, 0x49, 0x6e, 0x64, 0x65, 0x78, 0x12, 0x2c, 0x0a, 0x12, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69,
 	0x6e, 0x63, 0x6c, 0x75, 0x64, 0x65, 0x64, 0x5f, 0x74, 0x65, 0x72, 0x6d, 0x18, 0x03, 0x20, 0x01,
 	0x28, 0x04, 0x52, 0x10, 0x6c, 0x61, 0x73, 0x74, 0x49, 0x6e, 0x63, 0x6c, 0x75, 0x64, 0x65, 0x64,
-	0x54, 0x65, 0x72, 0x6d, 0x22, 0x1e, 0x0a, 0x08, 0x53, 0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74,
-	0x12, 0x12, 0x0a, 0x04, 0x64, 0x61, 0x74, 0x61, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x04,
-	0x64, 0x61, 0x74, 0x61, 0x32, 0xcc, 0x01, 0x0a, 0x04, 0x52, 0x61, 0x66, 0x74, 0x12, 0x40, 0x0a,
+	0x54, 0x65, 0x72, 0x6d, 0x32, 0xcc, 0x01, 0x0a, 0x04, 0x52, 0x61, 0x66, 0x74, 0x12, 0x40, 0x0a,
 	0x0d, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x45, 0x6e, 0x74, 0x72, 0x69, 0x65, 0x73, 0x12, 0x15,
 	0x2e, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x45, 0x6e, 0x74, 0x72, 0x69, 0x65, 0x73, 0x52, 0x65,
 	0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x16, 0x2e, 0x41, 0x70, 0x70, 0x65, 0x6e, 0x64, 0x45, 0x6e,
@@ -845,7 +796,7 @@ func file_internal_protobuf_raft_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_protobuf_raft_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_protobuf_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_internal_protobuf_raft_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_internal_protobuf_raft_proto_goTypes = []interface{}{
 	(LogEntry_LogEntryType)(0),      // 0: LogEntry.LogEntryType
 	(*LogEntry)(nil),                // 1: LogEntry
@@ -857,7 +808,6 @@ var file_internal_protobuf_raft_proto_goTypes = []interface{}{
 	(*InstallSnapshotResponse)(nil), // 7: InstallSnapshotResponse
 	(*StorageState)(nil),            // 8: StorageState
 	(*SnapshotMetadata)(nil),        // 9: SnapshotMetadata
-	(*Snapshot)(nil),                // 10: Snapshot
 }
 var file_internal_protobuf_raft_proto_depIdxs = []int32{
 	0, // 0: LogEntry.entry_type:type_name -> LogEntry.LogEntryType
@@ -989,18 +939,6 @@ func file_internal_protobuf_raft_proto_init() {
 				return nil
 			}
 		}
-		file_internal_protobuf_raft_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Snapshot); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1008,7 +946,7 @@ func file_internal_protobuf_raft_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_internal_protobuf_raft_proto_rawDesc,
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

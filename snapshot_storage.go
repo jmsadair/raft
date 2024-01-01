@@ -2,151 +2,169 @@ package raft
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/jmsadair/raft/internal/errors"
+	"github.com/jmsadair/raft/internal/util"
 )
 
-var errSnapshotStoreNotOpen = errors.New("snapshot storage is not open")
-
-// Snapshot represents a snapshot of the replicated state machine.
-type Snapshot struct {
-	// Last index included in the snapshot
+type SnapshotMetadata struct {
+	ID                uint64
 	LastIncludedIndex uint64
-
-	// Last term included in the snapshot.
-	LastIncludedTerm uint64
-
-	// State of the state machine.
-	Data []byte
+	LastIncludedTerm  uint64
 }
 
-// NewSnapshot creates a new Snapshot instance with the provided state data
-// from the replicated state machine.
-func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) *Snapshot {
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy[:], data)
-	return &Snapshot{
-		LastIncludedIndex: lastIncludedIndex,
-		LastIncludedTerm:  lastIncludedTerm,
-		Data:              dataCopy,
-	}
+// SnapshotFile represents a snapshot of the replicated state machine.
+type SnapshotFile struct {
+	// The path to this snapshot.
+	Path string
+
+	// The metadata for the snapshot.
+	Metadata SnapshotMetadata
 }
 
 // SnapshotStorage represents the component of Raft this manages persistently
 // storing snapshots of the state machine.
 type SnapshotStorage interface {
-	PersistentStorage
+	NewSnapshotFile(lastIncludedIndex, lastIncludedTerm uint64) (io.WriteCloser, error)
+	SnapshotReader(id uint64) (io.ReadCloser, error)
+}
 
-	// LastSnapshot gets the most recently saved snapshot if it exists.
-	// If the snapshot does not exist, it will be nil. An error is returned
-	// if the snapshot storage is not open.
-	LastSnapshot() (*Snapshot, error)
+type snapshotWriteCloser struct {
+	tmpFile *os.File
+	path    string
+}
 
-	// SaveSnapshot persists the provided snapshot.
-	SaveSnapshot(snapshot *Snapshot) error
+func (s *snapshotWriteCloser) Write(p []byte) (n int, err error) {
+	return s.tmpFile.Write(p)
+}
+
+func (s *snapshotWriteCloser) Close() error {
+	defer os.Remove(s.tmpFile.Name())
+	if err := s.tmpFile.Sync(); err != nil {
+		return err
+	}
+	if err := s.tmpFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(s.tmpFile.Name(), s.path)
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface. This
 // implementation is not concurrent safe.
 type persistentSnapshotStorage struct {
-	// The most recently persisted snapshot if there is one
-	// and nil otherwise.
-	snapshot *Snapshot
-
 	// The directory where snapshots are persisted.
-	path string
+	snapshotDir string
 
-	// The file that the snapshots are persisted to. This value is nil if the storage
-	// has not been opened.
-	file *os.File
+	// All snapshot files in the snapshot directory.
+	snapshots map[string]SnapshotFile
+
+	// The unique ID that will be assigned to the next snapshot.
+	id uint64
 }
 
-// NewSnapshotStorage creates a new instance of SnapshotStorage at the
-// provided path.
-func NewSnapshotStorage(path string) SnapshotStorage {
-	return &persistentSnapshotStorage{path: path}
-}
-
-func (p *persistentSnapshotStorage) Open() error {
-	if p.file != nil {
-		return nil
+// NewSnapshotStorage creates a new snapshot storage.
+// Snapshots will be stored at path/snapshots. If any directories
+// on the path do not exist, they will be created.
+func NewSnapshotStorage(path string) (SnapshotStorage, error) {
+	snapshotPath := filepath.Join(path, "snapshots")
+	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
+		return nil, err
 	}
 
-	fileName := filepath.Join(p.path, "snapshots.bin")
-	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
+	snapshots := make(map[string]SnapshotFile)
+	snapshotStorage := &persistentSnapshotStorage{
+		snapshotDir: snapshotPath,
+		snapshots:   snapshots,
+	}
+
+	if err := snapshotStorage.syncSnapsotFiles(); err != nil {
+		return nil, err
+	}
+
+	for _, snapshotFile := range snapshotStorage.snapshots {
+		snapshotStorage.id = util.Max[uint64](snapshotStorage.id, snapshotFile.Metadata.ID)
+	}
+	snapshotStorage.id++
+
+	return snapshotStorage, nil
+}
+
+func (p *persistentSnapshotStorage) NewSnapshotFile(
+	lastIncludedIndex, lastIncludedTerm uint64,
+) (io.WriteCloser, error) {
+	tmpFile, err := os.CreateTemp(p.snapshotDir, "tmp-")
 	if err != nil {
-		return errors.WrapError(err, "failed to open snapshot storage")
+		return nil, err
 	}
 
-	p.file = file
+	name := fmt.Sprintf("snapshot-%d.bin", p.id)
+	path := filepath.Join(p.snapshotDir, name)
+	writer := &snapshotWriteCloser{path: path, tmpFile: tmpFile}
 
-	return nil
+	metadata := &SnapshotMetadata{
+		ID:                p.id,
+		LastIncludedIndex: lastIncludedIndex,
+		LastIncludedTerm:  lastIncludedTerm,
+	}
+	if err := encodeSnapshotMetadata(writer, metadata); err != nil {
+		return nil, err
+	}
+
+	p.id++
+
+	return writer, nil
 }
 
-func (p *persistentSnapshotStorage) Replay() error {
-	if p.file == nil {
-		return errSnapshotStoreNotOpen
+func (p *persistentSnapshotStorage) SnapshotReader(id uint64) (io.ReadCloser, error) {
+	if err := p.syncSnapsotFiles(); err != nil {
+		return nil, err
 	}
 
-	reader := bufio.NewReader(p.file)
-
-	for {
-		var snapshot Snapshot
-		var err error
-		snapshot, err = decodeSnapshot(reader)
-		if err == io.EOF {
-			break
+	for path, snapshotFile := range p.snapshots {
+		if id == snapshotFile.Metadata.ID || (id == 0 && p.id == snapshotFile.Metadata.ID+1) {
+			file, err := os.Open(path)
+			if err != nil {
+				return nil, err
+			}
+			_, err = decodeSnapshotMetadata(file)
+			if err != nil {
+				return nil, err
+			}
+			return file, nil
 		}
+	}
+
+	return nil, nil
+}
+
+func (p *persistentSnapshotStorage) syncSnapsotFiles() error {
+	pattern := filepath.Join(p.snapshotDir, "snapshot-%d.bin")
+	entries, err := filepath.Glob(pattern)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if _, ok := p.snapshots[entry]; ok {
+			continue
+		}
+
+		snapshot, err := os.Open(entry)
 		if err != nil {
-			return errors.WrapError(err, "failed while replaying snapshot storage")
+			return err
 		}
-		p.snapshot = &snapshot
-	}
 
-	return nil
-}
+		reader := bufio.NewReader(snapshot)
+		metadata, err := decodeSnapshotMetadata(reader)
+		if err != nil {
+			return err
+		}
 
-func (p *persistentSnapshotStorage) Close() error {
-	if p.file == nil {
-		return nil
+		p.snapshots[entry] = SnapshotFile{Path: entry, Metadata: metadata}
 	}
-
-	if err := p.file.Close(); err != nil {
-		return errors.WrapError(err, "failed to close snapshot storage")
-	}
-	p.snapshot = nil
-	p.file = nil
-
-	return nil
-}
-
-func (p *persistentSnapshotStorage) LastSnapshot() (*Snapshot, error) {
-	if p.file == nil {
-		return nil, errSnapshotStoreNotOpen
-	}
-	return p.snapshot, nil
-}
-
-func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
-	if p.file == nil {
-		return errSnapshotStoreNotOpen
-	}
-
-	writer := bufio.NewWriter(p.file)
-	if err := encodeSnapshot(writer, snapshot); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-	if err := p.file.Sync(); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-
-	p.snapshot = snapshot
 
 	return nil
 }

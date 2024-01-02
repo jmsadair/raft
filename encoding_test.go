@@ -34,17 +34,3 @@ func TestStorageEncoderDecoder(t *testing.T) {
 	require.Equal(t, state.term, decodedState.term)
 	require.Equal(t, state.votedFor, decodedState.votedFor)
 }
-
-func TestSnapshotEncoderDecoder(t *testing.T) {
-	snapshot := Snapshot{LastIncludedIndex: 1, LastIncludedTerm: 1, Data: []byte("test")}
-	buf := new(bytes.Buffer)
-
-	require.NoError(t, encodeSnapshot(buf, &snapshot))
-
-	decodedSnapshot, err := decodeSnapshot(buf)
-	require.NoError(t, err)
-
-	require.Equal(t, snapshot.LastIncludedIndex, decodedSnapshot.LastIncludedIndex)
-	require.Equal(t, snapshot.LastIncludedTerm, decodedSnapshot.LastIncludedTerm)
-	require.Equal(t, snapshot.Data, decodedSnapshot.Data)
-}

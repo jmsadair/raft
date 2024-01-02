@@ -8,51 +8,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func encodeSnapshot(w io.Writer, snapshot *Snapshot) error {
-	pbSnapshot := &pb.Snapshot{
-		LastIncludedIndex: snapshot.LastIncludedIndex,
-		LastIncludedTerm:  snapshot.LastIncludedTerm,
-		Data:              snapshot.Data,
-	}
-	buf, err := proto.Marshal(pbSnapshot)
-	if err != nil {
-		return err
-	}
-	size := int32(len(buf))
-	if err := binary.Write(w, binary.BigEndian, size); err != nil {
-		return err
-	}
-	if _, err := w.Write(buf); err != nil {
-		return err
-	}
-	return nil
-}
-
-func decodeSnapshot(r io.Reader) (Snapshot, error) {
-	var size int32
-	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-		return Snapshot{}, err
-	}
-
-	buf := make([]byte, size)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return Snapshot{}, err
-	}
-
-	pbSnapshot := &pb.Snapshot{}
-	if err := proto.Unmarshal(buf, pbSnapshot); err != nil {
-		return Snapshot{}, err
-	}
-
-	snapshot := Snapshot{
-		LastIncludedIndex: pbSnapshot.GetLastIncludedIndex(),
-		LastIncludedTerm:  pbSnapshot.GetLastIncludedTerm(),
-		Data:              pbSnapshot.GetData(),
-	}
-
-	return snapshot, nil
-}
-
 func encodePersistentState(w io.Writer, state *persistentState) error {
 	pbState := &pb.StorageState{Term: state.term, VotedFor: state.votedFor}
 	buf, err := proto.Marshal(pbState)

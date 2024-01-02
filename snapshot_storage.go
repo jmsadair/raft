@@ -1,55 +1,72 @@
 package raft
 
 import (
-	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-
-	"github.com/jmsadair/raft/internal/util"
+	"sort"
 )
 
+// SnapshotMetadata contains all metadata associated with a snapshot.
 type SnapshotMetadata struct {
-	ID                uint64
-	LastIncludedIndex uint64
-	LastIncludedTerm  uint64
-}
+	// The unique identifier of a snapshot.
+	ID uint64 `json:"id"`
 
-// SnapshotFile represents a snapshot of the replicated state machine.
-type SnapshotFile struct {
-	// The path to this snapshot.
-	Path string
+	// The last log index included in the snapshot.
+	LastIncludedIndex uint64 `json:"last_included_index"`
 
-	// The metadata for the snapshot.
-	Metadata SnapshotMetadata
+	// The last log term included in the snapshot.
+	LastIncludedTerm uint64 `json:"last_included_term"`
 }
 
 // SnapshotStorage represents the component of Raft this manages persistently
 // storing snapshots of the state machine.
 type SnapshotStorage interface {
+	// NewSnapshotFile creates a new snapshot file that is ready to be written to.
 	NewSnapshotFile(lastIncludedIndex, lastIncludedTerm uint64) (io.WriteCloser, error)
-	SnapshotReader(id uint64) (io.ReadCloser, error)
+
+	// Snapshot returns the snapshot with the provided ID, if it exists. If the ID is 0,
+	// the most recently taken snapshot is returned.
+	SnapshotReader(id uint64) (io.ReadSeekCloser, error)
+
+	// Snapshots returns an array containing the metadata of all snapshots that have been
+	// taken sorted from least recent to most recent.
+	Snapshots() ([]SnapshotMetadata, error)
 }
 
-type snapshotWriteCloser struct {
-	tmpFile *os.File
-	path    string
+// snapshotWriter implements the io.WriteCloser interface.
+type snapshotWriter struct {
+	// The actual directory that will contain the snapshot and its metadata
+	// once the snapshot has safely been written to disk.
+	dir string
+
+	// The snapshot file.
+	file *os.File
 }
 
-func (s *snapshotWriteCloser) Write(p []byte) (n int, err error) {
-	return s.tmpFile.Write(p)
+func (s *snapshotWriter) Write(p []byte) (n int, err error) {
+	return s.file.Write(p)
 }
 
-func (s *snapshotWriteCloser) Close() error {
-	defer os.Remove(s.tmpFile.Name())
-	if err := s.tmpFile.Sync(); err != nil {
+func (s *snapshotWriter) Close() error {
+	if s.file == nil {
+		return nil
+	}
+
+	// Ensure any written data is on disk.
+	if err := s.file.Sync(); err != nil {
 		return err
 	}
-	if err := s.tmpFile.Close(); err != nil {
+	if err := s.file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(s.tmpFile.Name(), s.path)
+
+	// Perform an atomic rename of the temporary directory
+	// containing the snapshot and its metadata.
+	tmpDir := filepath.Dir(s.file.Name())
+	return os.Rename(tmpDir, s.dir)
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface. This
@@ -57,9 +74,6 @@ func (s *snapshotWriteCloser) Close() error {
 type persistentSnapshotStorage struct {
 	// The directory where snapshots are persisted.
 	snapshotDir string
-
-	// All snapshot files in the snapshot directory.
-	snapshots map[string]SnapshotFile
 
 	// The unique ID that will be assigned to the next snapshot.
 	id uint64
@@ -73,98 +87,100 @@ func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
 		return nil, err
 	}
-
-	snapshots := make(map[string]SnapshotFile)
-	snapshotStorage := &persistentSnapshotStorage{
-		snapshotDir: snapshotPath,
-		snapshots:   snapshots,
-	}
-
-	if err := snapshotStorage.syncSnapsotFiles(); err != nil {
-		return nil, err
-	}
-
-	for _, snapshotFile := range snapshotStorage.snapshots {
-		snapshotStorage.id = util.Max[uint64](snapshotStorage.id, snapshotFile.Metadata.ID)
-	}
-	snapshotStorage.id++
-
-	return snapshotStorage, nil
+	return &persistentSnapshotStorage{snapshotDir: snapshotPath}, nil
 }
 
 func (p *persistentSnapshotStorage) NewSnapshotFile(
 	lastIncludedIndex, lastIncludedTerm uint64,
 ) (io.WriteCloser, error) {
-	tmpFile, err := os.CreateTemp(p.snapshotDir, "tmp-")
+	// The temporary directory that will contain the snapshot and its metadata.
+	// This directory will be renamed once the snapshot has been safely written to disk.
+	tmpDir, err := os.MkdirTemp(p.snapshotDir, "tmp-")
 	if err != nil {
 		return nil, err
 	}
 
-	name := fmt.Sprintf("snapshot-%d.bin", p.id)
-	path := filepath.Join(p.snapshotDir, name)
-	writer := &snapshotWriteCloser{path: path, tmpFile: tmpFile}
+	// Create the file the snapshot will be written to.
+	snapshotFilename := filepath.Join(tmpDir, fmt.Sprintf("snapshot-%d.bin", p.id))
+	snapshotFile, err := os.Create(snapshotFilename)
+	if err != nil {
+		return nil, err
+	}
 
-	metadata := &SnapshotMetadata{
+	// Create metadata file and write metadata to it.
+	metadataFilename := filepath.Join(tmpDir, fmt.Sprintf("metadata-%d.json", p.id))
+	metadataFile, err := os.Create(metadataFilename)
+	if err != nil {
+		return nil, err
+	}
+	metadata := SnapshotMetadata{
 		ID:                p.id,
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
 	}
-	if err := encodeSnapshotMetadata(writer, metadata); err != nil {
+	bytes, err := json.Marshal(metadata)
+	if err != nil {
 		return nil, err
 	}
+	if _, err := metadataFile.Write(bytes); err != nil {
+		return nil, err
+	}
+	if err := metadataFile.Sync(); err != nil {
+		return nil, err
+	}
+	if err := metadataFile.Close(); err != nil {
+		return nil, err
+	}
+
+	actualDir := filepath.Join(p.snapshotDir, fmt.Sprintf("snapshot-%d", p.id))
+	writer := &snapshotWriter{dir: actualDir, file: snapshotFile}
 
 	p.id++
 
 	return writer, nil
 }
 
-func (p *persistentSnapshotStorage) SnapshotReader(id uint64) (io.ReadCloser, error) {
-	if err := p.syncSnapsotFiles(); err != nil {
+func (p *persistentSnapshotStorage) SnapshotReader(id uint64) (io.ReadSeekCloser, error) {
+	if id > 0 {
+		snapshotFilename := filepath.Join(
+			p.snapshotDir,
+			fmt.Sprintf("snapshot-%d/snapshot-%d.bin", id, id),
+		)
+		return os.Open(snapshotFilename)
+	}
+
+	// Find the most recently taken snapshot.
+	pattern := filepath.Join(p.snapshotDir, "snapshot-%d/snapshot-%d.bin")
+	snapshotFilenames, err := filepath.Glob(pattern)
+	if err != nil {
 		return nil, err
 	}
-
-	for path, snapshotFile := range p.snapshots {
-		if id == snapshotFile.Metadata.ID || (id == 0 && p.id == snapshotFile.Metadata.ID+1) {
-			file, err := os.Open(path)
-			if err != nil {
-				return nil, err
-			}
-			_, err = decodeSnapshotMetadata(file)
-			if err != nil {
-				return nil, err
-			}
-			return file, nil
-		}
+	sort.Strings(snapshotFilenames)
+	if len(snapshotFilenames) == 0 {
+		return nil, nil
 	}
-
-	return nil, nil
+	mostRecentSnapshot := snapshotFilenames[len(snapshotFilenames)-1]
+	return os.Open(mostRecentSnapshot)
 }
 
-func (p *persistentSnapshotStorage) syncSnapsotFiles() error {
-	pattern := filepath.Join(p.snapshotDir, "snapshot-%d.bin")
-	entries, err := filepath.Glob(pattern)
+func (p *persistentSnapshotStorage) Snapshots() ([]SnapshotMetadata, error) {
+	pattern := filepath.Join(p.snapshotDir, "snapshot-%d/metadata-%d.bin")
+	metadataFilenames, err := filepath.Glob(pattern)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	for _, entry := range entries {
-		if _, ok := p.snapshots[entry]; ok {
-			continue
-		}
-
-		snapshot, err := os.Open(entry)
+	sort.Strings(metadataFilenames)
+	snapshots := make([]SnapshotMetadata, len(metadataFilenames))
+	for _, metadataFilename := range metadataFilenames {
+		bytes, err := os.ReadFile(metadataFilename)
 		if err != nil {
-			return err
+			return nil, err
 		}
-
-		reader := bufio.NewReader(snapshot)
-		metadata, err := decodeSnapshotMetadata(reader)
-		if err != nil {
-			return err
+		metadata := SnapshotMetadata{}
+		if err := json.Unmarshal(bytes, &metadata); err != nil {
+			return nil, err
 		}
-
-		p.snapshots[entry] = SnapshotFile{Path: entry, Metadata: metadata}
+		snapshots = append(snapshots, metadata)
 	}
-
-	return nil
+	return snapshots, nil
 }

@@ -104,6 +104,8 @@ func TestMakeProtoInstallSnapshotRequest(t *testing.T) {
 		LastIncludedIndex: 3,
 		LastIncludedTerm:  4,
 		Bytes:             []byte("test"),
+		Offset:            1,
+		Done:              false,
 	}
 
 	protoReq := makeProtoInstallSnapshotRequest(req)
@@ -113,6 +115,8 @@ func TestMakeProtoInstallSnapshotRequest(t *testing.T) {
 	require.Equal(t, req.LastIncludedIndex, protoReq.GetLastIncludedIndex())
 	require.Equal(t, req.LastIncludedTerm, protoReq.GetLastIncludedTerm())
 	require.Equal(t, req.Bytes, protoReq.GetData())
+	require.Equal(t, req.Offset, protoReq.GetOffset())
+	require.Equal(t, req.Done, protoReq.GetDone())
 }
 
 // TestMakeInstallSnapshotResponse checks that a protobuf InstallSnapshotResponse is correctly converted to a
@@ -224,6 +228,8 @@ func TestMakeInstallSnapshotRequest(t *testing.T) {
 		LastIncludedIndex: 3,
 		LastIncludedTerm:  4,
 		Data:              []byte("test"),
+		Offset:            4,
+		Done:              true,
 	}
 
 	req := makeInstallSnapshotRequest(protoReq)
@@ -233,6 +239,8 @@ func TestMakeInstallSnapshotRequest(t *testing.T) {
 	require.Equal(t, protoReq.GetLastIncludedIndex(), req.LastIncludedIndex)
 	require.Equal(t, protoReq.GetLastIncludedTerm(), req.LastIncludedTerm)
 	require.Equal(t, protoReq.GetData(), req.Bytes)
+	require.Equal(t, protoReq.GetOffset(), req.Offset)
+	require.Equal(t, protoReq.GetDone(), req.Done)
 }
 
 // TestMakeProtoInstallSnapshotResponse checks that a InstallSnapshotResponse is correctly converted to a

@@ -74,8 +74,14 @@ type InstallSnapshotRequest struct {
 	// The term associated with the last included index.
 	LastIncludedTerm uint64
 
-	// The state of the state machine in Bytes.
+	// A chunk of the snapshot.
 	Bytes []byte
+
+	// The offset in the snapshot file.
+	Offset int64
+
+	// Indicates whether this is the last chunk of the snapshot.
+	Done bool
 }
 
 // InstallSnapshotResponse is a response to a snapshot installation.
@@ -146,6 +152,8 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 		LastIncludedIndex: request.LastIncludedIndex,
 		LastIncludedTerm:  request.LastIncludedTerm,
 		Data:              request.Bytes,
+		Offset:            request.Offset,
+		Done:              request.Done,
 	}
 }
 
@@ -218,6 +226,8 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 		LastIncludedIndex: request.GetLastIncludedIndex(),
 		LastIncludedTerm:  request.GetLastIncludedTerm(),
 		Bytes:             request.GetData(),
+		Offset:            request.GetOffset(),
+		Done:              request.GetDone(),
 	}
 }
 

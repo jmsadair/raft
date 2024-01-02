@@ -46,7 +46,7 @@ message InstallSnapshotRequest {
   string leader              = 2;
   uint64 last_included_index = 3;
   uint64 last_included_term  = 4;
-  uint64 offset              = 5;
+  int64  offset              = 5;
   bytes  data                = 6;
   bool   done                = 7;
 }
@@ -58,12 +58,6 @@ message InstallSnapshotResponse {
 message StorageState {
   uint64 term      = 1;
   string voted_for = 2;
-}
-
-message SnapshotMetadata {
-  uint64 id = 1;
-  uint64 last_included_index = 2;
-  uint64 last_included_term = 3;
 }
 
 service Raft {

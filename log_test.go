@@ -8,7 +8,8 @@ import (
 
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -16,8 +17,6 @@ func TestAppendEntries(t *testing.T) {
 
 	// Add some entries to the log.
 	var entry1, entry2 *LogEntry
-	var err error
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -60,16 +59,15 @@ func TestAppendEntries(t *testing.T) {
 
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var err error
 	var entry1, entry2, entry3 *LogEntry
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -113,16 +111,15 @@ func TestTruncate(t *testing.T) {
 
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var err error
 	var entry1, entry2, entry3, entry4 *LogEntry
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -183,7 +180,8 @@ func TestCompact(t *testing.T) {
 
 func TestDiscard(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -216,7 +214,8 @@ func TestDiscard(t *testing.T) {
 
 func TestContains(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())

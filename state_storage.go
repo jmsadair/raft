@@ -38,7 +38,7 @@ type persistentState struct {
 // This implementation is not concurrent safe.
 type persistentStateStorage struct {
 	// The directory where the state will be persisted.
-	path string
+	stateDir string
 
 	// The file associated with the storage, nil if storage is closed.
 	file *os.File
@@ -48,17 +48,21 @@ type persistentStateStorage struct {
 }
 
 // NewStateStorage creates a new StateStorage at the provided path.
-func NewStateStorage(path string) StateStorage {
-	return &persistentStateStorage{path: path}
+func NewStateStorage(path string) (StateStorage, error) {
+	stateDir := filepath.Join(path, "state")
+	if err := os.MkdirAll(stateDir, os.ModePerm); err != nil {
+		return nil, err
+	}
+	return &persistentStateStorage{stateDir: stateDir}, nil
 }
 
 func (p *persistentStateStorage) Open() error {
-	fileName := filepath.Join(p.path, "state.bin")
-	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
+	stateFilename := filepath.Join(p.stateDir, "state.bin")
+	stateFile, err := os.OpenFile(stateFilename, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
-		return errors.WrapError(err, "failed to open state storage file")
+		return errors.WrapError(err, "failed to open state file")
 	}
-	p.file = file
+	p.file = stateFile
 	return nil
 }
 
@@ -99,7 +103,7 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	// Create a temporary file that will replace the file currently associated with storage.
 	// Note that it is NOT safe to truncate the file and then write the new state - it must
 	// be atomic.
-	tmpFile, err := os.CreateTemp(p.path, "tmp-")
+	tmpFile, err := os.CreateTemp(p.stateDir, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed while persisting state")
 	}
@@ -127,7 +131,7 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	}
 
 	// Open the state storage for future writes.
-	fileName := filepath.Join(p.path, "state.bin")
+	fileName := filepath.Join(p.stateDir, "state.bin")
 	p.file, err = os.OpenFile(fileName, os.O_RDWR, 0o666)
 	if err != nil {
 		return errors.WrapError(err, "failed while persisting state")

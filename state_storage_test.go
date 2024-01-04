@@ -8,7 +8,8 @@ import (
 
 func TestStateStorageSetGet(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage := NewStateStorage(tmpDir)
+	storage, err := NewStateStorage(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, storage.Open())
 

@@ -3,6 +3,7 @@ package raft
 import (
 	"bufio"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -106,21 +107,26 @@ type persistentLog struct {
 	file *os.File
 
 	// The directory where the log is persisted to.
-	path string
+	logDir string
 }
 
-// NewLog creates a new instance of Log at the provided path.
-func NewLog(path string) Log {
-	return &persistentLog{path: path}
+// NewLog creates a new Log instance.
+// The log file will be stored at path/log/log.bin.
+func NewLog(path string) (Log, error) {
+	logDir := filepath.Join(path, "log")
+	if err := os.MkdirAll(logDir, fs.ModePerm); err != nil {
+		return nil, errors.WrapError(err, "failed to create directory for log")
+	}
+	return &persistentLog{logDir: logDir}, nil
 }
 
 func (l *persistentLog) Open() error {
-	fileName := filepath.Join(l.path, "log.bin")
-	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0o666)
+	logFilename := filepath.Join(l.logDir, "log.bin")
+	logFile, err := os.OpenFile(logFilename, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
-		return errors.WrapError(err, "failed to open log")
+		return errors.WrapError(err, "failed to open log file")
 	}
-	l.file = file
+	l.file = logFile
 	l.entries = make([]*LogEntry, 0)
 	return nil
 }
@@ -262,7 +268,7 @@ func (l *persistentLog) Compact(index uint64) error {
 	copy(newEntries[:], l.entries[logIndex:])
 
 	// Create a temporary file to write the compacted log to.
-	tmpFile, err := os.CreateTemp(l.path, "tmp-")
+	tmpFile, err := os.CreateTemp(l.logDir, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to compact log")
 	}
@@ -296,7 +302,7 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	}
 
 	// Create a temporary file for the new log.
-	tmpFile, err := os.CreateTemp(l.path, "tmp-")
+	tmpFile, err := os.CreateTemp(l.logDir, "tmp-")
 	if err != nil {
 		return errors.WrapError(err, "failed to discard log entries")
 	}
@@ -353,7 +359,7 @@ func (l *persistentLog) rename(tmpFile *os.File) error {
 	}
 
 	// Open the log file and prepare it for new writes.
-	fileName := filepath.Join(l.path, "log.bin")
+	fileName := filepath.Join(l.logDir, "log.bin")
 	file, err := os.OpenFile(fileName, os.O_RDWR, 0o666)
 	if err != nil {
 		return err

@@ -19,7 +19,6 @@ func TestStateStorageSetGet(t *testing.T) {
 
 	require.NoError(t, storage.Close())
 	require.NoError(t, storage.Open())
-	require.NoError(t, storage.Replay())
 	defer func() { require.NoError(t, storage.Close()) }()
 
 	recoveredTerm, recoveredVotedFor, err := storage.State()

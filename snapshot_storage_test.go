@@ -1,41 +1,63 @@
 package raft
 
 import (
+	"bytes"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestSnapshotStore(t *testing.T) {
+func TestSnapshotStorageWriterReader(t *testing.T) {
 	tmpDir := t.TempDir()
-	snapshotStore := NewSnapshotStorage(tmpDir)
-
-	require.NoError(t, snapshotStore.Open())
-	require.NoError(t, snapshotStore.Replay())
-	defer func() { require.NoError(t, snapshotStore.Close()) }()
-
-	snapshot1 := NewSnapshot(1, 1, []byte("test1"))
-	require.NoError(t, snapshotStore.SaveSnapshot(snapshot1))
-
-	last1, err := snapshotStore.LastSnapshot()
+	store, err := NewSnapshotStorage(tmpDir)
 	require.NoError(t, err)
-	require.NotNil(t, last1)
-	validateSnapshot(t, snapshot1, last1)
 
-	snapshot2 := NewSnapshot(2, 2, []byte("test2"))
-	require.NoError(t, snapshotStore.SaveSnapshot(snapshot2))
-
-	last2, err := snapshotStore.LastSnapshot()
+	// Write the first snapshot.
+	lastIncludedIndex1 := uint64(1)
+	lastIncludedTerm1 := uint64(1)
+	data1 := []byte("snapshot1")
+	writer, err := store.NewSnapshotFile(lastIncludedIndex1, lastIncludedTerm1)
 	require.NoError(t, err)
-	require.NotNil(t, last2)
-	validateSnapshot(t, snapshot2, last2)
-
-	require.NoError(t, snapshotStore.Close())
-	require.NoError(t, snapshotStore.Open())
-	require.NoError(t, snapshotStore.Replay())
-
-	last2, err = snapshotStore.LastSnapshot()
+	n, err := writer.Write(data1)
 	require.NoError(t, err)
-	require.NotNil(t, last2)
-	validateSnapshot(t, snapshot2, last2)
+	require.Equal(t, len(data1), n)
+	require.NoError(t, writer.Close())
+
+	// Write the second snapshot.
+	lastIncludedIndex2 := uint64(2)
+	lastIncludedTerm2 := uint64(2)
+	data2 := []byte("snapshot2")
+	writer, err = store.NewSnapshotFile(lastIncludedIndex2, lastIncludedTerm2)
+	require.NoError(t, err)
+	n, err = writer.Write(data2)
+	require.NoError(t, err)
+	require.Equal(t, len(data2), n)
+	require.NoError(t, writer.Close())
+
+	snapshots, err := store.Snapshots()
+	require.NoError(t, err)
+	require.Len(t, snapshots, 2)
+
+	// Check the first snapshot.
+	metadata1 := snapshots[0]
+	require.Equal(t, lastIncludedIndex1, metadata1.LastIncludedIndex)
+	require.Equal(t, lastIncludedTerm1, metadata1.LastIncludedTerm)
+	reader, err := store.SnapshotReader(metadata1.ID)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, reader)
+	require.NoError(t, err)
+	require.Equal(t, string(data1), string(buf.Bytes()))
+
+	// Check the second snapshot.
+	metadata2 := snapshots[1]
+	require.Equal(t, lastIncludedIndex2, metadata2.LastIncludedIndex)
+	require.Equal(t, lastIncludedTerm2, metadata2.LastIncludedTerm)
+	reader, err = store.SnapshotReader(metadata2.ID)
+	require.NoError(t, err)
+	buf.Reset()
+	_, err = io.Copy(&buf, reader)
+	require.NoError(t, err)
+	require.Equal(t, string(data2), string(buf.Bytes()))
 }

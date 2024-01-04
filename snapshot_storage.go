@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 )
 
@@ -21,14 +22,16 @@ type SnapshotMetadata struct {
 	LastIncludedTerm uint64 `json:"last_included_term"`
 }
 
-// SnapshotStorage represents the component of Raft this manages persistently
-// storing snapshots of the state machine.
+// SnapshotStorage represents the component of Raft that manages snapshots created
+// by the state machine.
 type SnapshotStorage interface {
-	// NewSnapshotFile creates a new snapshot file that is ready to be written to.
+	// NewSnapshotFile creates a new snapshot file and returns a writer for it.
+	// It is the caller's responsibility to close the file.
 	NewSnapshotFile(lastIncludedIndex, lastIncludedTerm uint64) (io.WriteCloser, error)
 
 	// Snapshot returns the snapshot with the provided ID, if it exists. If the ID is 0,
-	// the most recently taken snapshot is returned.
+	// the most recently taken snapshot is returned. It is the caller's responsibility
+	// to close the file.
 	SnapshotReader(id uint64) (io.ReadSeekCloser, error)
 
 	// Snapshots returns an array containing the metadata of all snapshots that have been
@@ -41,6 +44,10 @@ type snapshotWriter struct {
 	// The actual directory that will contain the snapshot and its metadata
 	// once the snapshot has safely been written to disk.
 	dir string
+
+	// The temporary directory that contains the snapshot and its metadata
+	// while it is being written.
+	tmpDir string
 
 	// The snapshot file.
 	file *os.File
@@ -65,8 +72,7 @@ func (s *snapshotWriter) Close() error {
 
 	// Perform an atomic rename of the temporary directory
 	// containing the snapshot and its metadata.
-	tmpDir := filepath.Dir(s.file.Name())
-	return os.Rename(tmpDir, s.dir)
+	return os.Rename(s.tmpDir, s.dir)
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface. This
@@ -79,15 +85,24 @@ type persistentSnapshotStorage struct {
 	id uint64
 }
 
-// NewSnapshotStorage creates a new snapshot storage.
-// Snapshots will be stored at path/snapshots. If any directories
-// on the path do not exist, they will be created.
+// NewSnapshotStorage creates a new snapshot storage at the provided path.
 func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	snapshotPath := filepath.Join(path, "snapshots")
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
 		return nil, err
 	}
-	return &persistentSnapshotStorage{snapshotDir: snapshotPath}, nil
+
+	store := &persistentSnapshotStorage{snapshotDir: snapshotPath, id: 1}
+
+	snapshots, err := store.Snapshots()
+	if err != nil {
+		return nil, err
+	}
+	if len(snapshots) > 0 {
+		store.id = snapshots[len(snapshots)-1].ID + 1
+	}
+
+	return store, nil
 }
 
 func (p *persistentSnapshotStorage) NewSnapshotFile(
@@ -133,7 +148,7 @@ func (p *persistentSnapshotStorage) NewSnapshotFile(
 	}
 
 	actualDir := filepath.Join(p.snapshotDir, fmt.Sprintf("snapshot-%d", p.id))
-	writer := &snapshotWriter{dir: actualDir, file: snapshotFile}
+	writer := &snapshotWriter{dir: actualDir, tmpDir: tmpDir, file: snapshotFile}
 
 	p.id++
 
@@ -149,30 +164,30 @@ func (p *persistentSnapshotStorage) SnapshotReader(id uint64) (io.ReadSeekCloser
 		return os.Open(snapshotFilename)
 	}
 
-	// Find the most recently taken snapshot.
-	pattern := filepath.Join(p.snapshotDir, "snapshot-%d/snapshot-%d.bin")
-	snapshotFilenames, err := filepath.Glob(pattern)
+	snapshots, err := p.Snapshots()
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(snapshotFilenames)
-	if len(snapshotFilenames) == 0 {
+	if len(snapshots) == 0 {
 		return nil, nil
 	}
-	mostRecentSnapshot := snapshotFilenames[len(snapshotFilenames)-1]
-	return os.Open(mostRecentSnapshot)
+	mostRecentID := snapshots[len(snapshots)-1].ID
+	snapshotFilename := filepath.Join(
+		p.snapshotDir,
+		fmt.Sprintf("snapshot-%d/snapshot-%d.bin", mostRecentID, mostRecentID),
+	)
+	return os.Open(snapshotFilename)
 }
 
 func (p *persistentSnapshotStorage) Snapshots() ([]SnapshotMetadata, error) {
-	pattern := filepath.Join(p.snapshotDir, "snapshot-%d/metadata-%d.bin")
-	metadataFilenames, err := filepath.Glob(pattern)
+	pattern := regexp.MustCompile(`snapshot-(\d+)/metadata-\d+\.json$`)
+	filenames, err := p.findFiles(pattern.MatchString)
 	if err != nil {
 		return nil, err
 	}
-	sort.Strings(metadataFilenames)
-	snapshots := make([]SnapshotMetadata, len(metadataFilenames))
-	for _, metadataFilename := range metadataFilenames {
-		bytes, err := os.ReadFile(metadataFilename)
+	snapshots := make([]SnapshotMetadata, 0, len(filenames))
+	for _, filename := range filenames {
+		bytes, err := os.ReadFile(filename)
 		if err != nil {
 			return nil, err
 		}
@@ -182,5 +197,26 @@ func (p *persistentSnapshotStorage) Snapshots() ([]SnapshotMetadata, error) {
 		}
 		snapshots = append(snapshots, metadata)
 	}
+
+	sort.Slice(snapshots, func(i, j int) bool {
+		metadata1 := snapshots[i]
+		metadata2 := snapshots[j]
+		return metadata1.ID < metadata2.ID
+	})
+
 	return snapshots, nil
+}
+
+func (p *persistentSnapshotStorage) findFiles(isMatch func(string) bool) ([]string, error) {
+	filenames := []string{}
+	err := filepath.WalkDir(p.snapshotDir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && isMatch(path) {
+			filenames = append(filenames, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return filenames, nil
 }

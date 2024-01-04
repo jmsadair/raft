@@ -10,11 +10,11 @@ type StateMachine interface {
 
 	// Snapshot returns a snapshot of the current state of the state machine
 	// using the provided writer.
-	Snapshot(snapshotWriter io.WriteCloser) error
+	Snapshot(snapshotWriter io.Writer) error
 
 	// Restore recovers the state of the state machine given a reader for a previously
 	// created snapshot.
-	Restore(snapshotReader io.ReadCloser) error
+	Restore(snapshotReader io.Reader) error
 
 	// NeedSnapshot returns true if a snapshot should be taken of the state machine and false
 	// otherwise. The provided log size is the number of entries currently in the log.

@@ -11,66 +11,53 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var errNoConnectionToPeer = errors.New("no connection with peer")
+// TransportFactory creates new instances of the Transport interface.
+type TransportFactory func(address string) (Transport, error)
 
-// Peer is an interface representing a component responsible for establishing a connection
-// with and making RPCs to another raft node.
-type Peer interface {
-	// ID returns the ID of the peer.
-	ID() string
-
-	// Address returns the network address of the peer.
-	Address() net.Addr
-
-	// Connect establishes a connection with the peer.
+// Transport is an interface representing a component responsible for
+// sending RPCs to a remote node.
+type Transport interface {
+	// Connect establishes a connection.
 	Connect() error
 
-	// Disconnect tears down a connection with the peer.
+	// Disconnect tears down a connection.
 	Disconnect() error
 
-	// AppendEntries sends an append entries request to the peer.
+	// AppendEntries sends an append entries request.
 	AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error)
 
-	// RequestVote sends a request vote request to the peer.
+	// RequestVote sends a request vote request.
 	RequestVote(request RequestVoteRequest) (RequestVoteResponse, error)
 
-	// InstallSnapshot sends a install snapshot request to the peer.
+	// InstallSnapshot sends a install snapshot request.
 	InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error)
 }
 
-// peer is an implementation of the Peer interface.
-// This implementation is concurrent safe.
-type peer struct {
-	// The gRPC client for making Raft protocol calls to the peer.
+// transport implements the Transport interface.
+type transport struct {
+	// The gRPC client for making Raft protocol calls to the transport.
 	client pb.RaftClient
 
-	// The ID of this peer.
-	id string
-
-	// The network address of this peer.
+	// The network address of this transport.
 	address net.Addr
 
-	// The gRPC client connection to communicate with the peer.
+	// The gRPC client connection to communicate with the transport.
 	conn *grpc.ClientConn
 
 	// Prevents a race condition between disconnect/connect and the RPCs.
 	mu sync.RWMutex
 }
 
-// NewPeer creates a new Peer instance with the provided ID and address.
-func NewPeer(id string, address net.Addr) Peer {
-	return &peer{id: id, address: address}
+// NewTransport creates a new Transport instance with the provided address.
+func NewTransport(address string) (Transport, error) {
+	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		return nil, errors.WrapError(err, "failed to create transport")
+	}
+	return &transport{address: resolvedAddress}, nil
 }
 
-func (p *peer) ID() string {
-	return p.id
-}
-
-func (p *peer) Address() net.Addr {
-	return p.address
-}
-
-func (p *peer) Connect() error {
+func (p *transport) Connect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -82,7 +69,7 @@ func (p *peer) Connect() error {
 		p.address.String(),
 		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
-		return errors.WrapError(err, "failed connecting to peer")
+		return errors.WrapError(err, "failed to make connection")
 	}
 
 	p.client = pb.NewRaftClient(conn)
@@ -91,7 +78,7 @@ func (p *peer) Connect() error {
 	return nil
 }
 
-func (p *peer) Disconnect() error {
+func (p *transport) Disconnect() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -100,7 +87,7 @@ func (p *peer) Disconnect() error {
 	}
 
 	if err := p.conn.Close(); err != nil {
-		return errors.WrapError(err, "failed while closing connection to peer")
+		return errors.WrapError(err, "failed while closing connection to transport")
 	}
 
 	p.conn = nil
@@ -109,12 +96,14 @@ func (p *peer) Disconnect() error {
 	return nil
 }
 
-func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
+func (p *transport) AppendEntries(request AppendEntriesRequest) (AppendEntriesResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return AppendEntriesResponse{}, errNoConnectionToPeer
+		return AppendEntriesResponse{}, errors.New(
+			"AppendEntries RPC failed, no connection established",
+		)
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
@@ -125,19 +114,21 @@ func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRespons
 	if err != nil {
 		return AppendEntriesResponse{}, errors.WrapError(
 			err,
-			"append entries RPC failed",
+			"AppendEntries RPC failed",
 		)
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
 }
 
-func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
+func (p *transport) RequestVote(request RequestVoteRequest) (RequestVoteResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return RequestVoteResponse{}, errNoConnectionToPeer
+		return RequestVoteResponse{}, errors.New(
+			"RequestVote RPC failed, no connection established",
+		)
 	}
 
 	pbRequest := makeProtoRequestVoteRequest(request)
@@ -145,19 +136,23 @@ func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, err
 	if err != nil {
 		return RequestVoteResponse{}, errors.WrapError(
 			err,
-			"request vote RPC failed",
+			"RequestVote RPC failed",
 		)
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
 }
 
-func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotResponse, error) {
+func (p *transport) InstallSnapshot(
+	request InstallSnapshotRequest,
+) (InstallSnapshotResponse, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return InstallSnapshotResponse{}, errNoConnectionToPeer
+		return InstallSnapshotResponse{}, errors.New(
+			"InstallSnapshot RPC failed, no connection established",
+		)
 	}
 
 	pbRequest := makeProtoInstallSnapshotRequest(request)
@@ -168,7 +163,7 @@ func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotR
 	if err != nil {
 		return InstallSnapshotResponse{}, errors.WrapError(
 			err,
-			"install snapshot RPC failed",
+			"InstallSnapshot RPC failed",
 		)
 	}
 

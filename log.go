@@ -184,13 +184,11 @@ func (l *persistentLog) GetEntry(index uint64) (*LogEntry, error) {
 	if l.file == nil {
 		return nil, errors.New("failed to get entry, log is not open")
 	}
-
-	logIndex := index - l.entries[0].Index
-	lastIndex := l.entries[len(l.entries)-1].Index
-	if logIndex <= 0 || logIndex > lastIndex {
+	if !l.Contains(index) {
 		return nil, errors.New("failed to get entry, index %d does not exist", index)
 	}
 
+	logIndex := index - l.entries[0].Index
 	entry := l.entries[logIndex]
 
 	return entry, nil
@@ -234,12 +232,11 @@ func (l *persistentLog) Truncate(index uint64) error {
 	if l.file == nil {
 		return errors.New("failed to truncate log, log is not open")
 	}
-
-	logIndex := index - l.entries[0].Index
-	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
+	if !l.Contains(index) {
 		return errors.New("failed to truncate log, index %d does not exist", index)
 	}
 
+	logIndex := index - l.entries[0].Index
 	size := l.entries[logIndex].Offset
 
 	if err := l.file.Truncate(size); err != nil {
@@ -262,12 +259,11 @@ func (l *persistentLog) Compact(index uint64) error {
 	if l.file == nil {
 		return errors.New("failed to compact log, log is not open")
 	}
-
-	logIndex := index - l.entries[0].Index
-	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
+	if !l.Contains(index) {
 		return errors.New("failed to compact log, index %d does not exist", index)
 	}
 
+	logIndex := index - l.entries[0].Index
 	newEntries := make([]*LogEntry, uint64(len(l.entries))-logIndex)
 	copy(newEntries[:], l.entries[logIndex:])
 

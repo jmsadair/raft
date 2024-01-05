@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
-	"net"
+	"io"
 	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jmsadair/raft/internal/errors"
 
 	"github.com/jmsadair/raft/internal/util"
 	"github.com/stretchr/testify/require"
@@ -31,12 +29,6 @@ func validateLogEntry(
 	require.Equal(t, expectedType, entry.EntryType)
 }
 
-func validateSnapshot(t *testing.T, expected *Snapshot, actual *Snapshot) {
-	require.Equal(t, expected.LastIncludedIndex, actual.LastIncludedIndex)
-	require.Equal(t, expected.LastIncludedTerm, actual.LastIncludedTerm)
-	require.Equal(t, expected.Data, actual.Data)
-}
-
 func makeOperations(numOperations int) [][]byte {
 	operations := make([][]byte, numOperations)
 	for i := 1; i <= numOperations; i++ {
@@ -45,17 +37,57 @@ func makeOperations(numOperations int) [][]byte {
 	return operations
 }
 
-func makePeerMaps(numServers int) []map[string]Peer {
-	clusterPeers := make([]map[string]Peer, numServers)
+func makePeerMaps(numServers int) []map[string]string {
+	peers := make([]map[string]string, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make(map[string]Peer, numServers)
+		peers[i] = make(map[string]string, numServers)
 		for j := 0; j < numServers; j++ {
-			peerID := fmt.Sprint(j)
-			peerAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.%d:8080", j))
-			clusterPeers[i][peerID] = NewPeer(peerID, peerAddr)
+			id := fmt.Sprint(j)
+			address := fmt.Sprintf("127.0.0.%d:8080", j)
+			peers[i][id] = address
 		}
 	}
-	return clusterPeers
+	return peers
+}
+
+func makeRaft(
+	id string,
+	dataPath string,
+	peers map[string]string,
+	noStart bool,
+	snapshotting bool,
+	snapshotSize int,
+) (*Raft, error) {
+	log, err := NewLog(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	snapshots, err := NewSnapshotStorage(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	stateStore, err := NewStateStorage(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	fsm := newStateMachineMock(snapshotting, snapshotSize)
+	raft, err := NewRaft(id, peers, NewTransport, log, stateStore, snapshots, fsm)
+	if err != nil {
+		return nil, err
+	}
+
+	// If noStart is true, the caller is not expecting to call start.
+	// Open the log and replay it so that testing is possible.
+	if noStart {
+		if err := raft.log.Open(); err != nil {
+			return nil, err
+		}
+		if err := raft.log.Replay(); err != nil {
+			return nil, err
+		}
+	}
+
+	return raft, nil
 }
 
 func encodeOperations(operations []Operation) ([]byte, error) {
@@ -104,24 +136,36 @@ func (s *stateMachineMock) Apply(operation *Operation) interface{} {
 	return len(s.operations)
 }
 
-func (s *stateMachineMock) Snapshot() ([]byte, error) {
+func (s *stateMachineMock) Snapshot(snapshotWriter io.Writer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	snapshotBytes, err := encodeOperations(s.operations)
 	if err != nil {
-		return nil, fmt.Errorf("error encoding state machine state: %s", err.Error())
+		return fmt.Errorf("error taking snapshot of state machine: %s", err.Error())
 	}
-	return snapshotBytes, nil
+
+	if _, err := snapshotWriter.Write(snapshotBytes); err != nil {
+		return fmt.Errorf("error taking snapshot of state machine: %s", err.Error())
+	}
+
+	return nil
 }
 
-func (s *stateMachineMock) Restore(snapshot *Snapshot) error {
+func (s *stateMachineMock) Restore(snapshotReader io.Reader) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := decodeOperations(snapshot.Data)
+	var buf bytes.Buffer
+	_, err := io.Copy(&buf, snapshotReader)
 	if err != nil {
-		return errors.WrapError(err, "error decoding state machine state")
+		return fmt.Errorf("error restoring state machine: %s", err.Error())
+	}
+	bytes := buf.Bytes()
+
+	entries, err := decodeOperations(bytes)
+	if err != nil {
+		return fmt.Errorf("error restoring state machine: %s", err.Error())
 	}
 
 	s.operations = entries
@@ -163,7 +207,7 @@ type testCluster struct {
 
 	// The peers fore each server, where peers[i] is the peers
 	// for servers[i].
-	peers []map[string]Peer
+	peers []map[string]string
 
 	// The log associated with each server, where logs[i] is the
 	// log for servers[i]
@@ -213,15 +257,14 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	for i := 0; i < numServers; i++ {
 		id := fmt.Sprint(i)
 		tmpDir := t.TempDir()
-		fsm[i] = newStateMachineMock(snapshotting, snapshotSize)
-		logs[i] = NewLog(tmpDir)
-		snapshotStores[i] = NewSnapshotStorage(tmpDir)
-		stores[i] = NewStateStorage(tmpDir)
-
-		raft, err := NewRaft(id, peers[i], logs[i], stores[i], snapshotStores[i], fsm[i])
+		raft, err := makeRaft(id, tmpDir, peers[i], false, snapshotting, snapshotSize)
 		if err != nil {
 			t.Fatalf("failed to create raft instance: err = %s", err.Error())
 		}
+		fsm[i] = raft.fsm.(*stateMachineMock)
+		logs[i] = raft.log
+		snapshotStores[i] = raft.snapshotStorage
+		stores[i] = raft.stateStorage
 		rafts[i] = raft
 
 		server, err := NewServer(raft)
@@ -339,6 +382,37 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 		}
 	}
 
+	// Find the first log index where two logs differ.
+	for i := 0; i < len(appliedOperationsPerServer); i++ {
+		for j := 0; j < len(appliedOperationsPerServer); j++ {
+			applied1 := appliedOperationsPerServer[i]
+			applied2 := appliedOperationsPerServer[j]
+			if i == j {
+				continue
+			}
+			if reflect.DeepEqual(applied1, applied2) {
+				continue
+			}
+			for k := 0; k < util.Min(len(applied1), len(applied2)); k++ {
+				op1 := applied1[k]
+				op2 := applied2[k]
+				if reflect.DeepEqual(op1, op2) {
+					continue
+				}
+				tc.t.Fatalf(
+					"fsm %d != fsm %d: index1 = %d term1 = %d operation1 = %s index2 = %d term2 = %d operation2 = %s",
+					i,
+					j,
+					op1.LogIndex,
+					op1.LogTerm,
+					string(op1.Bytes),
+					op2.LogIndex,
+					op2.LogTerm,
+					string(op2.Bytes),
+				)
+			}
+		}
+	}
 	tc.t.Fatalf("cluster state machines do not match")
 }
 
@@ -423,6 +497,7 @@ func (tc *testCluster) restartServer(server int) {
 	newRaft, err := NewRaft(
 		serverID,
 		tc.peers[server],
+		NewTransport,
 		tc.logs[server],
 		tc.stores[server],
 		tc.snapshotStores[server],
@@ -525,22 +600,7 @@ func (tc *testCluster) reconnectServer(server int) {
 
 	serverID := fmt.Sprint(server)
 
-	// Reconnect this server to itself. Note that this has no effect
-	// on the operation of the cluster. The only purpose of this is to
-	// indicate that this server is connected and should operate as expected.
-	if err := tc.rafts[server].disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf(
-			"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
-			server,
-			server,
-			err.Error(),
-		)
-	}
-
 	for i := 0; i < len(tc.servers); i++ {
-		if server == i {
-			continue
-		}
 		if err := tc.rafts[i].connectPeer(serverID); err != nil {
 			tc.t.Fatalf(
 				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
@@ -590,23 +650,7 @@ func (tc *testCluster) disconnectServer(server int) {
 
 	serverID := fmt.Sprint(server)
 
-	// Disconnect this index from itself. Note that this has no effect
-	// on the operation of the cluster. The only purpose of this is to
-	// indicate that this index is disconnected and will not operate
-	// as expected.
-	if err := tc.rafts[server].disconnectPeer(serverID); err != nil {
-		tc.t.Fatalf(
-			"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
-			server,
-			server,
-			err.Error(),
-		)
-	}
-
 	for i := 0; i < len(tc.servers); i++ {
-		if i == server {
-			continue
-		}
 		if err := tc.rafts[i].disconnectPeer(serverID); err != nil {
 			tc.t.Fatalf(
 				"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",

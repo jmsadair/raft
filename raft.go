@@ -116,11 +116,10 @@ type Status struct {
 // It provides functions to start and stop the protocol, submit operations, check the status and manage snapshots.
 type Protocol interface {
 	// Start initializes the consensus protocol and prepares it to receive client operations.
-	// Returns an error if the initialization fails.
-	Start() error
+	Start()
 
 	// Stop shuts down the consensus protocol.
-	Stop() error
+	Stop()
 
 	// SubmitOperation takes a byte array representing an operation and adds it to the
 	// protocol's log. It returns an OperationResponseFuture with the provided timeout,
@@ -165,7 +164,7 @@ type peer struct {
 	// The highest log index known to be replicated on this node.
 	matchIndex uint64
 
-	// A reader for a snapshot file when installing a snapshot.
+	// The snapshot file to read when sending a snapshot to this node.
 	snapshotFile SnapshotReader
 
 	// The RPC interface for this node.
@@ -216,9 +215,6 @@ type Raft struct {
 	// Notifies read-only loop that read-only operations may be able to be applied
 	// to the state machine.
 	readOnlyCond *sync.Cond
-
-	// Notifies snapshot loop that a follower needs a snapshot.
-	snapshotCond *sync.Cond
 
 	// The current state of this raft node: leader, follower, or shutdown.
 	state State
@@ -288,27 +284,6 @@ func NewRaft(
 		options.leaseDuration = defaultLeaseDuration
 	}
 
-	// Open the state storage to recover persisted state.
-	if err := stateStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open state storage")
-	}
-
-	// Restore the current term and vote if they have been persisted.
-	currentTerm, votedFor, err := stateStorage.State()
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to retrieve state from state storage")
-	}
-
-	// Open the log for new operations.
-	if err := log.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open log")
-	}
-
-	// Replay the persisted state of the log into memory.
-	if err := log.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to replay log")
-	}
-
 	peers := make(map[string]*peer, len(cluster))
 	for peerID, peerAddress := range cluster {
 		peers[peerID] = &peer{id: peerID, address: peerAddress}
@@ -331,40 +306,12 @@ func NewRaft(
 		stateStorage:     stateStorage,
 		snapshotStorage:  snapshotStorage,
 		fsm:              fsm,
-		currentTerm:      currentTerm,
-		votedFor:         votedFor,
 		state:            Shutdown,
-		commitIndex:      0,
-		lastApplied:      0,
 	}
 
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
-	raft.snapshotCond = sync.NewCond(&raft.mu)
-
-	// Restore the state machine from the most recent snapshot if there was one.
-	snapshots, err := snapshotStorage.Snapshots()
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to retrieve snapshots")
-	}
-	if len(snapshots) > 0 {
-		metadata := snapshots[len(snapshots)-1]
-		raft.lastIncludedIndex = metadata.LastIncludedIndex
-		raft.lastIncludedTerm = metadata.LastIncludedTerm
-		raft.commitIndex = metadata.LastIncludedIndex
-		raft.lastApplied = metadata.LastIncludedIndex
-		snapshotReader, err := snapshotStorage.SnapshotReader(metadata.ID)
-		if err != nil {
-			return nil, errors.WrapError(err, "failed to read snapshot")
-		}
-		if err := raft.fsm.Restore(snapshotReader); err != nil {
-			return nil, errors.WrapError(err, "failed to restore state machine")
-		}
-		if err := snapshotReader.Close(); err != nil {
-			return nil, errors.WrapError(err, "failed to close snapshot file")
-		}
-	}
 
 	return raft, nil
 }
@@ -372,12 +319,57 @@ func NewRaft(
 // Start starts the Raft instance if it is not already started. Once started,
 // the Raft instance transitions to the follower state and is ready to start
 // sending and receiving RPCs.
-func (r *Raft) Start() error {
+func (r *Raft) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state != Shutdown {
-		return nil
+		return
+	}
+
+	// Restore the current term and vote if they have been persisted.
+	currentTerm, votedFor, err := r.stateStorage.State()
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to recover state: %s", r.id, err.Error())
+	}
+	r.currentTerm = currentTerm
+	r.votedFor = votedFor
+
+	// Open the log for new operations.
+	if err := r.log.Open(); err != nil {
+		r.options.logger.Debugf("server %s failed to open log: %s", r.id, err.Error())
+	}
+
+	// Replay the persisted state of the log into memory.
+	if err := r.log.Replay(); err != nil {
+		r.options.logger.Fatalf("server %s failed to replay log: %s", r.id, err.Error())
+	}
+
+	// Restore the state machine from the most recent snapshot if there was one.
+	snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to retrieve snapshot file: %s", r.id, err.Error())
+	}
+	if snapshotFile != nil {
+		metadata := snapshotFile.Metadata()
+		r.lastIncludedIndex = metadata.LastIncludedIndex
+		r.lastIncludedTerm = metadata.LastIncludedTerm
+		r.commitIndex = metadata.LastIncludedIndex
+		r.lastApplied = metadata.LastIncludedIndex
+		if err := r.fsm.Restore(snapshotFile); err != nil {
+			r.options.logger.Fatalf(
+				"server %s failed to restore state machine with snapshot: %s",
+				r.id,
+				err.Error(),
+			)
+		}
+		if err := snapshotFile.Close(); err != nil {
+			r.options.logger.Errorf(
+				"server %s failed to close snapshot file: %s",
+				r.id,
+				err.Error(),
+			)
+		}
 	}
 
 	r.lastContact = time.Now()
@@ -392,13 +384,12 @@ func (r *Raft) Start() error {
 		}
 	}
 
-	r.wg.Add(6)
+	r.wg.Add(5)
 	go r.readOnlyLoop()
 	go r.applyLoop()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
-	go r.snapshotLoop()
 
 	r.options.logger.Infof(
 		"server %s started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
@@ -407,24 +398,21 @@ func (r *Raft) Start() error {
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
 	)
-
-	return nil
 }
 
 // Stop stops the Raft instance if is not already stopped.
-func (r *Raft) Stop() error {
+func (r *Raft) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return nil
+		return
 	}
 
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
 	r.readOnlyCond.Broadcast()
-	r.snapshotCond.Broadcast()
 
 	r.mu.Unlock()
 	r.wg.Wait()
@@ -447,13 +435,9 @@ func (r *Raft) Stop() error {
 		r.options.logger.Errorf("server %s failed to close log: %s", r.id, err.Error())
 	}
 
-	if err := r.stateStorage.Close(); err != nil {
-		r.options.logger.Errorf("server %s failed to close state storage: %s", r.id, err.Error())
-	}
+	r.resetSnapshotFiles()
 
 	r.options.logger.Infof("server %s stopped", r.id)
-
-	return nil
 }
 
 // SubmitOperation accepts an operation from a client for replication andcreturns a future
@@ -643,7 +627,6 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		return nil
 
 	}
-
 	if r.lastIncludedIndex < request.PrevLogIndex {
 		prevLogEntry, err := r.log.GetEntry(request.PrevLogIndex)
 		if err != nil {
@@ -709,11 +692,8 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	if request.LeaderCommit > r.commitIndex {
 		r.commitIndex = util.Min(request.LeaderCommit, r.log.LastIndex())
-		r.options.logger.Debugf("server %s broadcasting apply cond", r.id)
 		r.applyCond.Broadcast()
 	}
-
-	r.options.logger.Debugf("server %s appended entries", r.id)
 
 	return nil
 }
@@ -762,16 +742,29 @@ func (r *Raft) InstallSnapshot(
 
 	r.lastContact = time.Now()
 
+	// The recieved snapshot does not contain anything new.
 	if r.lastIncludedIndex >= request.LastIncludedIndex ||
-		r.commitIndex >= request.LastIncludedIndex {
+		r.lastApplied >= request.LastIncludedIndex {
 		return nil
 	}
 
-	if r.snapshotFile == nil ||
-		r.snapshotFile.Metadata().LastIncludedIndex < request.LastIncludedIndex {
-		if r.snapshotFile != nil {
-			r.snapshotFile.Discard()
+	// Discard an incomplete snapshot if this request has a greater last included index.
+	if r.snapshotFile != nil {
+		metadata := r.snapshotFile.Metadata()
+		if metadata.LastIncludedIndex < request.LastIncludedIndex {
+			if err := r.snapshotFile.Discard(); err != nil {
+				r.options.logger.Errorf(
+					"server %s failed to discard snapshot: %s",
+					r.id,
+					err.Error(),
+				)
+			}
+			r.snapshotFile = nil
 		}
+	}
+
+	// Create a new snapshot file if one has not already been created.
+	if r.snapshotFile == nil {
 		snapshotFile, err := r.snapshotStorage.NewSnapshotFile(
 			request.LastIncludedIndex,
 			request.LastIncludedTerm,
@@ -786,69 +779,86 @@ func (r *Raft) InstallSnapshot(
 		r.snapshotFile = snapshotFile
 	}
 
-	if request.Offset != r.snapshotFile.Offset() {
+	// Ensure the offset in the request is the expected offset.
+	offset, err := r.snapshotFile.Seek(0, io.SeekCurrent)
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to seek snapshot file: %s", err.Error())
+	}
+	if request.Offset != offset {
 		r.options.logger.Warnf(
 			"server %s rejecting InstallSnapshot request: incorrect offset: expected %d, got %d",
 			r.id,
-			r.snapshotFile.Offset(),
+			offset,
 			request.Offset,
 		)
+		return nil
 	}
 
+	// Write the snapshot chunk to disk.
 	reader := bytes.NewReader(request.Bytes)
 	if _, err := io.Copy(r.snapshotFile, reader); err != nil {
-		r.options.logger.Fatalf("server %s failed to write snapshot chunk: %s", r.id, err.Error())
+		r.options.logger.Fatalf("server %s failed to write to snapshot file: %s", r.id, err.Error())
 	}
 
 	if !request.Done {
 		return nil
 	}
 
-	r.snapshotFile.Close()
-	r.snapshotFile = nil
-
-	var entry *LogEntry
-	if r.log.Contains(request.LastIncludedIndex) {
-		entry, _ = r.log.GetEntry(request.LastIncludedIndex)
+	if err := r.snapshotFile.Close(); err != nil {
+		r.options.logger.Errorf("server %s failed to close snapshot file: %s", r.id)
 	}
-
+	r.snapshotFile = nil
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
-	r.commitIndex = request.LastIncludedIndex
-	r.lastApplied = request.LastIncludedIndex
 
-	snapshotReader, err := r.snapshotStorage.SnapshotReader(0)
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed to get snapshot reader: %s", r.id, err.Error())
+	// If an existing log entry has the same index and term as the last index
+	// and last term, discard the log through the last index and reply.
+	if entry, _ := r.log.GetEntry(request.LastIncludedIndex); entry != nil &&
+		entry.Term == request.LastIncludedTerm {
+		// Wait for all operations up to last included index have been applied before compacting the log.
+		for r.lastApplied < request.LastIncludedIndex {
+			r.applyCond.Wait()
+		}
+		r.options.logger.Warnf(
+			"server %s compacting log: index = %d",
+			r.id,
+			request.LastIncludedIndex,
+		)
+		if err := r.log.Compact(request.LastIncludedIndex); err != nil {
+			r.options.logger.Fatalf("server %s failed to compact log: %s", r.id, err.Error())
+		}
+		return nil
 	}
 
+	// Discard the entire log and restore the state machine with the snapshot.
+	snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to get snapshot file: %s", r.id, err.Error())
+	}
+	r.mu.Unlock()
 	r.options.logger.Warnf("server %s restoring state machine", r.id)
-	if err := r.fsm.Restore(snapshotReader); err != nil {
+	if err := r.fsm.Restore(snapshotFile); err != nil {
 		r.options.logger.Fatalf(
 			"server %s failed to reset state machine with snapshot: %s",
 			r.id,
 			err.Error(),
 		)
 	}
-
-	snapshotReader.Close()
-
-	if entry == nil || entry.Term != request.LastIncludedTerm {
-		r.options.logger.Warnf("server %s discarding log", r.id)
-		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed to discard log entries: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-		return nil
+	r.mu.Lock()
+	if err := snapshotFile.Close(); err != nil {
+		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
+	}
+	r.options.logger.Warnf("server %s discarding log", r.id)
+	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
+		r.options.logger.Fatalf(
+			"server %s failed to discard log entries: %s",
+			r.id,
+			err.Error(),
+		)
 	}
 
-	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, request.LastIncludedIndex)
-	if err := r.log.Compact(request.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed to compact log: %s", r.id, err.Error())
-	}
+	r.lastApplied = request.LastIncludedIndex
+	r.commitIndex = request.LastIncludedIndex
 
 	return nil
 }
@@ -940,6 +950,12 @@ func (r *Raft) sendAppendEntries(follower *peer, numResponses *int) {
 		return
 	}
 
+	// Send a snapshot instead if this server no longer has the previous log entry.
+	if follower.nextIndex <= r.lastIncludedIndex {
+		r.sendInstallSnapshot(follower)
+		return
+	}
+
 	nextIndex := follower.nextIndex
 	prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
 	prevLogTerm := r.lastIncludedTerm
@@ -1009,12 +1025,10 @@ func (r *Raft) sendAppendEntries(follower *peer, numResponses *int) {
 	}
 
 	if !response.Success {
-		// The log has been compacted and no longer contains the entries the follower needs.
-		// Send the follower a snapshot to catch them up.
-		if response.Index <= r.lastIncludedIndex {
-			r.snapshotCond.Broadcast()
-		}
 		follower.nextIndex = response.Index
+		if follower.nextIndex <= r.lastIncludedIndex {
+			r.sendInstallSnapshot(follower)
+		}
 		return
 	}
 
@@ -1088,7 +1102,7 @@ func (r *Raft) sendRequestVote(follower *peer, votes *int) {
 }
 
 func (r *Raft) takeSnapshot() {
-	if r.lastApplied <= r.lastIncludedIndex {
+	if r.lastApplied == r.lastIncludedIndex {
 		return
 	}
 
@@ -1097,9 +1111,7 @@ func (r *Raft) takeSnapshot() {
 		r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 	}
 
-	r.lastIncludedIndex = lastAppliedEntry.Index
-	r.lastIncludedTerm = lastAppliedEntry.Term
-	writer, err := r.snapshotStorage.NewSnapshotFile(
+	snapshotFile, err := r.snapshotStorage.NewSnapshotFile(
 		lastAppliedEntry.Index,
 		lastAppliedEntry.Term,
 	)
@@ -1107,38 +1119,40 @@ func (r *Raft) takeSnapshot() {
 		r.options.logger.Fatalf("server %s failed to create snapshot file: %s", err.Error())
 	}
 
-	if err := r.fsm.Snapshot(writer); err != nil {
+	r.mu.Unlock()
+	if err := r.fsm.Snapshot(snapshotFile); err != nil {
 		r.options.logger.Fatalf(
 			"server %s failed while taking snapshot of state machine: %s",
 			r.id,
 			err.Error(),
 		)
 	}
-
-	if err := writer.Close(); err != nil {
+	if err := snapshotFile.Close(); err != nil {
 		r.options.logger.Fatalf("server %s failed to close snapshot file: %s", err.Error())
 	}
+	r.mu.Lock()
 
+	if r.lastApplied == r.lastIncludedIndex {
+		return
+	}
+
+	r.lastIncludedIndex = lastAppliedEntry.Index
+	r.lastIncludedTerm = lastAppliedEntry.Term
 	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, r.lastIncludedIndex)
 	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
 		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
-
 	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
 		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
+	r.resetSnapshotFiles()
 }
 
 func (r *Raft) sendInstallSnapshot(follower *peer) {
-	// Only leaders may send snapshots.
 	if r.state != Leader {
 		return
 	}
 
-	if follower.snapshotFile == nil ||
-		follower.snapshotFile.Metadata().LastIncludedIndex < r.lastIncludedIndex {
-		if follower.snapshotFile != nil {
-			follower.snapshotFile.Close()
-		}
+	if follower.snapshotFile == nil {
 		snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
 		if err != nil {
 			r.options.logger.Fatalf(
@@ -1151,18 +1165,24 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 	}
 
 	metadata := follower.snapshotFile.Metadata()
+	offset, err := follower.snapshotFile.Seek(0, io.SeekCurrent)
+	if err != nil {
+		r.options.logger.Fatalf("server %s failed to seek snapshot file: %s", r.id, err.Error())
+	}
 
 	request := InstallSnapshotRequest{
 		LeaderID:          r.id,
 		Term:              r.currentTerm,
 		LastIncludedIndex: metadata.LastIncludedIndex,
 		LastIncludedTerm:  metadata.LastIncludedTerm,
+		Offset:            offset,
 	}
 
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, follower.snapshotFile)
 	if err != nil {
-		r.options.logger.Fatalf("server %s failed to send snapshot: %s", r.id, err.Error())
+		r.options.logger.Errorf("server %s failed to read snapshot file: %s", r.id, err.Error())
+		follower.snapshotFile.Close()
 	}
 	request.Bytes = buf.Bytes()
 	request.Done = n < 32*1024
@@ -1171,7 +1191,7 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 	response, err := follower.transport.InstallSnapshot(request)
 	r.mu.Lock()
 
-	if r.state != Leader {
+	if follower.snapshotFile == nil {
 		return
 	}
 
@@ -1190,8 +1210,12 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 		return
 	}
 
-	follower.snapshotFile.Close()
+	if err := follower.snapshotFile.Close(); err != nil {
+		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
+	}
 	follower.snapshotFile = nil
+	follower.matchIndex = request.LastIncludedIndex
+	follower.nextIndex = request.LastIncludedIndex + 1
 }
 
 func (r *Raft) heartbeatLoop() {
@@ -1241,7 +1265,7 @@ func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// If we have already been elected the leaser, or we have been contacted by the leader
+	// If we have already been elected the leader, or we have been contacted by the leader
 	// since the last election timeout, an election is not needed.
 	if r.state != Follower || time.Since(r.lastContact) < r.options.electionTimeout {
 		return
@@ -1314,12 +1338,10 @@ func (r *Raft) applyLoop() {
 
 	for r.state != Shutdown {
 		r.applyCond.Wait()
-		r.options.logger.Debugf("server %s recieved apply cond signal", r.id)
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed.
 		for r.lastApplied < r.commitIndex {
-			r.options.logger.Debugf("server %s iterating apply loop", r.id)
 			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
 				r.options.logger.Fatalf(
@@ -1364,13 +1386,12 @@ func (r *Raft) applyLoop() {
 			if r.lastApplied != lastApplied {
 				continue
 			}
+
 			r.lastApplied++
 
 			if r.fsm.NeedSnapshot(r.log.Size()) {
-				r.options.logger.Debugf("server %s taking snapshot", r.id)
 				r.takeSnapshot()
 			}
-			r.options.logger.Debugf("server %s completed iteration", r.id)
 		}
 
 		if r.state == Leader {
@@ -1424,28 +1445,6 @@ func (r *Raft) readOnlyLoop() {
 	}
 }
 
-func (r *Raft) snapshotLoop() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	defer r.wg.Done()
-
-	for r.state != Shutdown {
-		r.snapshotCond.Wait()
-		if r.state != Leader {
-			continue
-		}
-
-		for id, follower := range r.peers {
-			if id == r.id {
-				continue
-			}
-			if follower.nextIndex <= r.lastIncludedIndex {
-				r.sendInstallSnapshot(follower)
-			}
-		}
-	}
-}
-
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
@@ -1459,18 +1458,18 @@ func (r *Raft) becomeCandidate() {
 
 func (r *Raft) becomeLeader() {
 	r.state = Leader
-
+	r.resetSnapshotFiles()
 	for _, follower := range r.peers {
 		follower.nextIndex = r.log.LastIndex() + 1
 		follower.matchIndex = 0
 	}
 
+	r.operationManager = newOperationManager(r.options.leaseDuration)
+
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
 	}
-
-	r.operationManager = newOperationManager(r.options.leaseDuration)
 
 	r.sendAppendEntriesToPeers()
 
@@ -1483,20 +1482,7 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.leaderId = leaderID
 	r.votedFor = ""
 	r.persistTermAndVote()
-
-	for id, follower := range r.peers {
-		if id == r.id {
-			continue
-		}
-		if follower.snapshotFile != nil {
-			follower.snapshotFile.Close()
-			follower.snapshotFile = nil
-		}
-		if r.snapshotFile != nil {
-			r.snapshotFile.Discard()
-			r.snapshotFile = nil
-		}
-	}
+	r.resetSnapshotFiles()
 
 	r.options.logger.Infof(
 		"server %s has entered the follower state: term = %d",
@@ -1514,6 +1500,23 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 	r.operationManager.leaderLease.renew()
 	r.operationManager.shouldVerifyQuorum = true
 	r.readOnlyCond.Broadcast()
+}
+
+func (r *Raft) resetSnapshotFiles() {
+	for _, peer := range r.peers {
+		if peer.snapshotFile != nil {
+			if err := peer.snapshotFile.Close(); err != nil {
+				r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
+			}
+			peer.snapshotFile = nil
+		}
+	}
+	if r.snapshotFile != nil {
+		if err := r.snapshotFile.Discard(); err != nil {
+			r.options.logger.Errorf("server %s failed to discard snapshot file: %s", err.Error())
+		}
+		r.snapshotFile = nil
+	}
 }
 
 func (r *Raft) hasQuorum(count int) bool {

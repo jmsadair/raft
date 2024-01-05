@@ -25,14 +25,12 @@ type SnapshotMetadata struct {
 // SnapshotWriter represents a component for persisting snapshot data
 // to disk.
 type SnapshotWriter interface {
-	io.WriteCloser
+	io.WriteSeeker
+	io.Closer
 
 	// Discard will close the file and delete all data assosciated with
 	// the snapshot.
 	Discard() error
-
-	// Offset will return the current offset of the writer in the snapshot file.
-	Offset() int64
 
 	// Metadata returns the metadata associated with the snapshot file.
 	Metadata() SnapshotMetadata
@@ -78,17 +76,16 @@ type snapshotWriter struct {
 	// The snapshot file.
 	file *os.File
 
-	// The current offset in the snapshot file.
-	offset int64
-
 	// The metadata associated with the snapshot.
 	metadata SnapshotMetadata
 }
 
 func (s *snapshotWriter) Write(p []byte) (n int, err error) {
-	n, err = s.file.Write(p)
-	s.offset += int64(n)
-	return n, err
+	return s.file.Write(p)
+}
+
+func (s *snapshotWriter) Seek(offset int64, whence int) (int64, error) {
+	return s.file.Seek(offset, whence)
 }
 
 func (s *snapshotWriter) Close() error {
@@ -105,7 +102,6 @@ func (s *snapshotWriter) Close() error {
 	}
 
 	s.file = nil
-	s.offset = 0
 
 	// Perform an atomic rename of the temporary directory
 	// containing the snapshot and its metadata.
@@ -119,15 +115,8 @@ func (s *snapshotWriter) Discard() error {
 	if err := s.file.Close(); err != nil {
 		return err
 	}
-
 	s.file = nil
-	s.offset = 0
-
 	return os.RemoveAll(s.tmpDir)
-}
-
-func (s *snapshotWriter) Offset() int64 {
-	return s.offset
 }
 
 func (s *snapshotWriter) Metadata() SnapshotMetadata {
@@ -234,7 +223,23 @@ func (p *persistentSnapshotStorage) SnapshotReader(id uint64) (SnapshotReader, e
 		return nil, nil
 	}
 	if id == 0 {
-		id = p.id - 1
+		snapshots, err := p.Snapshots()
+		if err != nil {
+			return nil, err
+		}
+		if len(snapshots) == 0 {
+			return nil, nil
+		}
+		metadata := snapshots[len(snapshots)-1]
+		snapshotFilename := filepath.Join(
+			p.snapshotDir,
+			fmt.Sprintf("snapshot-%d/snapshot-%d.bin", metadata.ID, metadata.ID),
+		)
+		snapshotFile, err := os.Open(snapshotFilename)
+		if err != nil {
+			return nil, err
+		}
+		return &snapshotReader{file: snapshotFile, metadata: metadata}, nil
 	}
 
 	snapshotFilename := filepath.Join(

@@ -48,7 +48,7 @@ func TestSnapshotStorageWriterReader(t *testing.T) {
 	var buf bytes.Buffer
 	_, err = io.Copy(&buf, reader)
 	require.NoError(t, err)
-	require.Equal(t, string(data1), string(buf.Bytes()))
+	require.Equal(t, string(data1), buf.String())
 
 	// Check the second snapshot.
 	metadata2 := snapshots[1]
@@ -59,5 +59,5 @@ func TestSnapshotStorageWriterReader(t *testing.T) {
 	buf.Reset()
 	_, err = io.Copy(&buf, reader)
 	require.NoError(t, err)
-	require.Equal(t, string(data2), string(buf.Bytes()))
+	require.Equal(t, string(data2), buf.String())
 }

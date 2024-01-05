@@ -11,17 +11,13 @@ func TestStateStorageSetGet(t *testing.T) {
 	storage, err := NewStateStorage(tmpDir)
 	require.NoError(t, err)
 
-	require.NoError(t, storage.Open())
-
 	term := uint64(1)
 	votedFor := "test"
 	require.NoError(t, storage.SetState(term, votedFor))
 
-	require.NoError(t, storage.Close())
-	require.NoError(t, storage.Open())
-	defer func() { require.NoError(t, storage.Close()) }()
-
-	recoveredTerm, recoveredVotedFor, err := storage.State()
+	newStorage, err := NewStateStorage(tmpDir)
+	require.NoError(t, err)
+	recoveredTerm, recoveredVotedFor, err := newStorage.State()
 
 	require.NoError(t, err)
 	require.Equal(t, term, recoveredTerm)

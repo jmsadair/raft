@@ -165,7 +165,7 @@ type peer struct {
 	matchIndex uint64
 
 	// The snapshot file to read when sending a snapshot to this node.
-	snapshotFile SnapshotReader
+	snapshot SnapshotFile
 
 	// The RPC interface for this node.
 	transport Transport
@@ -200,7 +200,7 @@ type Raft struct {
 	snapshotStorage SnapshotStorage
 
 	// A writer for a snapshot file if one is being installed.
-	snapshotFile SnapshotWriter
+	snapshot SnapshotFile
 
 	// The state machine provided by the client that operations will be applied to.
 	fsm StateMachine
@@ -346,24 +346,24 @@ func (r *Raft) Start() {
 	}
 
 	// Restore the state machine from the most recent snapshot if there was one.
-	snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
+	file, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to retrieve snapshot file: %s", r.id, err.Error())
 	}
-	if snapshotFile != nil {
-		metadata := snapshotFile.Metadata()
+	if file != nil {
+		metadata := file.Metadata()
 		r.lastIncludedIndex = metadata.LastIncludedIndex
 		r.lastIncludedTerm = metadata.LastIncludedTerm
 		r.commitIndex = metadata.LastIncludedIndex
 		r.lastApplied = metadata.LastIncludedIndex
-		if err := r.fsm.Restore(snapshotFile); err != nil {
+		if err := r.fsm.Restore(file); err != nil {
 			r.options.logger.Fatalf(
 				"server %s failed to restore state machine with snapshot: %s",
 				r.id,
 				err.Error(),
 			)
 		}
-		if err := snapshotFile.Close(); err != nil {
+		if err := file.Close(); err != nil {
 			r.options.logger.Errorf(
 				"server %s failed to close snapshot file: %s",
 				r.id,
@@ -749,23 +749,23 @@ func (r *Raft) InstallSnapshot(
 	}
 
 	// Discard an incomplete snapshot if this request has a greater last included index.
-	if r.snapshotFile != nil {
-		metadata := r.snapshotFile.Metadata()
+	if r.snapshot != nil {
+		metadata := r.snapshot.Metadata()
 		if metadata.LastIncludedIndex < request.LastIncludedIndex {
-			if err := r.snapshotFile.Discard(); err != nil {
+			if err := r.snapshot.Discard(); err != nil {
 				r.options.logger.Errorf(
 					"server %s failed to discard snapshot: %s",
 					r.id,
 					err.Error(),
 				)
 			}
-			r.snapshotFile = nil
+			r.snapshot = nil
 		}
 	}
 
 	// Create a new snapshot file if one has not already been created.
-	if r.snapshotFile == nil {
-		snapshotFile, err := r.snapshotStorage.NewSnapshotFile(
+	if r.snapshot == nil {
+		snapshot, err := r.snapshotStorage.NewSnapshotFile(
 			request.LastIncludedIndex,
 			request.LastIncludedTerm,
 		)
@@ -776,11 +776,11 @@ func (r *Raft) InstallSnapshot(
 				err.Error(),
 			)
 		}
-		r.snapshotFile = snapshotFile
+		r.snapshot = snapshot
 	}
 
 	// Ensure the offset in the request is the expected offset.
-	offset, err := r.snapshotFile.Seek(0, io.SeekCurrent)
+	offset, err := r.snapshot.Seek(0, io.SeekCurrent)
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to seek snapshot file: %s", err.Error())
 	}
@@ -796,7 +796,7 @@ func (r *Raft) InstallSnapshot(
 
 	// Write the snapshot chunk to disk.
 	reader := bytes.NewReader(request.Bytes)
-	if _, err := io.Copy(r.snapshotFile, reader); err != nil {
+	if _, err := io.Copy(r.snapshot, reader); err != nil {
 		r.options.logger.Fatalf("server %s failed to write to snapshot file: %s", r.id, err.Error())
 	}
 
@@ -804,10 +804,10 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	if err := r.snapshotFile.Close(); err != nil {
+	if err := r.snapshot.Close(); err != nil {
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", r.id)
 	}
-	r.snapshotFile = nil
+	r.snapshot = nil
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
 
@@ -831,23 +831,23 @@ func (r *Raft) InstallSnapshot(
 	}
 
 	// Discard the entire log and restore the state machine with the snapshot.
-	snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
+	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to get snapshot file: %s", r.id, err.Error())
 	}
 	r.mu.Unlock()
 	r.options.logger.Warnf("server %s restoring state machine", r.id)
-	if err := r.fsm.Restore(snapshotFile); err != nil {
+	if err := r.fsm.Restore(snapshot); err != nil {
 		r.options.logger.Fatalf(
 			"server %s failed to reset state machine with snapshot: %s",
 			r.id,
 			err.Error(),
 		)
 	}
-	r.mu.Lock()
-	if err := snapshotFile.Close(); err != nil {
+	if err := snapshot.Close(); err != nil {
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
 	}
+	r.mu.Lock()
 	r.options.logger.Warnf("server %s discarding log", r.id)
 	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
 		r.options.logger.Fatalf(
@@ -1111,7 +1111,7 @@ func (r *Raft) takeSnapshot() {
 		r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 	}
 
-	snapshotFile, err := r.snapshotStorage.NewSnapshotFile(
+	snapshot, err := r.snapshotStorage.NewSnapshotFile(
 		lastAppliedEntry.Index,
 		lastAppliedEntry.Term,
 	)
@@ -1120,14 +1120,14 @@ func (r *Raft) takeSnapshot() {
 	}
 
 	r.mu.Unlock()
-	if err := r.fsm.Snapshot(snapshotFile); err != nil {
+	if err := r.fsm.Snapshot(snapshot); err != nil {
 		r.options.logger.Fatalf(
 			"server %s failed while taking snapshot of state machine: %s",
 			r.id,
 			err.Error(),
 		)
 	}
-	if err := snapshotFile.Close(); err != nil {
+	if err := snapshot.Close(); err != nil {
 		r.options.logger.Fatalf("server %s failed to close snapshot file: %s", err.Error())
 	}
 	r.mu.Lock()
@@ -1152,20 +1152,27 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 		return
 	}
 
-	if follower.snapshotFile == nil {
-		snapshotFile, err := r.snapshotStorage.SnapshotReader(0)
+	if follower.snapshot == nil {
+		snapshot, err := r.snapshotStorage.SnapshotFile()
 		if err != nil {
 			r.options.logger.Fatalf(
-				"server %s failed to retrieve snapshot reader: %s",
+				"server %s failed to retrieve snapshot file: %s",
 				r.id,
 				err.Error(),
 			)
 		}
-		follower.snapshotFile = snapshotFile
+		if snapshot == nil {
+			r.options.logger.Warnf(
+				"server %s tried to send snapshot but has not taken a snapshot",
+				r.id,
+			)
+			return
+		}
+		follower.snapshot = snapshot
 	}
 
-	metadata := follower.snapshotFile.Metadata()
-	offset, err := follower.snapshotFile.Seek(0, io.SeekCurrent)
+	metadata := follower.snapshot.Metadata()
+	offset, err := follower.snapshot.Seek(0, io.SeekCurrent)
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to seek snapshot file: %s", r.id, err.Error())
 	}
@@ -1179,10 +1186,10 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 	}
 
 	var buf bytes.Buffer
-	n, err := io.Copy(&buf, follower.snapshotFile)
+	n, err := io.Copy(&buf, follower.snapshot)
 	if err != nil {
 		r.options.logger.Errorf("server %s failed to read snapshot file: %s", r.id, err.Error())
-		follower.snapshotFile.Close()
+		follower.snapshot.Close()
 	}
 	request.Bytes = buf.Bytes()
 	request.Done = n < 32*1024
@@ -1191,12 +1198,12 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 	response, err := follower.transport.InstallSnapshot(request)
 	r.mu.Lock()
 
-	if follower.snapshotFile == nil {
+	if follower.snapshot == nil {
 		return
 	}
 
 	if err != nil {
-		follower.snapshotFile.Seek(-n, io.SeekCurrent)
+		follower.snapshot.Seek(-n, io.SeekCurrent)
 		return
 	}
 
@@ -1210,10 +1217,10 @@ func (r *Raft) sendInstallSnapshot(follower *peer) {
 		return
 	}
 
-	if err := follower.snapshotFile.Close(); err != nil {
+	if err := follower.snapshot.Close(); err != nil {
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
 	}
-	follower.snapshotFile = nil
+	follower.snapshot = nil
 	follower.matchIndex = request.LastIncludedIndex
 	follower.nextIndex = request.LastIncludedIndex + 1
 }
@@ -1504,18 +1511,18 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 
 func (r *Raft) resetSnapshotFiles() {
 	for _, peer := range r.peers {
-		if peer.snapshotFile != nil {
-			if err := peer.snapshotFile.Close(); err != nil {
+		if peer.snapshot != nil {
+			if err := peer.snapshot.Close(); err != nil {
 				r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
 			}
-			peer.snapshotFile = nil
+			peer.snapshot = nil
 		}
 	}
-	if r.snapshotFile != nil {
-		if err := r.snapshotFile.Discard(); err != nil {
+	if r.snapshot != nil {
+		if err := r.snapshot.Discard(); err != nil {
 			r.options.logger.Errorf("server %s failed to discard snapshot file: %s", err.Error())
 		}
-		r.snapshotFile = nil
+		r.snapshot = nil
 	}
 }
 

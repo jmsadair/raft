@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"time"
+
+	"github.com/jmsadair/raft/internal/errors"
 )
 
 const (
@@ -157,7 +159,7 @@ type persistentSnapshotStorage struct {
 func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	snapshotPath := filepath.Join(path, snapshotDirBase)
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to create snapshot directory")
 	}
 	return &persistentSnapshotStorage{snapshotDir: snapshotPath}, nil
 }
@@ -169,32 +171,32 @@ func (p *persistentSnapshotStorage) NewSnapshotFile(
 	// This directory will be renamed once the snapshot has been safely written to disk.
 	tmpDir, err := os.MkdirTemp(p.snapshotDir, "tmp-")
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to create directory for snapshot")
 	}
 
 	// Create the file the snapshot data will be written to.
 	dataFile, err := os.Create(filepath.Join(tmpDir, snapshotBase))
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to create file for snapshot data")
 	}
 
 	// Create metadata file and write the metadata to it.
 	metadataFile, err := os.Create(filepath.Join(tmpDir, metadataBase))
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to create file for snapshot metadata")
 	}
 	metadata := SnapshotMetadata{
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
 	}
 	if err := encodeMetadata(metadataFile, &metadata); err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to encode snapshot metadata")
 	}
 	if err := metadataFile.Sync(); err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to sync snapshot metadata file")
 	}
 	if err := metadataFile.Close(); err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to close snapshot metadata file")
 	}
 
 	return &snapshotFile{
@@ -219,17 +221,17 @@ func (p *persistentSnapshotStorage) SnapshotFile() (SnapshotFile, error) {
 	// Make the file containing the snapshot data prepared for reading.
 	dataFile, err := os.Open(filepath.Join(dirName, snapshotBase))
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to open snapshot data file")
 	}
 
 	// Read the metadata from the metadata file.
 	metadataFile, err := os.Open(filepath.Join(dirName, metadataBase))
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to open snapshot metadata file")
 	}
 	metadata, err := decodeMetadata(metadataFile)
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to decode snapshot metadata")
 	}
 
 	return &snapshotFile{
@@ -241,14 +243,14 @@ func (p *persistentSnapshotStorage) SnapshotFile() (SnapshotFile, error) {
 func (p *persistentSnapshotStorage) directories() ([]string, error) {
 	entries, err := os.ReadDir(p.snapshotDir)
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to read snapshot directory entries")
 	}
 
 	// Filter out any entries that are not snapshot entries.
 	dirNames := make([]string, 0, len(entries))
 	pattern, err := regexp.Compile(`snapshot-(\d+)$`)
 	if err != nil {
-		return nil, err
+		return nil, errors.WrapError(err, "failed to compile snapshot directory regexp")
 	}
 	for _, entry := range entries {
 		if entry.IsDir() && pattern.MatchString(entry.Name()) {

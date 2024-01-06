@@ -23,8 +23,7 @@ func TestNewRaft(t *testing.T) {
 
 	fsm := newStateMachineMock(false, 0)
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := NewRaft("test-raft", peers, NewTransport, log, stateStore, snapshotStore, fsm)
+	raft, err := NewRaft("test-raft", map[string]Peer{}, log, stateStore, snapshotStore, fsm)
 	require.NoError(t, err)
 
 	require.Zero(t, raft.currentTerm)
@@ -46,8 +45,7 @@ func TestNewRaft(t *testing.T) {
 func TestAppendEntriesSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -79,8 +77,7 @@ func TestAppendEntriesSuccess(t *testing.T) {
 func TestAppendEntriesConflictSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -125,8 +122,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -154,8 +150,7 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -178,8 +173,7 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -209,8 +203,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 func TestAppendEntriesShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	request := &AppendEntriesRequest{
@@ -228,8 +221,7 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 func TestRequestVoteSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -253,8 +245,7 @@ func TestRequestVoteSuccess(t *testing.T) {
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -280,8 +271,7 @@ func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -303,8 +293,7 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -328,8 +317,7 @@ func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -353,8 +341,7 @@ func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
@@ -386,8 +373,7 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 func TestRequestVoteShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	request := &RequestVoteRequest{
@@ -405,8 +391,7 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 func TestInstallSnapshotSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -467,8 +452,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
@@ -503,8 +487,7 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	peers := map[string]string{"test-raft": "127.0.0.1:8080"}
-	raft, err := makeRaft("test-raft", tmpDir, peers, true, false, 0)
+	raft, err := makeRaft("test-raft", tmpDir, map[string]Peer{"test-raft": nil}, true, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2

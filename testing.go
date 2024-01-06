@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"net"
 	"reflect"
 	"strconv"
 	"sync"
@@ -37,23 +38,23 @@ func makeOperations(numOperations int) [][]byte {
 	return operations
 }
 
-func makePeerMaps(numServers int) []map[string]string {
-	peers := make([]map[string]string, numServers)
+func makePeerMaps(numServers int) []map[string]Peer {
+	clusterPeers := make([]map[string]Peer, numServers)
 	for i := 0; i < numServers; i++ {
-		peers[i] = make(map[string]string, numServers)
+		clusterPeers[i] = make(map[string]Peer, numServers)
 		for j := 0; j < numServers; j++ {
-			id := fmt.Sprint(j)
-			address := fmt.Sprintf("127.0.0.%d:8080", j)
-			peers[i][id] = address
+			peerID := fmt.Sprint(j)
+			peerAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.%d:8080", j))
+			clusterPeers[i][peerID] = NewPeer(peerID, peerAddr)
 		}
 	}
-	return peers
+	return clusterPeers
 }
 
 func makeRaft(
 	id string,
 	dataPath string,
-	peers map[string]string,
+	peers map[string]Peer,
 	noStart bool,
 	snapshotting bool,
 	snapshotSize int,
@@ -71,7 +72,7 @@ func makeRaft(
 		return nil, err
 	}
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
-	raft, err := NewRaft(id, peers, NewTransport, log, stateStore, snapshots, fsm)
+	raft, err := NewRaft(id, peers, log, stateStore, snapshots, fsm)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +208,7 @@ type testCluster struct {
 
 	// The peers fore each server, where peers[i] is the peers
 	// for servers[i].
-	peers []map[string]string
+	peers []map[string]Peer
 
 	// The log associated with each server, where logs[i] is the
 	// log for servers[i]
@@ -497,7 +498,6 @@ func (tc *testCluster) restartServer(server int) {
 	newRaft, err := NewRaft(
 		serverID,
 		tc.peers[server],
-		NewTransport,
 		tc.logs[server],
 		tc.stores[server],
 		tc.snapshotStores[server],

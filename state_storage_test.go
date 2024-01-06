@@ -1,10 +1,24 @@
 package raft
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestStateStorageEncoderDecoder(t *testing.T) {
+	state := persistentState{term: 1, votedFor: "test"}
+	buf := new(bytes.Buffer)
+
+	require.NoError(t, encodePersistentState(buf, &state))
+
+	decodedState, err := decodePersistentState(buf)
+	require.NoError(t, err)
+
+	require.Equal(t, state.term, decodedState.term)
+	require.Equal(t, state.votedFor, decodedState.votedFor)
+}
 
 func TestStateStorageSetGet(t *testing.T) {
 	tmpDir := t.TempDir()

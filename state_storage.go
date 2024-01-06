@@ -2,11 +2,14 @@ package raft
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/jmsadair/raft/internal/errors"
+	pb "github.com/jmsadair/raft/internal/protobuf"
+	"google.golang.org/protobuf/proto"
 )
 
 // StateStorage represents the component of Raft responsible for persistently storing
@@ -29,6 +32,46 @@ type persistentState struct {
 
 	// The vote of the associated Raft instance.
 	votedFor string
+}
+
+func encodePersistentState(w io.Writer, state *persistentState) error {
+	pbState := &pb.StorageState{Term: state.term, VotedFor: state.votedFor}
+	buf, err := proto.Marshal(pbState)
+	if err != nil {
+		return err
+	}
+	size := int32(len(buf))
+	if err := binary.Write(w, binary.BigEndian, size); err != nil {
+		return err
+	}
+	if _, err := w.Write(buf); err != nil {
+		return err
+	}
+	return nil
+}
+
+func decodePersistentState(r io.Reader) (persistentState, error) {
+	var size int32
+	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+		return persistentState{}, err
+	}
+
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return persistentState{}, err
+	}
+
+	pbState := &pb.StorageState{}
+	if err := proto.Unmarshal(buf, pbState); err != nil {
+		return persistentState{}, err
+	}
+
+	state := persistentState{
+		term:     pbState.GetTerm(),
+		votedFor: pbState.GetVotedFor(),
+	}
+
+	return state, nil
 }
 
 // persistentStateStorage implements the StateStorage interface.

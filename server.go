@@ -25,8 +25,13 @@ type Server struct {
 
 // NewServer creates a new instance of a Server with a raft instance that satisfies the Protocol interface.
 func NewServer(raft Protocol) (*Server, error) {
+	address := raft.Status().Address
+	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		return nil, errors.WrapError(err, "failed to create server")
+	}
 	server := &Server{
-		listenInterface: raft.Status().Address,
+		listenInterface: resolvedAddress,
 		raft:            raft,
 	}
 	return server, nil

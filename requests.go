@@ -74,14 +74,25 @@ type InstallSnapshotRequest struct {
 	// The term associated with the last included index.
 	LastIncludedTerm uint64
 
-	// The state of the state machine in Bytes.
+	// A chunk of the snapshot.
 	Bytes []byte
+
+	// The offset in the snapshot file.
+	Offset int64
+
+	// Indicates whether this is the last chunk of the snapshot.
+	Done bool
 }
 
 // InstallSnapshotResponse is a response to a snapshot installation.
 type InstallSnapshotResponse struct {
 	// The term of the server that received the request.
 	Term uint64
+
+	// The number of bytes written by the reciever. If the
+	// request is successful, this should be the number of bytes
+	// in the request.
+	BytesWritten int64
 }
 
 // makeProtoEntries converts an array of LogEntry instances to an array of protobuf LogEntry instances.
@@ -146,13 +157,16 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 		LastIncludedIndex: request.LastIncludedIndex,
 		LastIncludedTerm:  request.LastIncludedTerm,
 		Data:              request.Bytes,
+		Offset:            request.Offset,
+		Done:              request.Done,
 	}
 }
 
 // makeInstallSnapshotResponse converts an protobuf InstallSnapshotResponse instance to a InstallSnapshotResponse instance.
 func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSnapshotResponse {
 	return InstallSnapshotResponse{
-		Term: response.GetTerm(),
+		Term:         response.GetTerm(),
+		BytesWritten: response.GetBytesWritten(),
 	}
 }
 
@@ -218,6 +232,8 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 		LastIncludedIndex: request.GetLastIncludedIndex(),
 		LastIncludedTerm:  request.GetLastIncludedTerm(),
 		Bytes:             request.GetData(),
+		Offset:            request.GetOffset(),
+		Done:              request.GetDone(),
 	}
 }
 
@@ -226,6 +242,7 @@ func makeProtoInstallSnapshotResponse(
 	response InstallSnapshotResponse,
 ) *pb.InstallSnapshotResponse {
 	return &pb.InstallSnapshotResponse{
-		Term: response.Term,
+		Term:         response.Term,
+		BytesWritten: response.BytesWritten,
 	}
 }

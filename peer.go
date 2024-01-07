@@ -20,7 +20,7 @@ type Peer interface {
 	ID() string
 
 	// Address returns the network address of the peer.
-	Address() net.Addr
+	Address() string
 
 	// Connect establishes a connection with the peer.
 	Connect() error
@@ -66,8 +66,8 @@ func (p *peer) ID() string {
 	return p.id
 }
 
-func (p *peer) Address() net.Addr {
-	return p.address
+func (p *peer) Address() string {
+	return p.address.String()
 }
 
 func (p *peer) Connect() error {

@@ -1,14 +1,31 @@
 package raft
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
+func TestLogEncoderDecoder(t *testing.T) {
+	entry := NewLogEntry(1, 1, []byte("test"), OperationEntry)
+	buf := new(bytes.Buffer)
+
+	require.NoError(t, encodeLogEntry(buf, entry))
+
+	decodedEntry, err := decodeLogEntry(buf)
+	require.NoError(t, err)
+
+	require.Equal(t, entry.Index, decodedEntry.Index)
+	require.Equal(t, entry.Term, decodedEntry.Term)
+	require.Equal(t, entry.Data, decodedEntry.Data)
+	require.Equal(t, entry.EntryType, decodedEntry.EntryType)
+}
+
 func TestAppendEntries(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -16,8 +33,6 @@ func TestAppendEntries(t *testing.T) {
 
 	// Add some entries to the log.
 	var entry1, entry2 *LogEntry
-	var err error
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -60,16 +75,15 @@ func TestAppendEntries(t *testing.T) {
 
 func TestTruncate(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var err error
 	var entry1, entry2, entry3 *LogEntry
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -113,16 +127,15 @@ func TestTruncate(t *testing.T) {
 
 func TestCompact(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var err error
 	var entry1, entry2, entry3, entry4 *LogEntry
-
 	var entry1Index uint64 = 1
 	var entry1Term uint64 = 1
 	entry1Data := []byte("entry1")
@@ -183,7 +196,8 @@ func TestCompact(t *testing.T) {
 
 func TestDiscard(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
@@ -216,7 +230,8 @@ func TestDiscard(t *testing.T) {
 
 func TestContains(t *testing.T) {
 	tmpDir := t.TempDir()
-	log := NewLog(tmpDir)
+	log, err := NewLog(tmpDir)
+	require.NoError(t, err)
 
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())

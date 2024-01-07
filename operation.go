@@ -30,9 +30,9 @@ func (o OperationType) String() string {
 	case Replicated:
 		return "replicated"
 	case LinearizableReadOnly:
-		return "linearizable read only"
+		return "linearizableReadOnly"
 	case LeaseBasedReadOnly:
-		return "lease based read only"
+		return "leaseBasedReadOnly"
 	default:
 		panic("invalid operation type")
 	}

@@ -8,7 +8,7 @@ import (
 
 var (
 	defaultWriter io.Writer = os.Stderr
-	defaultPrefix string    = "raft "
+	defaultPrefix string    = "raft:"
 	defaultFlag   int       = log.LstdFlags
 )
 

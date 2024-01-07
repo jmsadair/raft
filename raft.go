@@ -12,6 +12,10 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
+const (
+	snapshotChunkSize = 32 * 1024
+)
+
 var errShutdown = errors.New("server is shutdown")
 
 // NotLeaderError is an error returned when an operation is submitted to a
@@ -769,6 +773,7 @@ func (r *Raft) InstallSnapshot(
 
 	// Ensure the offset in the request is the expected offset.
 	offset, err := r.snapshot.Seek(0, io.SeekCurrent)
+	response.BytesWritten = offset
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to seek snapshot file: %s", err.Error())
 	}
@@ -782,13 +787,14 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	// Write the snapshot chunk to disk.
+	// Write the snapshot chunk to the file.
 	reader := bytes.NewReader(request.Bytes)
-	if _, err := io.Copy(r.snapshot, reader); err != nil {
+	n, err := io.Copy(r.snapshot, reader)
+	if err != nil {
 		r.options.logger.Fatalf("server %s failed to write to snapshot file: %s", r.id, err.Error())
 	}
+	response.BytesWritten += n
 
-	// Wait for more chunks before finalizing the snapshot.
 	if !request.Done {
 		return nil
 	}
@@ -797,7 +803,6 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", r.id)
 	}
 	r.snapshot = nil
-
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
 
@@ -832,7 +837,6 @@ func (r *Raft) InstallSnapshot(
 	if err != nil {
 		r.options.logger.Fatalf("server %s failed to retreive snapshot file: %s", r.id, err.Error())
 	}
-
 	r.mu.Unlock()
 	r.options.logger.Warnf("server %s restoring state machine", r.id)
 	if err := r.fsm.Restore(snapshot); err != nil {
@@ -846,7 +850,6 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
 	}
 	r.mu.Lock()
-
 	r.options.logger.Warnf("server %s discarding log", r.id)
 	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
 		r.options.logger.Fatalf(
@@ -855,7 +858,6 @@ func (r *Raft) InstallSnapshot(
 			err.Error(),
 		)
 	}
-
 	r.lastApplied = request.LastIncludedIndex
 	r.commitIndex = request.LastIncludedIndex
 
@@ -1156,12 +1158,13 @@ func (r *Raft) takeSnapshot() {
 }
 
 func (r *Raft) sendInstallSnapshot(peer Peer) {
-	if r.state != Leader {
+	if r.state != Leader || r.lastIncludedIndex == 0 {
 		return
 	}
 
 	followerState := r.followerState[peer.ID()]
 
+	// Retrieve the most recent snapshot file to send to the follower if one is not already open.
 	if followerState.snapshot == nil {
 		snapshot, err := r.snapshotStorage.SnapshotFile()
 		if err != nil {
@@ -1170,13 +1173,6 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 				r.id,
 				err.Error(),
 			)
-		}
-		if snapshot == nil {
-			r.options.logger.Warnf(
-				"server %s tried to send snapshot but has not taken a snapshot",
-				r.id,
-			)
-			return
 		}
 		followerState.snapshot = snapshot
 	}
@@ -1195,31 +1191,36 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 		Offset:            offset,
 	}
 
+	// Read a chunk of the snapshot from the file.
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, followerState.snapshot)
 	if err != nil {
-		r.options.logger.Errorf("server %s failed to read snapshot file: %s", r.id, err.Error())
+		r.options.logger.Fatalf("server %s failed to read snapshot file: %s", r.id, err.Error())
 		followerState.snapshot.Close()
 	}
 	request.Bytes = buf.Bytes()
-	request.Done = n < 32*1024
+	request.Done = n < snapshotChunkSize
 
 	r.mu.Unlock()
 	response, err := peer.InstallSnapshot(request)
 	r.mu.Lock()
 
-	if followerState.snapshot == nil {
+	if followerState.snapshot == nil || err != nil {
 		return
 	}
 
-	if err != nil {
-		followerState.snapshot.Seek(-n, io.SeekCurrent)
-		return
-	}
-
-	// If the followerState has a more up-to-date term, transition to the followerState state.
+	// If the follower has a more up-to-date term, transition to the follower state.
 	if response.Term > r.currentTerm {
 		r.becomeFollower(peer.ID(), response.Term)
+		return
+	}
+
+	// The follower is either missing part of the snapshot or already has this part.
+	// Reset to the follower's offset.
+	if response.BytesWritten != offset {
+		if _, err := followerState.snapshot.Seek(response.BytesWritten, io.SeekStart); err != nil {
+			r.options.logger.Errorf("server %s failed to seek snapshot file: %s", r.id, err.Error())
+		}
 		return
 	}
 

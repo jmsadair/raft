@@ -88,6 +88,11 @@ type InstallSnapshotRequest struct {
 type InstallSnapshotResponse struct {
 	// The term of the server that received the request.
 	Term uint64
+
+	// The number of bytes written by the reciever. If the
+	// request is successful, this should be the number of bytes
+	// in the request.
+	BytesWritten int64
 }
 
 // makeProtoEntries converts an array of LogEntry instances to an array of protobuf LogEntry instances.
@@ -160,7 +165,8 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 // makeInstallSnapshotResponse converts an protobuf InstallSnapshotResponse instance to a InstallSnapshotResponse instance.
 func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSnapshotResponse {
 	return InstallSnapshotResponse{
-		Term: response.GetTerm(),
+		Term:         response.GetTerm(),
+		BytesWritten: response.GetBytesWritten(),
 	}
 }
 
@@ -236,6 +242,7 @@ func makeProtoInstallSnapshotResponse(
 	response InstallSnapshotResponse,
 ) *pb.InstallSnapshotResponse {
 	return &pb.InstallSnapshotResponse{
-		Term: response.Term,
+		Term:         response.Term,
+		BytesWritten: response.BytesWritten,
 	}
 }

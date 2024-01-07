@@ -614,7 +614,11 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	if r.lastIncludedIndex < request.PrevLogIndex {
 		prevLogEntry, err := r.log.GetEntry(request.PrevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf("server %s failed to get entry from log: %s", r.id, err.Error())
+			r.options.logger.Fatalf(
+				"server %s failed to get previous entry from log: %s",
+				r.id,
+				err.Error(),
+			)
 		}
 
 		// Reject the request if the log has the previous log entry, but its term does not match.
@@ -718,7 +722,7 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	// If the request has a more up-to-date term, update current term and become a followerState.
+	// If the request has a more up-to-date term, update current term and become a follower.
 	if r.currentTerm < request.Term {
 		r.becomeFollower(request.LeaderID, request.Term)
 		response.Term = request.Term
@@ -732,7 +736,7 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	// Discard an incomplete snapshot if this request has a greater last included index.
+	// Discard an incomplete snapshot if this request has a greater last index.
 	if r.snapshot != nil {
 		metadata := r.snapshot.Metadata()
 		if metadata.LastIncludedIndex < request.LastIncludedIndex {
@@ -784,6 +788,7 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Fatalf("server %s failed to write to snapshot file: %s", r.id, err.Error())
 	}
 
+	// Wait for more chunks before finalizing the snapshot.
 	if !request.Done {
 		return nil
 	}
@@ -792,6 +797,7 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", r.id)
 	}
 	r.snapshot = nil
+
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
 
@@ -800,9 +806,16 @@ func (r *Raft) InstallSnapshot(
 	if entry, _ := r.log.GetEntry(request.LastIncludedIndex); entry != nil &&
 		entry.Term == request.LastIncludedTerm {
 		// Wait for all operations up to last included index have been applied before compacting the log.
+		// This is necessary since compacting the log may remove log entries that have yet to be applied.
 		for r.lastApplied < request.LastIncludedIndex {
 			r.applyCond.Wait()
 		}
+
+		// It's possible that a snapshot was taken and the log was compacted while the lock was released.
+		if r.lastIncludedIndex > request.LastIncludedIndex {
+			return nil
+		}
+
 		r.options.logger.Warnf(
 			"server %s compacting log: index = %d",
 			r.id,
@@ -817,8 +830,9 @@ func (r *Raft) InstallSnapshot(
 	// Discard the entire log and restore the state machine with the snapshot.
 	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
-		r.options.logger.Fatalf("server %s failed to get snapshot file: %s", r.id, err.Error())
+		r.options.logger.Fatalf("server %s failed to retreive snapshot file: %s", r.id, err.Error())
 	}
+
 	r.mu.Unlock()
 	r.options.logger.Warnf("server %s restoring state machine", r.id)
 	if err := r.fsm.Restore(snapshot); err != nil {
@@ -832,6 +846,7 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Errorf("server %s failed to close snapshot file: %s", err.Error())
 	}
 	r.mu.Lock()
+
 	r.options.logger.Warnf("server %s discarding log", r.id)
 	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
 		r.options.logger.Fatalf(
@@ -1090,7 +1105,7 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 }
 
 func (r *Raft) takeSnapshot() {
-	if r.lastApplied == r.lastIncludedIndex {
+	if r.lastApplied <= r.lastIncludedIndex {
 		return
 	}
 
@@ -1099,6 +1114,7 @@ func (r *Raft) takeSnapshot() {
 		r.options.logger.Fatalf("server %s failed getting entry from log: %s", r.id, err.Error())
 	}
 
+	// Create a new snapshot file.
 	snapshot, err := r.snapshotStorage.NewSnapshotFile(
 		lastAppliedEntry.Index,
 		lastAppliedEntry.Term,
@@ -1107,6 +1123,7 @@ func (r *Raft) takeSnapshot() {
 		r.options.logger.Fatalf("server %s failed to create snapshot file: %s", err.Error())
 	}
 
+	// Take a snapshot of the state machine.
 	r.mu.Unlock()
 	if err := r.fsm.Snapshot(snapshot); err != nil {
 		r.options.logger.Fatalf(
@@ -1120,19 +1137,22 @@ func (r *Raft) takeSnapshot() {
 	}
 	r.mu.Lock()
 
-	if r.lastApplied == r.lastIncludedIndex {
+	// It's possible a snapshot was installed and the log has already been compacted.
+	if lastAppliedEntry.Index <= r.lastIncludedIndex {
 		return
 	}
 
+	// Compact the log.
 	r.lastIncludedIndex = lastAppliedEntry.Index
 	r.lastIncludedTerm = lastAppliedEntry.Term
 	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, r.lastIncludedIndex)
 	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
 		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
 	}
+	r.resetSnapshotFiles()
+
 	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
 		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
-	r.resetSnapshotFiles()
 }
 
 func (r *Raft) sendInstallSnapshot(peer Peer) {
@@ -1342,7 +1362,7 @@ func (r *Raft) applyLoop() {
 			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
 				r.options.logger.Fatalf(
-					"server %s failed getting entry from log: %s",
+					"server %s failed getting committed entry from log: %s",
 					r.id,
 					err.Error(),
 				)

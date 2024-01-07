@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
 	"github.com/stretchr/testify/require"
 )
@@ -63,16 +64,25 @@ func makeRaft(
 	if err != nil {
 		return nil, err
 	}
+
 	snapshots, err := NewSnapshotStorage(dataPath)
 	if err != nil {
 		return nil, err
 	}
+
 	stateStore, err := NewStateStorage(dataPath)
 	if err != nil {
 		return nil, err
 	}
+
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
-	raft, err := NewRaft(id, peers, log, stateStore, snapshots, fsm)
+
+	logger, err := makeLogger(id)
+	if err != nil {
+		return nil, err
+	}
+
+	raft, err := NewRaft(id, peers, log, stateStore, snapshots, fsm, WithLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +99,12 @@ func makeRaft(
 	}
 
 	return raft, nil
+}
+
+func makeLogger(id string) (Logger, error) {
+	prefix := fmt.Sprintf("raft-%s:", id)
+	level := logger.Debug
+	return logger.NewLogger(logger.WithLevel(level), logger.WithPrefix(prefix))
 }
 
 func encodeOperations(operations []Operation) ([]byte, error) {
@@ -143,11 +159,11 @@ func (s *stateMachineMock) Snapshot(snapshotWriter io.Writer) error {
 
 	snapshotBytes, err := encodeOperations(s.operations)
 	if err != nil {
-		return fmt.Errorf("error taking snapshot of state machine: %s", err.Error())
+		return fmt.Errorf("error taking snapshot of state machine: error = %v", err)
 	}
 
 	if _, err := snapshotWriter.Write(snapshotBytes); err != nil {
-		return fmt.Errorf("error taking snapshot of state machine: %s", err.Error())
+		return fmt.Errorf("error taking snapshot of state machine: error = %v", err)
 	}
 
 	return nil
@@ -160,13 +176,13 @@ func (s *stateMachineMock) Restore(snapshotReader io.Reader) error {
 	var buf bytes.Buffer
 	_, err := io.Copy(&buf, snapshotReader)
 	if err != nil {
-		return fmt.Errorf("error restoring state machine: %s", err.Error())
+		return fmt.Errorf("error restoring state machine: error = %v", err)
 	}
 	bytes := buf.Bytes()
 
 	entries, err := decodeOperations(bytes)
 	if err != nil {
-		return fmt.Errorf("error restoring state machine: %s", err.Error())
+		return fmt.Errorf("error restoring state machine: error = %v", err)
 	}
 
 	s.operations = entries
@@ -260,7 +276,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		tmpDir := t.TempDir()
 		raft, err := makeRaft(id, tmpDir, peers[i], false, snapshotting, snapshotSize)
 		if err != nil {
-			t.Fatalf("failed to create raft instance: err = %s", err.Error())
+			t.Fatalf("failed to create raft instance: error = %v", err)
 		}
 		fsm[i] = raft.fsm.(*stateMachineMock)
 		logs[i] = raft.log
@@ -270,7 +286,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 
 		server, err := NewServer(raft)
 		if err != nil {
-			t.Fatalf("failed to create server instance: err = %s", err.Error())
+			t.Fatalf("failed to create server instance: error = %v", err)
 		}
 		servers[i] = server
 	}
@@ -295,7 +311,7 @@ func (tc *testCluster) startCluster() {
 	ready := make(chan interface{})
 	for i, server := range tc.servers {
 		if err := server.Start(ready); err != nil {
-			tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", i, err.Error())
+			tc.t.Fatalf("failed to start cluster server: id = %d, error = %v", i, err)
 		}
 	}
 	close(ready)
@@ -330,10 +346,10 @@ func (tc *testCluster) submit(
 			future := server.SubmitOperation(operation, operationType, 200*time.Millisecond)
 			if response := future.Await(); response.Err == nil {
 				if expectFail {
-					tc.t.Fatalf("expected response to fail, but it was successful")
+					tc.t.Fatalf("expected operation to fail, but it was successful")
 				}
 				if string(response.Operation.Bytes) != string(operation) {
-					tc.t.Fatalf("response operation does not match submitted operation")
+					tc.t.Fatalf("operation response does not match submitted operation")
 				}
 				return
 			}
@@ -347,7 +363,7 @@ func (tc *testCluster) submit(
 	}
 
 	if !expectFail {
-		tc.t.Fatalf("cluster failed to apply Operation: operation = %s", string(operation))
+		tc.t.Fatalf("cluster failed to apply operation: operation = %s", string(operation))
 	}
 }
 
@@ -401,7 +417,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 					continue
 				}
 				tc.t.Fatalf(
-					"fsm %d != fsm %d: index1 = %d term1 = %d operation1 = %s index2 = %d term2 = %d operation2 = %s",
+					"cluster state machines do not match: fsm %d != fsm %d: index1 = %d term1 = %d operation1 = %s index2 = %d term2 = %d operation2 = %s",
 					i,
 					j,
 					op1.LogIndex,
@@ -414,6 +430,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 			}
 		}
 	}
+
 	tc.t.Fatalf("cluster state machines do not match")
 }
 
@@ -468,7 +485,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	}
 
 	if len(leaders) == 0 && !expectNoLeader {
-		tc.t.Fatal("cluster failed to elect a leader")
+		tc.t.Fatal("cluster failed to elect a leader in a reasonable amount of time")
 	}
 
 	if len(leaders) != 0 && expectNoLeader {
@@ -495,6 +512,11 @@ func (tc *testCluster) restartServer(server int) {
 
 	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
+	logger, err := makeLogger(serverID)
+	if err != nil {
+		tc.t.Fatalf("failed to create logger instance: error = %v", err)
+	}
+
 	newRaft, err := NewRaft(
 		serverID,
 		tc.peers[server],
@@ -502,15 +524,16 @@ func (tc *testCluster) restartServer(server int) {
 		tc.stores[server],
 		tc.snapshotStores[server],
 		tc.fsm[server],
+		WithLogger(logger),
 	)
 	if err != nil {
-		tc.t.Fatalf("failed to create raft instance: err = %s", err.Error())
+		tc.t.Fatalf("failed to create raft instance: error = %v", err)
 	}
 	tc.rafts[server] = newRaft
 
 	newServer, err := NewServer(newRaft)
 	if err != nil {
-		tc.t.Fatalf("failed to create cluster server: err = %s", err.Error())
+		tc.t.Fatalf("failed to create server instance: error = %v", err)
 	}
 
 	tc.servers[server] = newServer
@@ -518,16 +541,16 @@ func (tc *testCluster) restartServer(server int) {
 	readyCh := make(chan interface{})
 	defer close(readyCh)
 	if err := newServer.Start(readyCh); err != nil {
-		tc.t.Fatalf("failed to start cluster server: server = %d, err = %s", server, err.Error())
+		tc.t.Fatalf("failed to start server: id = %d, error = %v", server, err)
 	}
 
 	for i := 0; i < len(tc.servers); i++ {
 		if err := tc.rafts[i].connectPeer(serverID); err != nil {
 			tc.t.Fatalf(
-				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				i,
 				server,
-				err.Error(),
+				err,
 			)
 		}
 	}
@@ -562,28 +585,28 @@ func (tc *testCluster) createPartition() {
 				}
 				if err := tc.rafts[i].disconnectPeer(fmt.Sprint(j)); err != nil {
 					tc.t.Fatalf(
-						"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+						"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 						i,
 						j,
-						err.Error(),
+						err,
 					)
 				}
 				if err := tc.rafts[j].disconnectPeer(fmt.Sprint(i)); err != nil {
 					tc.t.Fatalf(
-						"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+						"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 						j,
 						i,
-						err.Error(),
+						err,
 					)
 				}
 			}
 
 			if err := tc.rafts[i].disconnectPeer(fmt.Sprint(i)); err != nil {
 				tc.t.Fatalf(
-					"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+					"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 					i,
 					i,
-					err.Error(),
+					err,
 				)
 			}
 		}
@@ -603,18 +626,18 @@ func (tc *testCluster) reconnectServer(server int) {
 	for i := 0; i < len(tc.servers); i++ {
 		if err := tc.rafts[i].connectPeer(serverID); err != nil {
 			tc.t.Fatalf(
-				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				i,
 				server,
-				err.Error(),
+				err,
 			)
 		}
 		if err := tc.rafts[server].connectPeer(fmt.Sprint(i)); err != nil {
 			tc.t.Fatalf(
-				"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				server,
 				i,
-				err.Error(),
+				err,
 			)
 		}
 	}
@@ -630,10 +653,10 @@ func (tc *testCluster) reconnectAllServers() {
 		for j := 0; j < len(tc.servers); j++ {
 			if err := tc.rafts[i].connectPeer(fmt.Sprint(j)); err != nil {
 				tc.t.Fatalf(
-					"error reconnecting peer: peer = %d, connectingTo = %d, err = %s",
+					"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 					i,
 					j,
-					err.Error(),
+					err,
 				)
 			}
 		}
@@ -653,7 +676,7 @@ func (tc *testCluster) disconnectServer(server int) {
 	for i := 0; i < len(tc.servers); i++ {
 		if err := tc.rafts[i].disconnectPeer(serverID); err != nil {
 			tc.t.Fatalf(
-				"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+				"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 				i,
 				server,
 				err.Error(),
@@ -661,10 +684,10 @@ func (tc *testCluster) disconnectServer(server int) {
 		}
 		if err := tc.rafts[server].disconnectPeer(fmt.Sprint(i)); err != nil {
 			tc.t.Fatalf(
-				"error disconnecting peer: peer = %d, disconnectingFrom = %d, err = %s",
+				"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 				server,
 				i,
-				err.Error(),
+				err,
 			)
 		}
 	}

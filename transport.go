@@ -74,9 +74,6 @@ type transport struct {
 	// The local network address.
 	address net.Addr
 
-	// Listens for incoming RPCs.
-	listener net.Listener
-
 	// The RPC server for raft.
 	server *grpc.Server
 

@@ -3,13 +3,19 @@ package raft
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/protobuf/proto"
+)
+
+const (
+	stateBase    = "state.bin"
+	stateDirBase = "state"
 )
 
 // StateStorage represents the component of Raft responsible for persistently storing
@@ -38,14 +44,14 @@ func encodePersistentState(w io.Writer, state *persistentState) error {
 	pbState := &pb.StorageState{Term: state.term, VotedFor: state.votedFor}
 	buf, err := proto.Marshal(pbState)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not marshal protobuf message: %w", err)
 	}
 	size := int32(len(buf))
 	if err := binary.Write(w, binary.BigEndian, size); err != nil {
-		return err
+		return fmt.Errorf("could not write length of protobuf message: %w", err)
 	}
 	if _, err := w.Write(buf); err != nil {
-		return err
+		return fmt.Errorf("could not write protobuf message: %w", err)
 	}
 	return nil
 }
@@ -53,17 +59,17 @@ func encodePersistentState(w io.Writer, state *persistentState) error {
 func decodePersistentState(r io.Reader) (persistentState, error) {
 	var size int32
 	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
-		return persistentState{}, err
+		return persistentState{}, fmt.Errorf("could not read length of protobuf message: %w", err)
 	}
 
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(r, buf); err != nil {
-		return persistentState{}, err
+		return persistentState{}, fmt.Errorf("could not read protobuf message: %w", err)
 	}
 
 	pbState := &pb.StorageState{}
 	if err := proto.Unmarshal(buf, pbState); err != nil {
-		return persistentState{}, err
+		return persistentState{}, fmt.Errorf("could not unmarshal protobuf message: %w", err)
 	}
 
 	state := persistentState{
@@ -87,9 +93,9 @@ type persistentStateStorage struct {
 // NewStateStorage creates a new state storage.
 // The file containing the state will be located at path/state/state.bin.
 func NewStateStorage(path string) (StateStorage, error) {
-	stateDir := filepath.Join(path, "state")
+	stateDir := filepath.Join(path, stateDirBase)
 	if err := os.MkdirAll(stateDir, os.ModePerm); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not create state directory: %w", err)
 	}
 	return &persistentStateStorage{stateDir: stateDir}, nil
 }
@@ -97,23 +103,23 @@ func NewStateStorage(path string) (StateStorage, error) {
 func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 	tmpFile, err := os.CreateTemp(p.stateDir, "tmp-")
 	if err != nil {
-		return errors.WrapError(err, "failed to write state")
+		return fmt.Errorf("could not create temporary file: %w", err)
 	}
 
 	p.state = &persistentState{term: term, votedFor: votedFor}
 	if err := encodePersistentState(tmpFile, p.state); err != nil {
-		return errors.WrapError(err, "failed to write state")
+		return fmt.Errorf("could not encode state: %w", err)
 	}
 	if err := tmpFile.Sync(); err != nil {
-		return errors.WrapError(err, "failed to write state")
+		return fmt.Errorf("could not sync temporary file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return errors.WrapError(err, "failed to write state")
+		return fmt.Errorf("could not close temporary file: %w", err)
 	}
 
-	filename := filepath.Join(p.stateDir, "state.bin")
+	filename := filepath.Join(p.stateDir, stateBase)
 	if err := os.Rename(tmpFile.Name(), filename); err != nil {
-		return errors.WrapError(err, "failed to write state")
+		return fmt.Errorf("could not rename temporary file: %w", err)
 	}
 
 	return nil
@@ -121,22 +127,22 @@ func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
 
 func (p *persistentStateStorage) State() (uint64, string, error) {
 	if p.state == nil {
-		filename := filepath.Join(p.stateDir, "state.bin")
+		filename := filepath.Join(p.stateDir, stateBase)
 		if _, err := os.Stat(filename); err == nil {
 			data, err := os.ReadFile(filename)
 			if err != nil {
-				return 0, "", errors.WrapError(err, "failed to read state")
+				return 0, "", fmt.Errorf("could not read state file: %w", err)
 			}
 			reader := bytes.NewReader(data)
 			state, err := decodePersistentState(reader)
 			if err != nil && err != io.EOF {
-				return 0, "", errors.WrapError(err, "failed to decode state")
+				return 0, "", fmt.Errorf("could not decode state: %w", err)
 			}
 			p.state = &state
-		} else if os.IsNotExist(err) {
+		} else if errors.Is(err, os.ErrNotExist) {
 			return 0, "", nil
 		} else {
-			return 0, "", errors.WrapError(err, "failed to stat state file")
+			return 0, "", fmt.Errorf("could not stat state file: %w", err)
 		}
 	}
 

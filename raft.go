@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/errors"
 	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
 )
@@ -15,8 +14,6 @@ import (
 const (
 	snapshotChunkSize = 32 * 1024
 )
-
-var errShutdown = errors.New("server is shutdown")
 
 // NotLeaderError is an error returned when an operation is submitted to a
 // server, and it is not the leader. Only the leader may submit operations.
@@ -257,7 +254,7 @@ func NewRaft(
 	var options options
 	for _, opt := range opts {
 		if err := opt(&options); err != nil {
-			return nil, errors.WrapError(err, "failed to apply raft option")
+			return nil, err
 		}
 	}
 
@@ -265,7 +262,7 @@ func NewRaft(
 	if options.logger == nil {
 		defaultLogger, err := logger.NewLogger()
 		if err != nil {
-			return nil, errors.WrapError(err, "failed to create default raft logger")
+			return nil, err
 		}
 		options.logger = defaultLogger
 	}
@@ -318,25 +315,25 @@ func (r *Raft) Start() {
 	// Restore the current term and vote if they have been persisted.
 	currentTerm, votedFor, err := r.stateStorage.State()
 	if err != nil {
-		r.options.logger.Errorf("failed to recover state: error = %v")
+		r.options.logger.Fatalf("failed to recover state: error = %v", err)
 	}
 	r.currentTerm = currentTerm
 	r.votedFor = votedFor
 
 	// Open the log for new operations.
 	if err := r.log.Open(); err != nil {
-		r.options.logger.Errorf("failed to open log: error = %v")
+		r.options.logger.Fatalf("failed to open log: error = %v", err)
 	}
 
 	// Replay the persisted state of the log into memory.
 	if err := r.log.Replay(); err != nil {
-		r.options.logger.Errorf("failed to replay log: error = %v", err)
+		r.options.logger.Fatalf("failed to replay log: error = %v", err)
 	}
 
 	// Restore the state machine from the most recent snapshot if there was one.
 	file, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
-		r.options.logger.Errorf("failed to get snapshot file: error = %v", err)
+		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
 	}
 	if file != nil {
 		metadata := file.Metadata()
@@ -345,7 +342,7 @@ func (r *Raft) Start() {
 		r.commitIndex = metadata.LastIncludedIndex
 		r.lastApplied = metadata.LastIncludedIndex
 		if err := r.fsm.Restore(file); err != nil {
-			r.options.logger.Errorf(
+			r.options.logger.Fatalf(
 				"failed to restore state machine with snapshot: error = %v",
 				err,
 			)
@@ -461,7 +458,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errShutdown
+		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
 	r.options.logger.Debugf(
@@ -537,7 +534,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errShutdown
+		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
 	r.options.logger.Debugf(
@@ -696,7 +693,7 @@ func (r *Raft) InstallSnapshot(
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errShutdown
+		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
 	r.options.logger.Debugf(
@@ -1504,14 +1501,14 @@ func (r *Raft) resetSnapshotFiles() {
 	for _, followerState := range r.followerState {
 		if followerState.snapshot != nil {
 			if err := followerState.snapshot.Close(); err != nil {
-				r.options.logger.Fatalf("failed to close snapshot file: error = %v")
+				r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 			}
 			followerState.snapshot = nil
 		}
 	}
 	if r.snapshot != nil {
 		if err := r.snapshot.Discard(); err != nil {
-			r.options.logger.Fatalf("failed to discard snapshot file: error = %v")
+			r.options.logger.Fatalf("failed to discard snapshot file: error = %v", err)
 		}
 		r.snapshot = nil
 	}
@@ -1534,7 +1531,7 @@ func (r *Raft) disconnectPeer(id string) error {
 		return nil
 	}
 	if err := r.peers[id].Disconnect(); err != nil {
-		return errors.WrapError(err, "failed to disconnect peer")
+		return fmt.Errorf("failed to disconnect peer: %w", err)
 	}
 	return nil
 }
@@ -1546,7 +1543,7 @@ func (r *Raft) connectPeer(id string) error {
 		return nil
 	}
 	if err := r.peers[id].Connect(); err != nil {
-		return errors.WrapError(err, "failed to connect to peer")
+		return fmt.Errorf("failed to connect to peer: %w", err)
 	}
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
 )
@@ -28,7 +27,7 @@ func NewServer(raft Protocol) (*Server, error) {
 	address := raft.Status().Address
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		return nil, errors.WrapError(err, "failed to create server")
+		return nil, err
 	}
 	server := &Server{
 		listenInterface: resolvedAddress,
@@ -42,7 +41,7 @@ func NewServer(raft Protocol) (*Server, error) {
 func (s *Server) Start(ready <-chan interface{}) error {
 	listener, err := net.Listen(s.listenInterface.Network(), s.listenInterface.String())
 	if err != nil {
-		return errors.WrapError(err, "failed to start server")
+		return err
 	}
 
 	s.listener = listener

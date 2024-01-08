@@ -59,7 +59,7 @@ func (e InvalidOperationTypeError) Error() string {
 }
 
 // State represents the current state of a raft node.
-// A raft node may either be shutdown, the leader, or a followerState.
+// A raft node may either be shutdown, the leader, or a peers.
 type State uint32
 
 const (
@@ -70,7 +70,7 @@ const (
 	Leader State = iota
 
 	// Follower is a state indicating that a raft node  is responsible for accepting log entries replicated
-	// by the leader. A node in the followerState state may not accept operations for replication.
+	// by the leader. A node in the peers state may not accept operations for replication.
 	Follower
 
 	// Shutdown is a state indicating that the raft node is currently offline.
@@ -83,7 +83,7 @@ func (s State) String() string {
 	case Leader:
 		return "leader"
 	case Follower:
-		return "followerState"
+		return "peers"
 	case Shutdown:
 		return "shutdown"
 	default:
@@ -108,7 +108,7 @@ type Status struct {
 	// The index of the last log entry applied to the state machine.
 	LastApplied uint64
 
-	// The current state of the raft node: leader, followerState, shutdown.
+	// The current state of the raft node: leader, peers, shutdown.
 	State State
 }
 
@@ -132,7 +132,7 @@ type Protocol interface {
 	) *OperationResponseFuture
 
 	// Status returns the current status of the protocol. The returned status includes information
-	// like the current term, whether the protocol is a leader, followerState or candidate, and more.
+	// like the current term, whether the protocol is a leader, peers or candidate, and more.
 	Status() Status
 
 	// RequestVote handles vote requests from other nodes during elections. It takes a vote request
@@ -151,8 +151,11 @@ type Protocol interface {
 	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
 }
 
-// peerState contains all state associated with peers.
-type peerState struct {
+// peer contains all state associated with peers.
+type peer struct {
+	// The address of this peer.
+	address string
+
 	// The next log index that should be sent to this node.
 	nextIndex uint64
 
@@ -176,11 +179,11 @@ type Raft struct {
 	// The configuration options for this raft node.
 	options options
 
-	// Maps ID to peer.
-	peers map[string]Peer
+	// The network transport for sending and recieving RPCs.
+	transport Transport
 
-	// Maps ID to state of peers which are followerStates.
-	followerState map[string]*peerState
+	// Maps ID to the peer state.
+	peers map[string]*peer
 
 	// Manages both read-only and replicated operations.
 	operationManager *operationManager
@@ -211,7 +214,7 @@ type Raft struct {
 	// to the state machine.
 	readOnlyCond *sync.Cond
 
-	// The current state of this raft node: leader, followerState, or shutdown.
+	// The current state of this raft node: leader, peers, or shutdown.
 	state State
 
 	// Index of the last log entry that was committed.
@@ -243,7 +246,8 @@ type Raft struct {
 // NewRaft creates a new instance of Raft that is configured with the provided options.
 func NewRaft(
 	id string,
-	peers map[string]Peer,
+	cluster map[string]string,
+	transport Transport,
 	log Log,
 	stateStorage StateStorage,
 	snapshotStorage SnapshotStorage,
@@ -276,16 +280,16 @@ func NewRaft(
 		options.leaseDuration = defaultLeaseDuration
 	}
 
-	followerState := make(map[string]*peerState, len(peers))
-	for id := range peers {
-		followerState[id] = &peerState{}
+	peers := make(map[string]*peer, len(cluster))
+	for id, address := range cluster {
+		peers[id] = &peer{address: address}
 	}
 
 	raft := &Raft{
 		id:               id,
 		options:          options,
+		transport:        transport,
 		peers:            peers,
-		followerState:    followerState,
 		operationManager: newOperationManager(options.leaseDuration),
 		log:              log,
 		stateStorage:     stateStorage,
@@ -302,7 +306,7 @@ func NewRaft(
 }
 
 // Start starts the Raft instance if it is not already started. Once started,
-// the Raft instance transitions to the followerState state and is ready to start
+// the Raft instance transitions to the peers state and is ready to start
 // sending and receiving RPCs.
 func (r *Raft) Start() {
 	r.mu.Lock()
@@ -311,6 +315,11 @@ func (r *Raft) Start() {
 	if r.state != Shutdown {
 		return
 	}
+
+	// Register the raft RPCs.
+	r.transport.RegisterAppendEntriesHandler(r.AppendEntries)
+	r.transport.RegisterRequestVoteHandler(r.RequestVote)
+	r.transport.RegsiterInstallSnapshotHandler(r.InstallSnapshot)
 
 	// Restore the current term and vote if they have been persisted.
 	currentTerm, votedFor, err := r.stateStorage.State()
@@ -352,17 +361,18 @@ func (r *Raft) Start() {
 		}
 	}
 
-	r.lastContact = time.Now()
-	r.state = Follower
-
+	// Connect to the other nodes in the cluster.
 	for id, peer := range r.peers {
 		if id == r.id {
 			continue
 		}
-		if err := peer.Connect(); err != nil {
-			r.options.logger.Errorf("failed to connect to peer: error = %v", err)
+		if err := r.transport.Connect(peer.address); err != nil {
+			r.options.logger.Errorf("failed to connect to node: error = %v", err)
 		}
 	}
+
+	r.lastContact = time.Now()
+	r.state = Follower
 
 	r.wg.Add(5)
 	go r.readOnlyLoop()
@@ -370,6 +380,11 @@ func (r *Raft) Start() {
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
+
+	// Start serving incoming RPCs.
+	if err := r.transport.StartServer(); err != nil {
+		r.options.logger.Fatalf("failed to start transport: error = %v", err)
+	}
 
 	r.options.logger.Infof(
 		"node started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
@@ -397,14 +412,16 @@ func (r *Raft) Stop() {
 	r.wg.Wait()
 	r.mu.Lock()
 
+	// Close any connections to other nodes in the cluster and stop accepting RPCs.
 	for id, peer := range r.peers {
 		if id == r.id {
 			continue
 		}
-		if err := peer.Disconnect(); err != nil {
-			r.options.logger.Errorf("failed to disconnect peer: %v", err)
+		if err := r.transport.Close(peer.address); err != nil {
+			r.options.logger.Errorf("failed to connect to node: error = %v", err)
 		}
 	}
+	r.transport.StopServer()
 
 	if err := r.log.Close(); err != nil {
 		r.options.logger.Errorf("failed to close log: %v", err)
@@ -444,7 +461,7 @@ func (r *Raft) Status() Status {
 
 	return Status{
 		ID:          r.id,
-		Address:     r.peers[r.id].Address(),
+		Address:     r.transport.Address(),
 		Term:        r.currentTerm,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,
@@ -482,7 +499,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		return nil
 	}
 
-	// If the request has a more up-to-date term, update current term and become a followerState.
+	// If the request has a more up-to-date term, update current term and become a peers.
 	if request.Term > r.currentTerm {
 		r.becomeFollower(request.CandidateID, request.Term)
 		response.Term = r.currentTerm
@@ -567,7 +584,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	r.leaderId = request.LeaderID
 
 	// If the request has a more up-to-date term, update current term and
-	// become a followerState.
+	// become a peers.
 	if request.Term > r.currentTerm {
 		r.becomeFollower(request.LeaderID, request.Term)
 		response.Term = r.currentTerm
@@ -684,7 +701,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
-// InstallSnapshot is invoked by the leader to send a snapshot to a followerState.
+// InstallSnapshot is invoked by the leader to send a snapshot to a peers.
 func (r *Raft) InstallSnapshot(
 	request *InstallSnapshotRequest,
 	response *InstallSnapshotResponse,
@@ -924,12 +941,12 @@ func (r *Raft) submitReadOnlyOperation(
 
 func (r *Raft) sendAppendEntriesToPeers() {
 	numResponses := 1
-	for _, peer := range r.peers {
-		go r.sendAppendEntries(peer, &numResponses)
+	for id := range r.peers {
+		go r.sendAppendEntries(id, &numResponses)
 	}
 }
 
-func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
+func (r *Raft) sendAppendEntries(id string, numResponses *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -938,7 +955,7 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	// Handle the single server case.
-	if peer.ID() == r.id {
+	if id == r.id {
 		if len(r.peers) == 1 {
 			if r.log.LastIndex() > r.commitIndex {
 				r.commitCond.Broadcast()
@@ -948,15 +965,15 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 		return
 	}
 
-	followerState := r.followerState[peer.ID()]
+	peer := r.peers[id]
 
 	// Send a snapshot instead if the follower log no longer contains the previous log entry.
-	if followerState.nextIndex <= r.lastIncludedIndex {
-		r.sendInstallSnapshot(peer)
+	if peer.nextIndex <= r.lastIncludedIndex {
+		r.sendInstallSnapshot(id)
 		return
 	}
 
-	nextIndex := followerState.nextIndex
+	nextIndex := peer.nextIndex
 	prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
 	prevLogTerm := r.lastIncludedTerm
 
@@ -991,16 +1008,16 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	r.mu.Unlock()
-	response, err := peer.AppendEntries(request)
+	response, err := r.transport.SendAppendEntries(peer.address, request)
 	r.mu.Lock()
 
 	if err != nil || r.state != Leader {
 		return
 	}
 
-	// Become a followerState if a followerState has a more up-to-date term.
+	// Become a peers if a peers has a more up-to-date term.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
@@ -1015,39 +1032,39 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	if !response.Success {
-		followerState.nextIndex = response.Index
+		peer.nextIndex = response.Index
 		// Send a snapshot to the follower if the log no longer contains the previous entry.
-		if followerState.nextIndex <= r.lastIncludedIndex {
-			r.sendInstallSnapshot(peer)
+		if peer.nextIndex <= r.lastIncludedIndex {
+			r.sendInstallSnapshot(id)
 		}
 		return
 	}
 
-	// Update the next and match index of the followerState.
-	if request.PrevLogIndex+uint64(len(entries)) > followerState.matchIndex {
-		followerState.nextIndex = util.Max(
-			followerState.nextIndex,
+	// Update the next and match index of the peers.
+	if request.PrevLogIndex+uint64(len(entries)) > peer.matchIndex {
+		peer.nextIndex = util.Max(
+			peer.nextIndex,
 			request.PrevLogIndex+uint64(len(entries))+1,
 		)
-		followerState.matchIndex = request.PrevLogIndex + uint64(len(entries))
-		if followerState.matchIndex > r.commitIndex {
+		peer.matchIndex = request.PrevLogIndex + uint64(len(entries))
+		if peer.matchIndex > r.commitIndex {
 			r.commitCond.Broadcast()
 		}
 	}
 }
 
 func (r *Raft) sendRequestVoteToPeers(votes *int) {
-	for _, peer := range r.peers {
-		go r.sendRequestVote(peer, votes)
+	for id := range r.peers {
+		go r.sendRequestVote(id, votes)
 	}
 }
 
-func (r *Raft) sendRequestVote(peer Peer, votes *int) {
+func (r *Raft) sendRequestVote(id string, votes *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	// The candidate will vote for itself.
-	if peer.ID() == r.id {
+	if id == r.id {
 		*votes++
 
 		// Handle the single server case.
@@ -1058,6 +1075,8 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 		return
 	}
 
+	peer := r.peers[id]
+
 	request := RequestVoteRequest{
 		CandidateID:  r.id,
 		Term:         r.currentTerm,
@@ -1066,7 +1085,7 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 	}
 
 	r.mu.Unlock()
-	response, err := peer.RequestVote(request)
+	response, err := r.transport.SendRequestVote(peer.address, request)
 	r.mu.Lock()
 
 	// Ensure this response is not stale. It is possible that this
@@ -1080,9 +1099,9 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 		*votes++
 	}
 
-	// Become a followerState if a followerState has a more up-to-date term.
+	// Become a peers if a peers has a more up-to-date term.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
@@ -1149,24 +1168,24 @@ func (r *Raft) takeSnapshot() {
 	)
 }
 
-func (r *Raft) sendInstallSnapshot(peer Peer) {
+func (r *Raft) sendInstallSnapshot(id string) {
 	if r.state != Leader || r.lastIncludedIndex == 0 {
 		return
 	}
 
-	followerState := r.followerState[peer.ID()]
+	peer := r.peers[id]
 
 	// Retrieve the most recent snapshot file to send to the follower if one is not already open.
-	if followerState.snapshot == nil {
+	if peer.snapshot == nil {
 		snapshot, err := r.snapshotStorage.SnapshotFile()
 		if err != nil {
 			r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
 		}
-		followerState.snapshot = snapshot
+		peer.snapshot = snapshot
 	}
 
-	metadata := followerState.snapshot.Metadata()
-	offset, err := followerState.snapshot.Seek(0, io.SeekCurrent)
+	metadata := peer.snapshot.Metadata()
+	offset, err := peer.snapshot.Seek(0, io.SeekCurrent)
 	if err != nil {
 		r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 	}
@@ -1181,32 +1200,32 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 
 	// Read a chunk of the snapshot from the file.
 	var buf bytes.Buffer
-	n, err := io.Copy(&buf, followerState.snapshot)
+	n, err := io.Copy(&buf, peer.snapshot)
 	if err != nil {
 		r.options.logger.Fatalf("failed to read snapshot file: error = %v", err)
-		followerState.snapshot.Close()
+		peer.snapshot.Close()
 	}
 	request.Bytes = buf.Bytes()
 	request.Done = n < snapshotChunkSize
 
 	r.mu.Unlock()
-	response, err := peer.InstallSnapshot(request)
+	response, err := r.transport.SendInstallSnapshot(peer.address, request)
 	r.mu.Lock()
 
-	if followerState.snapshot == nil || err != nil {
+	if peer.snapshot == nil || err != nil {
 		return
 	}
 
 	// If the follower has a more up-to-date term, transition to the follower state.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
 	// The follower is either missing part of the snapshot or already has this part.
 	// Reset to the follower's offset.
 	if response.BytesWritten != offset {
-		if _, err := followerState.snapshot.Seek(response.BytesWritten, io.SeekStart); err != nil {
+		if _, err := peer.snapshot.Seek(response.BytesWritten, io.SeekStart); err != nil {
 			r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 		}
 		return
@@ -1216,12 +1235,12 @@ func (r *Raft) sendInstallSnapshot(peer Peer) {
 		return
 	}
 
-	if err := followerState.snapshot.Close(); err != nil {
+	if err := peer.snapshot.Close(); err != nil {
 		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
-	followerState.snapshot = nil
-	followerState.matchIndex = request.LastIncludedIndex
-	followerState.nextIndex = request.LastIncludedIndex + 1
+	peer.snapshot = nil
+	peer.matchIndex = request.LastIncludedIndex
+	peer.nextIndex = request.LastIncludedIndex + 1
 }
 
 func (r *Raft) heartbeatLoop() {
@@ -1311,11 +1330,11 @@ func (r *Raft) commitLoop() {
 			// Check whether the majority of servers in the cluster agree on the entry.
 			// If they do, it is safe to commit.
 			matches := 1
-			for id, followerState := range r.followerState {
+			for id, peer := range r.peers {
 				if id == r.id {
 					continue
 				}
-				if followerState.matchIndex >= index {
+				if peer.matchIndex >= index {
 					matches++
 				}
 			}
@@ -1458,9 +1477,9 @@ func (r *Raft) becomeCandidate() {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	r.resetSnapshotFiles()
-	for _, followerState := range r.followerState {
-		followerState.nextIndex = r.log.LastIndex() + 1
-		followerState.matchIndex = 0
+	for _, peer := range r.peers {
+		peer.nextIndex = r.log.LastIndex() + 1
+		peer.matchIndex = 0
 	}
 
 	r.operationManager = newOperationManager(r.options.leaseDuration)
@@ -1483,7 +1502,7 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.persistTermAndVote()
 	r.resetSnapshotFiles()
 
-	r.options.logger.Infof("entered the followerState state: term = %d", r.currentTerm)
+	r.options.logger.Infof("entered the peers state: term = %d", r.currentTerm)
 
 	// Cancel any pending operations.
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)
@@ -1498,12 +1517,12 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 }
 
 func (r *Raft) resetSnapshotFiles() {
-	for _, followerState := range r.followerState {
-		if followerState.snapshot != nil {
-			if err := followerState.snapshot.Close(); err != nil {
+	for _, peer := range r.peers {
+		if peer.snapshot != nil {
+			if err := peer.snapshot.Close(); err != nil {
 				r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 			}
-			followerState.snapshot = nil
+			peer.snapshot = nil
 		}
 	}
 	if r.snapshot != nil {
@@ -1522,30 +1541,6 @@ func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
 		r.options.logger.Fatalf("failed to persist term and vote: error = %v", err)
 	}
-}
-
-func (r *Raft) disconnectPeer(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if id == r.id {
-		return nil
-	}
-	if err := r.peers[id].Disconnect(); err != nil {
-		return fmt.Errorf("failed to disconnect peer: %w", err)
-	}
-	return nil
-}
-
-func (r *Raft) connectPeer(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if id == r.id {
-		return nil
-	}
-	if err := r.peers[id].Connect(); err != nil {
-		return fmt.Errorf("failed to connect to peer: %w", err)
-	}
-	return nil
 }
 
 func (r *Raft) sendResponseWithoutBlocking(

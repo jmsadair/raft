@@ -5,7 +5,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
-	"net"
 	"reflect"
 	"strconv"
 	"sync"
@@ -39,23 +38,20 @@ func makeOperations(numOperations int) [][]byte {
 	return operations
 }
 
-func makePeerMaps(numServers int) []map[string]Peer {
-	clusterPeers := make([]map[string]Peer, numServers)
+func makeClusterConfiguration(numServers int) map[string]string {
+	cluster := make(map[string]string, numServers)
 	for i := 0; i < numServers; i++ {
-		clusterPeers[i] = make(map[string]Peer, numServers)
-		for j := 0; j < numServers; j++ {
-			peerID := fmt.Sprint(j)
-			peerAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("127.0.0.%d:8080", j))
-			clusterPeers[i][peerID] = NewPeer(peerID, peerAddr)
-		}
+		id := fmt.Sprint(i)
+		address := fmt.Sprintf("127.0.0.%d:8080", i)
+		cluster[id] = address
 	}
-	return clusterPeers
+	return cluster
 }
 
 func makeRaft(
 	id string,
 	dataPath string,
-	peers map[string]Peer,
+	cluster map[string]string,
 	noStart bool,
 	snapshotting bool,
 	snapshotSize int,
@@ -64,25 +60,34 @@ func makeRaft(
 	if err != nil {
 		return nil, err
 	}
-
 	snapshots, err := NewSnapshotStorage(dataPath)
 	if err != nil {
 		return nil, err
 	}
-
 	stateStore, err := NewStateStorage(dataPath)
 	if err != nil {
 		return nil, err
 	}
-
-	fsm := newStateMachineMock(snapshotting, snapshotSize)
-
 	logger, err := makeLogger(id)
 	if err != nil {
 		return nil, err
 	}
+	transport, err := NewTransport(cluster[id])
+	if err != nil {
+		return nil, err
+	}
+	fsm := newStateMachineMock(snapshotting, snapshotSize)
 
-	raft, err := NewRaft(id, peers, log, stateStore, snapshots, fsm, WithLogger(logger))
+	raft, err := NewRaft(
+		id,
+		cluster,
+		transport,
+		log,
+		stateStore,
+		snapshots,
+		fsm,
+		WithLogger(logger),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -216,15 +221,11 @@ type testCluster struct {
 	// The testing instance associated with the cluster.
 	t *testing.T
 
-	// The servers making up the cluster.
-	servers []*Server
-
 	// The raft instances that make up the cluster.
 	rafts []*Raft
 
-	// The peers fore each server, where peers[i] is the peers
-	// for servers[i].
-	peers []map[string]Peer
+	// The ID and address of each raft node in the cluster.
+	cluster map[string]string
 
 	// The log associated with each server, where logs[i] is the
 	// log for servers[i]
@@ -246,9 +247,6 @@ type testCluster struct {
 	// corresponds to the state machine for servers[i].
 	fsm []*stateMachineMock
 
-	// A channel to signal the shutdown of the cluster.
-	shutdownCh chan interface{}
-
 	// Indicates whether auto snapshotting will be used.
 	snapshotting bool
 
@@ -259,7 +257,6 @@ type testCluster struct {
 }
 
 func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
-	servers := make([]*Server, numServers)
 	rafts := make([]*Raft, numServers)
 	logs := make([]Log, numServers)
 	snapshotStores := make([]SnapshotStorage, numServers)
@@ -267,14 +264,14 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	fsm := make([]*stateMachineMock, numServers)
 	disconnected := make([]bool, numServers)
 
-	// Make peer map for each server.
-	peers := makePeerMaps(numServers)
+	// ID and address of all members of the cluster.
+	cluster := makeClusterConfiguration(numServers)
 
 	// Create the raft and server instances.
 	for i := 0; i < numServers; i++ {
 		id := fmt.Sprint(i)
 		tmpDir := t.TempDir()
-		raft, err := makeRaft(id, tmpDir, peers[i], false, snapshotting, snapshotSize)
+		raft, err := makeRaft(id, tmpDir, cluster, false, snapshotting, snapshotSize)
 		if err != nil {
 			t.Fatalf("failed to create raft instance: error = %v", err)
 		}
@@ -283,45 +280,32 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		snapshotStores[i] = raft.snapshotStorage
 		stores[i] = raft.stateStorage
 		rafts[i] = raft
-
-		server, err := NewServer(raft)
-		if err != nil {
-			t.Fatalf("failed to create server instance: error = %v", err)
-		}
-		servers[i] = server
 	}
 
 	return &testCluster{
 		t:              t,
-		servers:        servers,
 		rafts:          rafts,
 		disconnected:   disconnected,
-		peers:          peers,
+		cluster:        cluster,
 		logs:           logs,
 		snapshotStores: snapshotStores,
 		stores:         stores,
 		fsm:            fsm,
-		shutdownCh:     make(chan interface{}),
 		snapshotting:   snapshotting,
 		snapshotSize:   snapshotSize,
 	}
 }
 
 func (tc *testCluster) startCluster() {
-	ready := make(chan interface{})
-	for i, server := range tc.servers {
-		if err := server.Start(ready); err != nil {
-			tc.t.Fatalf("failed to start cluster server: id = %d, error = %v", i, err)
-		}
+	for _, node := range tc.rafts {
+		node.Start()
 	}
-	close(ready)
 }
 
 func (tc *testCluster) stopCluster() {
-	for _, server := range tc.servers {
-		server.Stop()
+	for _, node := range tc.rafts {
+		node.Stop()
 	}
-	close(tc.shutdownCh)
 }
 
 func (tc *testCluster) submit(
@@ -337,9 +321,9 @@ func (tc *testCluster) submit(
 	// Allow for a maximum of three seconds if retry is enabled.
 	start := time.Now()
 	for time.Since(start).Seconds() < 3 {
-		for j := 0; j < len(tc.servers); j++ {
+		for j := 0; j < len(tc.rafts); j++ {
 			tc.mu.Lock()
-			server := tc.servers[j]
+			server := tc.rafts[j]
 			tc.mu.Unlock()
 
 			// Submit the operation.
@@ -369,12 +353,12 @@ func (tc *testCluster) submit(
 
 func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Duration) {
 	startTime := time.Now()
-	appliedOperationsPerServer := make([][]Operation, len(tc.servers))
+	appliedOperationsPerServer := make([][]Operation, len(tc.rafts))
 
 	for time.Since(startTime) < timeout {
 		// Take the longest array of applied operations to be the source of truth.
 		longestAppliedIndex := -1
-		for i := 0; i < len(tc.servers); i++ {
+		for i := 0; i < len(tc.rafts); i++ {
 			appliedOperations := tc.fsm[i].appliedOperations()
 			if longestAppliedIndex == -1 ||
 				len(appliedOperations) > len(appliedOperationsPerServer[longestAppliedIndex]) {
@@ -445,9 +429,9 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	// A maximum of 5 seconds is given to successfully elect a leader.
 	start := time.Now()
 	for time.Since(start).Seconds() < 5 {
-		for i := 0; i < len(tc.servers); i++ {
+		for i := 0; i < len(tc.rafts); i++ {
 			tc.mu.Lock()
-			server := tc.servers[i]
+			server := tc.rafts[i]
 			tc.mu.Unlock()
 
 			// Get the status of the server, it may be a leader.
@@ -501,25 +485,31 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 
 func (tc *testCluster) crashServer(server int) {
 	tc.disconnectServer(server)
-	tc.servers[server].Stop()
+	tc.rafts[server].Stop()
 }
 
 func (tc *testCluster) restartServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	serverID := fmt.Sprint(server)
+	id := fmt.Sprint(server)
 
 	tc.fsm[server] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
 
-	logger, err := makeLogger(serverID)
+	logger, err := makeLogger(id)
 	if err != nil {
 		tc.t.Fatalf("failed to create logger instance: error = %v", err)
 	}
 
+	transport, err := NewTransport(tc.cluster[id])
+	if err != nil {
+		tc.t.Fatalf("failed to create transport instance: error = %v", err)
+	}
+
 	newRaft, err := NewRaft(
-		serverID,
-		tc.peers[server],
+		id,
+		tc.cluster,
+		transport,
 		tc.logs[server],
 		tc.stores[server],
 		tc.snapshotStores[server],
@@ -529,23 +519,11 @@ func (tc *testCluster) restartServer(server int) {
 	if err != nil {
 		tc.t.Fatalf("failed to create raft instance: error = %v", err)
 	}
+	newRaft.Start()
 	tc.rafts[server] = newRaft
 
-	newServer, err := NewServer(newRaft)
-	if err != nil {
-		tc.t.Fatalf("failed to create server instance: error = %v", err)
-	}
-
-	tc.servers[server] = newServer
-
-	readyCh := make(chan interface{})
-	defer close(readyCh)
-	if err := newServer.Start(readyCh); err != nil {
-		tc.t.Fatalf("failed to start server: id = %d, error = %v", server, err)
-	}
-
-	for i := 0; i < len(tc.servers); i++ {
-		if err := tc.rafts[i].connectPeer(serverID); err != nil {
+	for i := 0; i < len(tc.rafts); i++ {
+		if err := tc.rafts[i].transport.Connect(tc.cluster[id]); err != nil {
 			tc.t.Fatalf(
 				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				i,
@@ -563,27 +541,27 @@ func (tc *testCluster) createPartition() {
 	defer tc.mu.Unlock()
 
 	// The number of servers in the partition.
-	partitionSize := len(tc.servers) / 2
+	partitionSize := len(tc.rafts) / 2
 
 	// The servers in the partition.
 	partitionSet := make(map[int]bool)
 
 	// Choose random servers to partition.
-	index := util.RandomInt(0, len(tc.servers))
+	index := util.RandomInt(0, len(tc.rafts))
 	for i := 0; i < partitionSize; i++ {
-		partitionSet[(index+i)%len(tc.servers)] = true
+		partitionSet[(index+i)%len(tc.rafts)] = true
 	}
 
 	// Disconnect all servers in the partition set from those
 	// that are not, but maintain connections between the servers
 	// that are in the partition set.
-	for i := 0; i < len(tc.servers); i++ {
+	for i := 0; i < len(tc.rafts); i++ {
 		if _, ok := partitionSet[i]; ok {
-			for j := 0; j < len(tc.servers); j++ {
+			for j := 0; j < len(tc.rafts); j++ {
 				if _, ok := partitionSet[j]; ok {
 					continue
 				}
-				if err := tc.rafts[i].disconnectPeer(fmt.Sprint(j)); err != nil {
+				if err := tc.rafts[i].transport.Close(tc.cluster[fmt.Sprint(j)]); err != nil {
 					tc.t.Fatalf(
 						"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 						i,
@@ -591,7 +569,7 @@ func (tc *testCluster) createPartition() {
 						err,
 					)
 				}
-				if err := tc.rafts[j].disconnectPeer(fmt.Sprint(i)); err != nil {
+				if err := tc.rafts[j].transport.Close(tc.cluster[fmt.Sprint(i)]); err != nil {
 					tc.t.Fatalf(
 						"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 						j,
@@ -599,15 +577,6 @@ func (tc *testCluster) createPartition() {
 						err,
 					)
 				}
-			}
-
-			if err := tc.rafts[i].disconnectPeer(fmt.Sprint(i)); err != nil {
-				tc.t.Fatalf(
-					"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
-					i,
-					i,
-					err,
-				)
 			}
 		}
 	}
@@ -621,10 +590,10 @@ func (tc *testCluster) reconnectServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	serverID := fmt.Sprint(server)
+	id := fmt.Sprint(server)
 
-	for i := 0; i < len(tc.servers); i++ {
-		if err := tc.rafts[i].connectPeer(serverID); err != nil {
+	for i := 0; i < len(tc.rafts); i++ {
+		if err := tc.rafts[i].transport.Connect(tc.cluster[id]); err != nil {
 			tc.t.Fatalf(
 				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				i,
@@ -632,7 +601,7 @@ func (tc *testCluster) reconnectServer(server int) {
 				err,
 			)
 		}
-		if err := tc.rafts[server].connectPeer(fmt.Sprint(i)); err != nil {
+		if err := tc.rafts[server].transport.Connect(tc.cluster[fmt.Sprint(i)]); err != nil {
 			tc.t.Fatalf(
 				"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 				server,
@@ -649,9 +618,11 @@ func (tc *testCluster) reconnectAllServers() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	for i := 0; i < len(tc.servers); i++ {
-		for j := 0; j < len(tc.servers); j++ {
-			if err := tc.rafts[i].connectPeer(fmt.Sprint(j)); err != nil {
+	for i := 0; i < len(tc.rafts); i++ {
+		for j := 0; j < len(tc.rafts); j++ {
+			id := fmt.Sprint(j)
+			address := tc.cluster[id]
+			if err := tc.rafts[i].transport.Connect(address); err != nil {
 				tc.t.Fatalf(
 					"failed reconnecting peer: id = %d, connectingTo = %d, error = %v",
 					i,
@@ -662,7 +633,7 @@ func (tc *testCluster) reconnectAllServers() {
 		}
 	}
 
-	for i := 0; i < len(tc.servers); i++ {
+	for i := 0; i < len(tc.rafts); i++ {
 		tc.disconnected[i] = false
 	}
 }
@@ -671,10 +642,10 @@ func (tc *testCluster) disconnectServer(server int) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	serverID := fmt.Sprint(server)
+	id := fmt.Sprint(server)
 
-	for i := 0; i < len(tc.servers); i++ {
-		if err := tc.rafts[i].disconnectPeer(serverID); err != nil {
+	for i := 0; i < len(tc.rafts); i++ {
+		if err := tc.rafts[i].transport.Close(tc.cluster[id]); err != nil {
 			tc.t.Fatalf(
 				"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 				i,
@@ -682,7 +653,7 @@ func (tc *testCluster) disconnectServer(server int) {
 				err.Error(),
 			)
 		}
-		if err := tc.rafts[server].disconnectPeer(fmt.Sprint(i)); err != nil {
+		if err := tc.rafts[server].transport.Close(tc.cluster[fmt.Sprint(i)]); err != nil {
 			tc.t.Fatalf(
 				"failed disconnecting peer: id = %d, disconnectingFrom = %d, error = %v",
 				server,

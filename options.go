@@ -1,9 +1,9 @@
 package raft
 
 import (
+	"errors"
+	"fmt"
 	"time"
-
-	"github.com/jmsadair/raft/internal/errors"
 )
 
 const (
@@ -77,7 +77,7 @@ type Option func(options *options) error
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
 		if time < minElectionTimeout || time > maxElectionTimeout {
-			return errors.New("election timeout value is invalid: minimum = %v, maximum = %v",
+			return fmt.Errorf("election timeout value is invalid: minimum = %v, maximum = %v",
 				minElectionTimeout, maxElectionTimeout)
 		}
 		options.electionTimeout = time
@@ -89,7 +89,7 @@ func WithElectionTimeout(time time.Duration) Option {
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
 		if time < minHeartbeat || time > maxHeartbeat {
-			return errors.New("heartbeat interval value is invalid: minimum = %v, maximum = %v",
+			return fmt.Errorf("heartbeat interval value is invalid: minimum = %v, maximum = %v",
 				minHeartbeat, maxHeartbeat)
 		}
 		options.heartbeatInterval = time
@@ -105,7 +105,7 @@ func WithHeartbeatInterval(time time.Duration) Option {
 func WithLeaseDuration(leaseDuration time.Duration) Option {
 	return func(options *options) error {
 		if leaseDuration < minLeaseDuration || leaseDuration > maxLeaseDuration {
-			return errors.New("lease duration is invalid: minimum = %v, maximum = %v",
+			return fmt.Errorf("lease duration is invalid: minimum = %v, maximum = %v",
 				minLeaseDuration, maxLeaseDuration)
 		}
 		options.leaseDuration = leaseDuration

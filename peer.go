@@ -2,16 +2,15 @@ package raft
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"sync"
 
-	"github.com/jmsadair/raft/internal/errors"
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
-
-var errNoConnectionToPeer = errors.New("no connection with peer")
 
 // Peer is an interface representing a component responsible for establishing a connection
 // with and making RPCs to another raft node.
@@ -82,7 +81,7 @@ func (p *peer) Connect() error {
 		p.address.String(),
 		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}...)
 	if err != nil {
-		return errors.WrapError(err, "failed connecting to peer")
+		return fmt.Errorf("could not connect to peer: %w", err)
 	}
 
 	p.client = pb.NewRaftClient(conn)
@@ -100,7 +99,7 @@ func (p *peer) Disconnect() error {
 	}
 
 	if err := p.conn.Close(); err != nil {
-		return errors.WrapError(err, "failed while closing connection to peer")
+		return fmt.Errorf("could not disonnect from peer: %w", err)
 	}
 
 	p.conn = nil
@@ -114,7 +113,9 @@ func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRespons
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return AppendEntriesResponse{}, errNoConnectionToPeer
+		return AppendEntriesResponse{}, errors.New(
+			"could not make AppendEntries RPC: no connection",
+		)
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
@@ -123,10 +124,7 @@ func (p *peer) AppendEntries(request AppendEntriesRequest) (AppendEntriesRespons
 		pbRequest,
 		[]grpc.CallOption{}...)
 	if err != nil {
-		return AppendEntriesResponse{}, errors.WrapError(
-			err,
-			"append entries RPC failed",
-		)
+		return AppendEntriesResponse{}, fmt.Errorf("could not make AppendEntries RPC: %w", err)
 	}
 
 	return makeAppendEntriesResponse(pbResponse), nil
@@ -137,16 +135,13 @@ func (p *peer) RequestVote(request RequestVoteRequest) (RequestVoteResponse, err
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return RequestVoteResponse{}, errNoConnectionToPeer
+		return RequestVoteResponse{}, errors.New("could not make RequestVote RPC: no connection")
 	}
 
 	pbRequest := makeProtoRequestVoteRequest(request)
 	pbResponse, err := p.client.RequestVote(context.Background(), pbRequest, []grpc.CallOption{}...)
 	if err != nil {
-		return RequestVoteResponse{}, errors.WrapError(
-			err,
-			"request vote RPC failed",
-		)
+		return RequestVoteResponse{}, fmt.Errorf("could not make RequestVote RPC: %w", err)
 	}
 
 	return makeRequestVoteResponse(pbResponse), nil
@@ -157,7 +152,9 @@ func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotR
 	defer p.mu.RUnlock()
 
 	if p.client == nil {
-		return InstallSnapshotResponse{}, errNoConnectionToPeer
+		return InstallSnapshotResponse{}, errors.New(
+			"could not make InstallSnapshot RPC: no connection",
+		)
 	}
 
 	pbRequest := makeProtoInstallSnapshotRequest(request)
@@ -166,10 +163,7 @@ func (p *peer) InstallSnapshot(request InstallSnapshotRequest) (InstallSnapshotR
 		pbRequest,
 		[]grpc.CallOption{}...)
 	if err != nil {
-		return InstallSnapshotResponse{}, errors.WrapError(
-			err,
-			"install snapshot RPC failed",
-		)
+		return InstallSnapshotResponse{}, fmt.Errorf("could not make InstallSnapshot RPC: %w", err)
 	}
 
 	return makeInstallSnapshotResponse(pbResponse), nil

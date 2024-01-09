@@ -61,6 +61,10 @@ message StorageState {
     string voted_for = 2;
 }
 
+message Configuration {
+    map<string, string> peers = 1;
+}
+
 service Raft {
     rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse) {}
     rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse) {}

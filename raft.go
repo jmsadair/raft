@@ -110,45 +110,6 @@ type Status struct {
 	State State
 }
 
-// Protocol represents an abstraction of the raft consensus protocol.
-// The raft protocol is a distributed consensus algorithm designed for fault-tolerant systems.
-// It provides functions to start and stop the protocol, submit operations, check the status and manage snapshots.
-type Protocol interface {
-	// Start initializes the consensus protocol and prepares it to receive client operations.
-	Start()
-
-	// Stop shuts down the consensus protocol.
-	Stop()
-
-	// SubmitOperation takes a byte array representing an operation and adds it to the
-	// protocol's log. It returns an OperationResponseFuture with the provided timeout,
-	// representing a future response to applying the operation to the state machine.
-	SubmitOperation(
-		operation []byte,
-		operationType OperationType,
-		timeout time.Duration,
-	) *OperationResponseFuture
-
-	// Status returns the current status of the protocol. The returned status includes information
-	// like the current term, whether the protocol is a leader, peers or candidate, and more.
-	Status() Status
-
-	// RequestVote handles vote requests from other nodes during elections. It takes a vote request
-	// and fills the response with the result of the vote. It returns an error if the vote request
-	// fails to be processed.
-	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
-
-	// AppendEntries handles log replication requests from the leader. It takes a request to append
-	// entries and fills the response with the result of the append operation. It returns an error
-	// if the append operation fails.
-	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
-
-	// InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
-	// install a snapshot and fills the response with the result of the installation. It returns an
-	// error if the snapshot installation process fails.
-	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
-}
-
 // peer contains all state associated with peers.
 type peer struct {
 	// The address of this peer.
@@ -164,9 +125,7 @@ type peer struct {
 	snapshot SnapshotFile
 }
 
-// Raft implements the Protocol interface. This implementation of Raft should be utilized as the internal
-// logic for an actual server, as it solely encapsulates the core functionality of Raft and cannot operate
-// as a standalone server.
+// Raft implements the raft consensus protocol.
 type Raft struct {
 	// The ID of this raft node.
 	id string
@@ -304,9 +263,7 @@ func NewRaft(
 	return raft, nil
 }
 
-// Start starts the Raft instance if it is not already started. Once started,
-// the Raft instance transitions to the peers state and is ready to start
-// sending and receiving RPCs.
+// Start starts the raft consensus protocol if it is not already started.
 func (r *Raft) Start() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -393,7 +350,7 @@ func (r *Raft) Start() {
 	)
 }
 
-// Stop stops the Raft instance if is not already stopped.
+// Stop stops the raft consensus protocol if is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -431,7 +388,7 @@ func (r *Raft) Stop() {
 	r.options.logger.Info("node stopped")
 }
 
-// SubmitOperation accepts an operation from a client for replication andcreturns a future
+// SubmitOperation accepts an operation from a client for replication and returns a future
 // for the response to the operation. Note that submitting an operation for replication does
 // not guarantee replication if there are failures. Once the operation has been applied to
 // the state machine, the future will be populated with the response.
@@ -452,7 +409,7 @@ func (r *Raft) SubmitOperation(
 	}
 }
 
-// Status returns the status of the Raft instance. The status includes
+// Status returns the status of this node. The status includes
 // the ID, address, term, commit index, last applied index, and state.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
@@ -468,7 +425,8 @@ func (r *Raft) Status() Status {
 	}
 }
 
-// RequestVote is invoked by the candidate server to gather a vote from this server.
+// RequestVote handles vote requests from other nodes during elections. It takes a vote request
+// and fills the response with the result of the vote.
 func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -544,7 +502,8 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	return nil
 }
 
-// AppendEntries is invoked by the leader to replicate log entries.
+// AppendEntries handles log replication requests from the leader. It takes a request to append
+// entries and fills the response with the result of the append operation.
 func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -700,7 +659,8 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
-// InstallSnapshot is invoked by the leader to send a snapshot to a peers.
+// InstallSnapshot handles snaopshot installation requests from the leader. It takes a request to
+// install a snapshot and fills the response with the result of the installation.
 func (r *Raft) InstallSnapshot(
 	request *InstallSnapshotRequest,
 	response *InstallSnapshotResponse,
@@ -709,7 +669,7 @@ func (r *Raft) InstallSnapshot(
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
+		return fmt.Errorf("could not execute InstallSnapshot RPC: %s is shutdown", r.id)
 	}
 
 	r.options.logger.Debugf(

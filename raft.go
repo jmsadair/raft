@@ -201,15 +201,14 @@ type Raft struct {
 	mu sync.Mutex
 }
 
-// NewRaft creates a new instance of Raft that is configured with the provided options.
+// NewRaft creates a new instance of Raft with the provided ID and configuration options.
+// The cluster must contain the IDs and addresses of all nodes in the cluster, including this one.
+// The datapath is the top level directory where state for this node will be persisted.
 func NewRaft(
 	id string,
 	cluster map[string]string,
-	transport Transport,
-	log Log,
-	stateStorage StateStorage,
-	snapshotStorage SnapshotStorage,
 	fsm StateMachine,
+	dataPath string,
 	opts ...Option,
 ) (*Raft, error) {
 	// Apply provided options.
@@ -219,6 +218,8 @@ func NewRaft(
 			return nil, err
 		}
 	}
+
+	raft := &Raft{id: id, state: Shutdown, fsm: fsm}
 
 	// Set default values if option not provided.
 	if options.logger == nil {
@@ -237,25 +238,45 @@ func NewRaft(
 	if options.leaseDuration == 0 {
 		options.leaseDuration = defaultLeaseDuration
 	}
+	if options.log == nil {
+		log, err := NewLog(dataPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create log instance at %s", dataPath)
+		}
+		raft.log = log
+	}
+	if options.stateStorage == nil {
+		stateStore, err := NewStateStorage(dataPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create state storage instance: path = %s", dataPath)
+		}
+		raft.stateStorage = stateStore
+	}
+	if options.snapshotStorage == nil {
+		snapshotStore, err := NewSnapshotStorage(dataPath)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to create snapshbot storage instance: path = %s",
+				dataPath,
+			)
+		}
+		raft.snapshotStorage = snapshotStore
+	}
+	if options.transport == nil {
+		address := cluster[id]
+		transport, err := NewTransport(address)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create transport instance: address = %s", address)
+		}
+		raft.transport = transport
+	}
 
-	peers := make(map[string]*peer, len(cluster))
+	raft.peers = make(map[string]*peer, len(cluster))
 	for id, address := range cluster {
-		peers[id] = &peer{address: address}
+		raft.peers[id] = &peer{address: address}
 	}
-
-	raft := &Raft{
-		id:               id,
-		options:          options,
-		transport:        transport,
-		peers:            peers,
-		operationManager: newOperationManager(options.leaseDuration),
-		log:              log,
-		stateStorage:     stateStorage,
-		snapshotStorage:  snapshotStorage,
-		fsm:              fsm,
-		state:            Shutdown,
-	}
-
+	raft.options = options
+	raft.operationManager = newOperationManager(options.leaseDuration)
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)

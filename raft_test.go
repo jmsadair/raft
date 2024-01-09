@@ -12,26 +12,8 @@ import (
 func TestNewRaft(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	log, err := NewLog(tmpDir)
-	require.NoError(t, err)
-
-	snapshotStore, err := NewSnapshotStorage(tmpDir)
-	require.NoError(t, err)
-
-	stateStore, err := NewStateStorage(tmpDir)
-	require.NoError(t, err)
-
 	fsm := newStateMachineMock(false, 0)
-
-	raft, err := NewRaft(
-		"test-raft",
-		map[string]string{"test": "127.0.0.1:8080"},
-		nil,
-		log,
-		stateStore,
-		snapshotStore,
-		fsm,
-	)
+	raft, err := NewRaft("test", map[string]string{"test": "127.0.0.1:8080"}, fsm, tmpDir)
 	require.NoError(t, err)
 
 	require.Zero(t, raft.currentTerm)
@@ -40,6 +22,7 @@ func TestNewRaft(t *testing.T) {
 	require.Zero(t, raft.lastIncludedTerm)
 	require.Equal(t, "", raft.votedFor)
 	require.Equal(t, Shutdown, raft.state)
+	require.Equal(t, "test", raft.id)
 	require.NotNil(t, raft.operationManager)
 
 	require.Equal(t, defaultHeartbeat, raft.options.heartbeatInterval)

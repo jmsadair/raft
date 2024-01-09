@@ -13,14 +13,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const shutdownGracePeriod = 300 * time.Millisecond
+
 // Transport represents the underlying transport mechanism used by a node in a cluster
 // to send and recieve RPCs.
 type Transport interface {
-	// StartServer prepares the transport to accept incoming RPCs.
-	StartServer() error
+	// Run will start serving incoming RPCs recieved at the local network address.
+	Run() error
 
-	// StopServer stops the transport from accepting new RPCs.
-	StopServer() error
+	// Shutdown will stop the serving of incoming RPCs.
+	Shutdown() error
 
 	// AppendEntries sends an append entries request to the provided address.
 	SendAppendEntries(address string, request AppendEntriesRequest) (AppendEntriesResponse, error)
@@ -63,7 +65,7 @@ type Transport interface {
 	// it into a configuration.
 	DecodeConfiguration(data []byte) (map[string]string, error)
 
-	// Address returns the local address.
+	// Address returns the local network address.
 	Address() string
 }
 
@@ -95,6 +97,8 @@ type transport struct {
 	mu sync.RWMutex
 }
 
+// NewTransport creates a new instance of Transport that will
+// serve incoming RPCs at the provided address.
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
@@ -110,7 +114,7 @@ func NewTransport(address string) (Transport, error) {
 	return transport, nil
 }
 
-func (t *transport) StartServer() error {
+func (t *transport) Run() error {
 	listener, err := net.Listen(t.address.Network(), t.address.String())
 	t.server = grpc.NewServer()
 	pb.RegisterRaftServer(t.server, t)
@@ -121,7 +125,7 @@ func (t *transport) StartServer() error {
 	return nil
 }
 
-func (t *transport) StopServer() error {
+func (t *transport) Shutdown() error {
 	stopped := make(chan interface{})
 
 	go func() {
@@ -130,7 +134,7 @@ func (t *transport) StopServer() error {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(shutdownGracePeriod):
 		t.server.Stop()
 	case <-stopped:
 		t.server.Stop()
@@ -149,7 +153,6 @@ func (t *transport) SendAppendEntries(
 	client, ok := t.clients[address]
 	if !ok {
 		return AppendEntriesResponse{}, fmt.Errorf(
-
 			"could not make AppendEntries RPC: no connection to %s",
 			address,
 		)
@@ -283,17 +286,6 @@ func (t *transport) Close(address string) error {
 	delete(t.clients, address)
 
 	return nil
-}
-
-func (t *transport) CloseAll() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for _, conn := range t.connections {
-		conn.Close()
-	}
-	t.connections = make(map[string]*grpc.ClientConn)
-	t.clients = make(map[string]pb.RaftClient)
 }
 
 // AppendEntries handles the AppendEntries gRPC request.

@@ -11,9 +11,7 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
-const (
-	snapshotChunkSize = 32 * 1024
-)
+const snapshotChunkSize = 32 * 1024
 
 // NotLeaderError is an error returned when an operation is submitted to a
 // server, and it is not the leader. Only the leader may submit operations.
@@ -182,7 +180,8 @@ type Raft struct {
 	// The network transport for sending and recieving RPCs.
 	transport Transport
 
-	// Maps ID to the peer state.
+	// Maps ID to the the state of the other nodes in the cluster.
+	// Maintained by the leader.
 	peers map[string]*peer
 
 	// Manages both read-only and replicated operations.
@@ -382,7 +381,7 @@ func (r *Raft) Start() {
 	go r.commitLoop()
 
 	// Start serving incoming RPCs.
-	if err := r.transport.StartServer(); err != nil {
+	if err := r.transport.Run(); err != nil {
 		r.options.logger.Fatalf("failed to start transport: error = %v", err)
 	}
 
@@ -421,7 +420,7 @@ func (r *Raft) Stop() {
 			r.options.logger.Errorf("failed to connect to node: error = %v", err)
 		}
 	}
-	r.transport.StopServer()
+	r.transport.Shutdown()
 
 	if err := r.log.Close(); err != nil {
 		r.options.logger.Errorf("failed to close log: %v", err)

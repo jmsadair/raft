@@ -56,38 +56,12 @@ func makeRaft(
 	snapshotting bool,
 	snapshotSize int,
 ) (*Raft, error) {
-	log, err := NewLog(dataPath)
-	if err != nil {
-		return nil, err
-	}
-	snapshots, err := NewSnapshotStorage(dataPath)
-	if err != nil {
-		return nil, err
-	}
-	stateStore, err := NewStateStorage(dataPath)
-	if err != nil {
-		return nil, err
-	}
 	logger, err := makeLogger(id)
 	if err != nil {
 		return nil, err
 	}
-	transport, err := NewTransport(cluster[id])
-	if err != nil {
-		return nil, err
-	}
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
-
-	raft, err := NewRaft(
-		id,
-		cluster,
-		transport,
-		log,
-		stateStore,
-		snapshots,
-		fsm,
-		WithLogger(logger),
-	)
+	raft, err := NewRaft(id, cluster, fsm, dataPath, WithLogger(logger))
 	if err != nil {
 		return nil, err
 	}
@@ -227,24 +201,16 @@ type testCluster struct {
 	// The ID and address of each raft node in the cluster.
 	cluster map[string]string
 
-	// The log associated with each node, where logs[i] is the
-	// log for nodes[i]
-	logs []Log
-
-	// The snapshot storage associated with each node, where
-	// snapshotStore[i] is the snapshot storage for nodes[i]
-	snapshotStores []SnapshotStorage
-
-	// The storage associated with each node, where stores[i] is the
-	// storage for nodes[i]
-	stores []StateStorage
+	// The directories containing the persisted state for each
+	// node, where dirs[i] is the directory for rafts[i].
+	dirs []string
 
 	// The nodes which are disconnected, where disconnected[i] being
-	// true indicates nodes[i] is disconnected.
+	// true indicates rafts[i] is disconnected.
 	disconnected []bool
 
 	// The state machine associated with each node, where fsm[i]
-	// corresponds to the state machine for nodes[i].
+	// corresponds to the state machine for rafts[i].
 	fsm []*stateMachineMock
 
 	// Indicates whether auto snapshotting will be used.
@@ -258,9 +224,7 @@ type testCluster struct {
 
 func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
 	rafts := make([]*Raft, numServers)
-	logs := make([]Log, numServers)
-	snapshotStores := make([]SnapshotStorage, numServers)
-	stores := make([]StateStorage, numServers)
+	dirs := make([]string, numServers)
 	fsm := make([]*stateMachineMock, numServers)
 	disconnected := make([]bool, numServers)
 
@@ -276,23 +240,19 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 			t.Fatalf("failed to create raft instance: error = %v", err)
 		}
 		fsm[i] = raft.fsm.(*stateMachineMock)
-		logs[i] = raft.log
-		snapshotStores[i] = raft.snapshotStorage
-		stores[i] = raft.stateStorage
+		dirs[i] = tmpDir
 		rafts[i] = raft
 	}
 
 	return &testCluster{
-		t:              t,
-		rafts:          rafts,
-		disconnected:   disconnected,
-		cluster:        cluster,
-		logs:           logs,
-		snapshotStores: snapshotStores,
-		stores:         stores,
-		fsm:            fsm,
-		snapshotting:   snapshotting,
-		snapshotSize:   snapshotSize,
+		t:            t,
+		rafts:        rafts,
+		disconnected: disconnected,
+		cluster:      cluster,
+		fsm:          fsm,
+		dirs:         dirs,
+		snapshotting: snapshotting,
+		snapshotSize: snapshotSize,
 	}
 }
 
@@ -493,36 +453,16 @@ func (tc *testCluster) restartServer(node int) {
 	defer tc.mu.Unlock()
 
 	id := fmt.Sprint(node)
-	address := tc.cluster[id]
-
-	tc.fsm[node] = newStateMachineMock(tc.snapshotting, tc.snapshotSize)
-
-	logger, err := makeLogger(id)
-	if err != nil {
-		tc.t.Fatalf("failed to create logger instance: error = %v", err)
-	}
-
-	transport, err := NewTransport(address)
-	if err != nil {
-		tc.t.Fatalf("failed to create transport instance: error = %v", err)
-	}
-
-	newRaft, err := NewRaft(
-		id,
-		tc.cluster,
-		transport,
-		tc.logs[node],
-		tc.stores[node],
-		tc.snapshotStores[node],
-		tc.fsm[node],
-		WithLogger(logger),
-	)
+	raft, err := makeRaft(id, tc.dirs[node], tc.cluster, false, tc.snapshotting, tc.snapshotSize)
 	if err != nil {
 		tc.t.Fatalf("failed to create raft instance: error = %v", err)
 	}
-	newRaft.Start()
-	tc.rafts[node] = newRaft
+	tc.fsm[node] = raft.fsm.(*stateMachineMock)
+	tc.rafts[node] = raft
 
+	raft.Start()
+
+	address := tc.cluster[id]
 	for i := 0; i < len(tc.rafts); i++ {
 		if err := tc.rafts[i].transport.Connect(address); err != nil {
 			tc.t.Fatalf(

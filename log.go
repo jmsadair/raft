@@ -77,6 +77,9 @@ const (
 	// OperationEntry log entries are those that do contain an operation that
 	// will be applied to the state machine.
 	OperationEntry
+
+	// ConfigurationEntry are log entries which contain a cluster configuration.
+	ConfigurationEntry
 )
 
 // LogEntry is a log entry in the log.

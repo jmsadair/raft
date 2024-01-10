@@ -376,23 +376,23 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 // Start starts the node. If the node does not have an existing configuration,
 // Bootstrap must be called first. If the node has been started before, Restart
 // should be called instead.
-func (r *Raft) Start() {
-	r.start(false)
+func (r *Raft) Start() error {
+	return r.start(false)
 }
 
 // Restart starts a node that has been started and stopped before. The difference
 // bewteen Restart and Start is that Restart restores the state of the node from disk
 // whereas Start does not.
-func (r *Raft) Restart() {
-	r.start(true)
+func (r *Raft) Restart() error {
+	return r.start(true)
 }
 
-func (r *Raft) start(restore bool) {
+func (r *Raft) start(restore bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state != Shutdown {
-		return
+		return nil
 	}
 
 	if restore {
@@ -400,9 +400,7 @@ func (r *Raft) start(restore bool) {
 	}
 
 	if len(r.configuration) == 0 {
-		r.options.logger.Fatalf(
-			"failed to start node: no configuration - try calling Bootstrap first",
-		)
+		return errors.New("failed to start node: no configuration - try calling Bootstrap first")
 	}
 
 	// Register the functions for handling RPCs.
@@ -438,7 +436,7 @@ func (r *Raft) start(restore bool) {
 
 	// Start serving incoming RPCs.
 	if err := r.transport.Run(); err != nil {
-		r.options.logger.Fatalf("failed to run transport: error = %v", err)
+		return fmt.Errorf("could not run transport: %w", err)
 	}
 
 	r.options.logger.Infof(
@@ -448,6 +446,8 @@ func (r *Raft) start(restore bool) {
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
 	)
+
+	return nil
 }
 
 // Stop stops the raft consensus protocol if is not already stopped.

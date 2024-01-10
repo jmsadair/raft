@@ -248,7 +248,9 @@ func (tc *testCluster) startCluster() {
 		if err := node.Bootstrap(tc.cluster); err != nil {
 			tc.t.Fatalf("failed to bootstrap node: error = %v", err)
 		}
-		node.Start()
+		if err := node.Start(); err != nil {
+			tc.t.Fatalf("failed to start node: error = %v", err)
+		}
 	}
 }
 
@@ -450,7 +452,9 @@ func (tc *testCluster) restartServer(node int) {
 	tc.fsm[node] = raft.fsm.(*stateMachineMock)
 	tc.rafts[node] = raft
 
-	raft.Start()
+	if err := raft.Start(); err != nil {
+		tc.t.Fatalf("failed to start node: error = %v", err)
+	}
 
 	address := tc.cluster[id]
 	for i := 0; i < len(tc.rafts); i++ {

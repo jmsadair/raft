@@ -102,7 +102,7 @@ type transport struct {
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not resove tcp address: %w", err)
 	}
 
 	transport := &transport{
@@ -116,11 +116,11 @@ func NewTransport(address string) (Transport, error) {
 
 func (t *transport) Run() error {
 	listener, err := net.Listen(t.address.Network(), t.address.String())
+	if err != nil {
+		return fmt.Errorf("could not create listener: %w", err)
+	}
 	t.server = grpc.NewServer()
 	pb.RegisterRaftServer(t.server, t)
-	if err != nil {
-		return err
-	}
 	go t.server.Serve(listener)
 	return nil
 }
@@ -235,13 +235,17 @@ func (t *transport) RegsiterInstallSnapshotHandler(
 
 func (t *transport) EncodeConfiguration(configuration map[string]string) ([]byte, error) {
 	pbConfiguration := &pb.Configuration{Peers: configuration}
-	return proto.Marshal(pbConfiguration)
+	bytes, err := proto.Marshal(pbConfiguration)
+	if err != nil {
+		return nil, fmt.Errorf("could not marshal protobuf message: %w", err)
+	}
+	return bytes, nil
 }
 
 func (t *transport) DecodeConfiguration(data []byte) (map[string]string, error) {
 	pbConfiguration := &pb.Configuration{}
 	if err := proto.Unmarshal(data, pbConfiguration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not unmarshal protobuf message: %w", err)
 	}
 	return pbConfiguration.GetPeers(), nil
 }
@@ -280,7 +284,7 @@ func (t *transport) Close(address string) error {
 		return nil
 	}
 	if err := conn.Close(); err != nil {
-		return err
+		return fmt.Errorf("could not close connection: %w", err)
 	}
 	delete(t.connections, address)
 	delete(t.clients, address)

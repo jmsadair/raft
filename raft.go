@@ -387,7 +387,6 @@ func (r *Raft) Restart() {
 	r.start(true)
 }
 
-// Start starts the node with an existing configuration.
 func (r *Raft) start(restore bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -443,7 +442,8 @@ func (r *Raft) start(restore bool) {
 	}
 
 	r.options.logger.Infof(
-		"node started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
+		"node started: address = %s electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
+		r.address,
 		r.options.electionTimeout,
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
@@ -1291,6 +1291,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 		Term:              r.currentTerm,
 		LastIncludedIndex: metadata.LastIncludedIndex,
 		LastIncludedTerm:  metadata.LastIncludedTerm,
+		Configuration:     metadata.Configuration,
 		Offset:            offset,
 	}
 

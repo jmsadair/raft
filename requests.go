@@ -74,6 +74,9 @@ type InstallSnapshotRequest struct {
 	// The term associated with the last included index.
 	LastIncludedTerm uint64
 
+	// The last configuration included in the snapshot.
+	Configuration []byte
+
 	// A chunk of the snapshot.
 	Bytes []byte
 
@@ -156,6 +159,7 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 		Term:              request.Term,
 		LastIncludedIndex: request.LastIncludedIndex,
 		LastIncludedTerm:  request.LastIncludedTerm,
+		Configuration:     request.Configuration,
 		Data:              request.Bytes,
 		Offset:            request.Offset,
 		Done:              request.Done,
@@ -231,6 +235,7 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 		Term:              request.GetTerm(),
 		LastIncludedIndex: request.GetLastIncludedIndex(),
 		LastIncludedTerm:  request.GetLastIncludedTerm(),
+		Configuration:     request.GetConfiguration(),
 		Bytes:             request.GetData(),
 		Offset:            request.GetOffset(),
 		Done:              request.GetDone(),

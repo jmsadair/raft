@@ -50,9 +50,8 @@ func makeClusterConfiguration(numServers int) map[string]string {
 
 func makeRaft(
 	id string,
+	address string,
 	dataPath string,
-	cluster map[string]string,
-	noStart bool,
 	snapshotting bool,
 	snapshotSize int,
 ) (*Raft, error) {
@@ -61,22 +60,10 @@ func makeRaft(
 		return nil, err
 	}
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
-	raft, err := NewRaft(id, cluster, fsm, dataPath, WithLogger(logger))
+	raft, err := NewRaft(id, address, fsm, dataPath, WithLogger(logger))
 	if err != nil {
 		return nil, err
 	}
-
-	// If noStart is true, the caller is not expecting to call start.
-	// Open the log and replay it so that testing is possible.
-	if noStart {
-		if err := raft.log.Open(); err != nil {
-			return nil, err
-		}
-		if err := raft.log.Replay(); err != nil {
-			return nil, err
-		}
-	}
-
 	return raft, nil
 }
 
@@ -235,7 +222,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	for i := 0; i < numServers; i++ {
 		id := fmt.Sprint(i)
 		tmpDir := t.TempDir()
-		raft, err := makeRaft(id, tmpDir, cluster, false, snapshotting, snapshotSize)
+		raft, err := makeRaft(id, cluster[id], tmpDir, snapshotting, snapshotSize)
 		if err != nil {
 			t.Fatalf("failed to create raft instance: error = %v", err)
 		}
@@ -258,6 +245,9 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 
 func (tc *testCluster) startCluster() {
 	for _, node := range tc.rafts {
+		if err := node.Bootstrap(tc.cluster); err != nil {
+			tc.t.Fatalf("failed to bootstrap node: error = %v", err)
+		}
 		node.Start()
 	}
 }
@@ -290,10 +280,10 @@ func (tc *testCluster) submit(
 			future := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
 			if response := future.Await(); response.Err == nil {
 				if expectFail {
-					tc.t.Fatalf("expected operation to fail, but it was successful")
+					tc.t.Fatal("expected operation to fail, but it was successful")
 				}
 				if string(response.Operation.Bytes) != string(operation) {
-					tc.t.Fatalf("operation response does not match submitted operation")
+					tc.t.Fatal("operation response does not match submitted operation")
 				}
 				return
 			}
@@ -453,7 +443,7 @@ func (tc *testCluster) restartServer(node int) {
 	defer tc.mu.Unlock()
 
 	id := fmt.Sprint(node)
-	raft, err := makeRaft(id, tc.dirs[node], tc.cluster, false, tc.snapshotting, tc.snapshotSize)
+	raft, err := makeRaft(id, tc.cluster[id], tc.dirs[node], tc.snapshotting, tc.snapshotSize)
 	if err != nil {
 		tc.t.Fatalf("failed to create raft instance: error = %v", err)
 	}

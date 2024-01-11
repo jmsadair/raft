@@ -521,31 +521,37 @@ func (r *Raft) SubmitOperation(
 	operation []byte,
 	operationType OperationType,
 	timeout time.Duration,
-) *OperationResponseFuture {
+) Future[OperationResponse] {
 	switch operationType {
 	case Replicated:
 		return r.submitReplicatedOperation(operation, timeout)
 	case LeaseBasedReadOnly, LinearizableReadOnly:
 		return r.submitReadOnlyOperation(operation, operationType, timeout)
 	default:
-		future := NewOperationResponseFuture(operation, timeout)
-		future.responseCh <- OperationResponse{Err: InvalidOperationTypeError{OperationType: operationType}}
-		return future
+		operationFuture := newFuture[OperationResponse](timeout)
+		response := &result[OperationResponse]{
+			err: InvalidOperationTypeError{OperationType: operationType},
+		}
+		operationFuture.responseCh <- response
+		return operationFuture
 	}
 }
 
 func (r *Raft) submitReplicatedOperation(
 	operationBytes []byte,
 	timeout time.Duration,
-) *OperationResponseFuture {
+) Future[OperationResponse] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	future := NewOperationResponseFuture(operationBytes, timeout)
+	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		future.responseCh <- OperationResponse{Err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}}
-		return future
+		response := &result[OperationResponse]{
+			err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId},
+		}
+		operationFuture.responseCh <- response
+		return operationFuture
 	}
 
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, OperationEntry)
@@ -553,7 +559,7 @@ func (r *Raft) submitReplicatedOperation(
 		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
 
-	r.operationManager.pendingReplicated[entry.Index] = future.responseCh
+	r.operationManager.pendingReplicated[entry.Index] = operationFuture.responseCh
 
 	r.sendAppendEntriesToPeers()
 
@@ -564,31 +570,33 @@ func (r *Raft) submitReplicatedOperation(
 		Replicated.String(),
 	)
 
-	return future
+	return operationFuture
 }
 
 func (r *Raft) submitReadOnlyOperation(
 	operationBytes []byte,
 	readOnlyType OperationType,
 	timeout time.Duration,
-) *OperationResponseFuture {
+) Future[OperationResponse] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	future := NewOperationResponseFuture(operationBytes, timeout)
+	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		future.responseCh <- OperationResponse{Err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}}
-		return future
+		response := &result[OperationResponse]{
+			err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId},
+		}
+		operationFuture.responseCh <- response
+		return operationFuture
 	}
 
 	operation := &Operation{
 		Bytes:         operationBytes,
 		OperationType: LeaseBasedReadOnly,
 		readIndex:     r.commitIndex,
-		responseCh:    future.responseCh,
 	}
-	r.operationManager.pendingReadOnly[operation] = true
+	r.operationManager.pendingReadOnly[operation] = operationFuture.responseCh
 	if readOnlyType == LeaseBasedReadOnly && operation.readIndex <= r.lastApplied {
 		r.readOnlyCond.Broadcast()
 	}
@@ -603,7 +611,7 @@ func (r *Raft) submitReadOnlyOperation(
 		operation.OperationType.String(),
 	)
 
-	return future
+	return operationFuture
 }
 
 // AppendEntries handles log replication requests from the leader. It takes a request to append
@@ -1475,15 +1483,18 @@ func (r *Raft) applyLoop() {
 				LogTerm:       entry.Term,
 				Bytes:         entry.Data,
 				OperationType: Replicated,
-				responseCh:    responseCh,
 			}
-			response := OperationResponse{Operation: operation}
 
 			lastApplied := r.lastApplied
 
 			r.mu.Unlock()
-			response.Response = r.fsm.Apply(&operation)
-			r.sendResponseWithoutBlocking(operation.responseCh, response)
+			response := OperationResponse{
+				Operation:           operation,
+				ApplicationResponse: r.fsm.Apply(&operation),
+			}
+			if ok {
+				responseCh <- &result[OperationResponse]{success: response}
+			}
 			r.options.logger.Debugf(
 				"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
 				operation.LogIndex,
@@ -1562,22 +1573,20 @@ func (r *Raft) readOnlyLoop() {
 		}
 
 		appliableOperations := r.operationManager.appliableReadOnlyOperations(r.lastApplied)
-		for _, operation := range appliableOperations {
-			response := OperationResponse{Operation: *operation}
+		for operation, responseCh := range appliableOperations {
 
 			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
-				response.Err = InvalidLeaseError{ServerID: r.id}
-				r.sendResponseWithoutBlocking(operation.responseCh, response)
+				responseCh <- &result[OperationResponse]{err: InvalidLeaseError{ServerID: r.id}}
 				continue
 			}
 
 			r.mu.Unlock()
-			response.Response = r.fsm.Apply(operation)
-			r.sendResponseWithoutBlocking(
-				operation.responseCh,
-				response,
-			)
+			response := OperationResponse{
+				Operation:           *operation,
+				ApplicationResponse: r.fsm.Apply(operation),
+			}
+			responseCh <- &result[OperationResponse]{success: response}
 			r.options.logger.Debugf(
 				"applied operation to state machine: readIndex = %d, type = %s",
 				operation.readIndex,
@@ -1671,15 +1680,5 @@ func (r *Raft) hasQuorum(count int) bool {
 func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
 		r.options.logger.Fatalf("failed to persist term and vote: error = %v", err)
-	}
-}
-
-func (r *Raft) sendResponseWithoutBlocking(
-	responseCh chan OperationResponse,
-	response OperationResponse,
-) {
-	select {
-	case responseCh <- response:
-	default:
 	}
 }

@@ -168,13 +168,6 @@ func (s *stateMachineMock) appliedOperations() []Operation {
 
 	operationsCopy := make([]Operation, len(s.operations))
 	copy(operationsCopy, s.operations)
-
-	// Set the response channel to nil, since these operations will be compared to others.
-	// Not all operations will necessarily have the same response channel.
-	for i := range operationsCopy {
-		operationsCopy[i].responseCh = nil
-	}
-
 	return operationsCopy
 }
 
@@ -279,12 +272,14 @@ func (tc *testCluster) submit(
 			tc.mu.Unlock()
 
 			// Submit the operation.
-			future := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
-			if response := future.Await(); response.Err == nil {
+			operationFuture := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
+			response := operationFuture.Await()
+			if err := response.Error(); err == nil {
 				if expectFail {
 					tc.t.Fatal("expected operation to fail, but it was successful")
 				}
-				if string(response.Operation.Bytes) != string(operation) {
+				result := response.Success()
+				if string(result.Operation.Bytes) != string(operation) {
 					tc.t.Fatal("operation response does not match submitted operation")
 				}
 				return

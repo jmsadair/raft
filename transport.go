@@ -10,7 +10,6 @@ import (
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/proto"
 )
 
 const shutdownGracePeriod = 300 * time.Millisecond
@@ -59,11 +58,11 @@ type Transport interface {
 
 	// EncodeConfiguration accepts a configuration and encodes it such that it can be
 	// decoded by DecodeConfiguration.
-	EncodeConfiguration(configuration map[string]string) ([]byte, error)
+	EncodeConfiguration(configuration *Configuration) ([]byte, error)
 
 	// DecodeConfiguration accepts a byte representation of a configuration and decodes
 	// it into a configuration.
-	DecodeConfiguration(data []byte) (map[string]string, error)
+	DecodeConfiguration(data []byte) (Configuration, error)
 
 	// Address returns the local network address.
 	Address() string
@@ -233,21 +232,20 @@ func (t *transport) RegsiterInstallSnapshotHandler(
 	t.installSnapshotHandler = handler
 }
 
-func (t *transport) EncodeConfiguration(configuration map[string]string) ([]byte, error) {
-	pbConfiguration := &pb.Configuration{Peers: configuration}
-	bytes, err := proto.Marshal(pbConfiguration)
+func (t *transport) EncodeConfiguration(configuration *Configuration) ([]byte, error) {
+	data, err := encodeConfiguration(configuration)
 	if err != nil {
-		return nil, fmt.Errorf("could not marshal protobuf message: %w", err)
+		return nil, fmt.Errorf("could not encode configuration: %w", err)
 	}
-	return bytes, nil
+	return data, nil
 }
 
-func (t *transport) DecodeConfiguration(data []byte) (map[string]string, error) {
-	pbConfiguration := &pb.Configuration{}
-	if err := proto.Unmarshal(data, pbConfiguration); err != nil {
-		return nil, fmt.Errorf("could not unmarshal protobuf message: %w", err)
+func (t *transport) DecodeConfiguration(data []byte) (Configuration, error) {
+	configuration, err := decodeConfiguration(data)
+	if err != nil {
+		return Configuration{}, fmt.Errorf("could not decode configuration: %w", err)
 	}
-	return pbConfiguration.GetPeers(), nil
+	return configuration, nil
 }
 
 func (t *transport) Address() string {

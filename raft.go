@@ -140,9 +140,11 @@ type Raft struct {
 	// The network transport for sending and recieving RPCs.
 	transport Transport
 
-	// All nodes currently in the cluster.
-	// Maps ID to address.
-	configuration map[string]string
+	// The latest configuration of the cluster.
+	configuration *Configuration
+
+	// The most recently committed configuration of the cluster.
+	committedConfiguration *Configuration
 
 	// Maps ID to the the state of the other nodes in the cluster.
 	// Maintained by the leader.
@@ -320,7 +322,7 @@ func (r *Raft) restore() error {
 		if err != nil {
 			return fmt.Errorf("could not decode snapshot configuration: %w", err)
 		}
-		r.configuration = configuration
+		r.configuration = &configuration
 		if err := file.Close(); err != nil {
 			return fmt.Errorf("could not close snapshot file: %w", err)
 		}
@@ -339,7 +341,7 @@ func (r *Raft) restore() error {
 		if err != nil {
 			return fmt.Errorf("could not decode log entry configuration: %w", err)
 		}
-		r.configuration = configuration
+		r.configuration = &configuration
 		break
 	}
 
@@ -347,20 +349,25 @@ func (r *Raft) restore() error {
 }
 
 // Bootstrap initializes this node with a cluster configuration.
-// The configuration must contain the ID and address of this node and
-// all nodes in the cluster must agree on this configuration. This
-// should only be called when starting a cluster for the first time and
-// there is no existing configuration.
+// The configuration must contain the ID and address of all nodes
+// in the cluster including this one and all nodes must agree on
+// this configuration. This should only be called when starting a
+// cluster for the first time and there is no existing configuration.
+// All nodes in the configuration will have voter status. If you intend
+// to dynamically add this node to an existing cluster, you should not call
+// Bootstrap.
 func (r *Raft) Bootstrap(configuration map[string]string) error {
 	if address, ok := configuration[r.id]; !ok || r.address != address {
 		return errors.New("configuration must contain the ID and address of this node")
 	}
-	if len(r.configuration) > 0 {
+	if r.configuration != nil {
 		return errors.New("node already has a configuration")
 	}
 
+	r.configuration = NewConfiguration(configuration)
+
 	// Append the configuration to the log.
-	data, err := r.transport.EncodeConfiguration(configuration)
+	data, err := r.transport.EncodeConfiguration(r.configuration)
 	if err != nil {
 		return fmt.Errorf("failed to encode configuration: %w", err)
 	}
@@ -368,20 +375,19 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 	if err := r.log.AppendEntry(configurationEntry); err != nil {
 		return fmt.Errorf("failed to append configuration to log: %w", err)
 	}
-	r.configuration = configuration
 
 	return nil
 }
 
 // Start starts the node. If the node does not have an existing configuration,
-// Bootstrap must be called first. If the node has been started before, Restart
-// should be called instead.
+// a configuration will be created that only includes this node as a non-voter.
+// If the node has been started before, Restart should be called instead.
 func (r *Raft) Start() error {
 	return r.start(false)
 }
 
 // Restart starts a node that has been started and stopped before. The difference
-// bewteen Restart and Start is that Restart restores the state of the node from disk
+// between Restart and Start is that Restart restores the state of the node from disk
 // whereas Start does not.
 func (r *Raft) Restart() error {
 	return r.start(true)
@@ -399,8 +405,11 @@ func (r *Raft) start(restore bool) error {
 		r.restore()
 	}
 
-	if len(r.configuration) == 0 {
-		return errors.New("failed to start node: no configuration - try calling Bootstrap first")
+	if r.configuration == nil {
+		r.configuration = &Configuration{
+			Members: map[string]string{r.id: r.address},
+			IsVoter: map[string]bool{r.id: false},
+		}
 	}
 
 	// Register the functions for handling RPCs.
@@ -410,12 +419,12 @@ func (r *Raft) start(restore bool) error {
 
 	// Initialize the follower state.
 	r.followers = make(map[string]*follower)
-	for id := range r.configuration {
+	for id := range r.configuration.Members {
 		r.followers[id] = new(follower)
 	}
 
 	// Connect to the other nodes in the cluster.
-	for id, address := range r.configuration {
+	for id, address := range r.configuration.Members {
 		if id == r.id {
 			continue
 		}
@@ -469,7 +478,7 @@ func (r *Raft) Stop() {
 	r.mu.Lock()
 
 	// Close any connections to other nodes in the cluster and stop accepting RPCs.
-	for id, address := range r.configuration {
+	for id, address := range r.configuration.Members {
 		if id == r.id {
 			continue
 		}
@@ -755,7 +764,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 func (r *Raft) sendAppendEntriesToPeers() {
 	numResponses := 1
-	for id, address := range r.configuration {
+	for id, address := range r.configuration.Members {
 		go r.sendAppendEntries(id, address, &numResponses)
 	}
 }
@@ -770,7 +779,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 
 	// Handle the single server case.
 	if id == r.id {
-		if len(r.configuration) == 1 {
+		if len(r.configuration.Members) == 1 {
 			if r.log.LastIndex() > r.commitIndex {
 				r.commitCond.Broadcast()
 			}
@@ -975,13 +984,18 @@ func (r *Raft) election() {
 		return
 	}
 
+	// If this node is not a voter, an election is not necessary.
+	if !r.configuration.IsVoter[r.id] {
+		return
+	}
+
 	var votesReceived int
 	r.becomeCandidate()
 	r.sendRequestVoteToPeers(&votesReceived)
 }
 
 func (r *Raft) sendRequestVoteToPeers(votes *int) {
-	for id, address := range r.configuration {
+	for id, address := range r.configuration.Members {
 		go r.sendRequestVote(id, address, votes)
 	}
 }
@@ -1203,7 +1217,13 @@ func (r *Raft) InstallSnapshot(
 }
 
 func (r *Raft) takeSnapshot() {
+	// There is nothing new to snapshot.
 	if r.lastApplied <= r.lastIncludedIndex {
+		return
+	}
+
+	// Put off snapshots if there is an outstanding configuration change.
+	if r.committedConfiguration == nil || r.committedConfiguration.Index > r.lastApplied {
 		return
 	}
 
@@ -1392,7 +1412,7 @@ func (r *Raft) commitLoop() {
 			// If they do, it is safe to commit.
 			matches := 1
 			for id, follower := range r.followers {
-				if id == r.id {
+				if id == r.id || !r.configuration.IsVoter[id] {
 					continue
 				}
 				if follower.matchIndex >= index {
@@ -1434,7 +1454,13 @@ func (r *Raft) applyLoop() {
 				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
 			}
 
-			if entry.EntryType == NoOpEntry || entry.EntryType == ConfigurationEntry {
+			if entry.EntryType == NoOpEntry {
+				r.lastApplied++
+				continue
+			}
+
+			if entry.EntryType == ConfigurationEntry {
+				r.applyConfigurationEntry(entry)
 				r.lastApplied++
 				continue
 			}
@@ -1481,6 +1507,44 @@ func (r *Raft) applyLoop() {
 			r.readOnlyCond.Broadcast()
 		}
 	}
+}
+
+func (r *Raft) applyConfigurationEntry(entry *LogEntry) {
+	configuration, err := r.transport.DecodeConfiguration(entry.Data)
+	if err != nil {
+		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
+	}
+
+	// Disconnect any node being removed from the cluster.
+	for id, address := range r.configuration.Members {
+		if _, ok := configuration.Members[id]; !ok {
+			if err := r.transport.Close(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to close connection to node: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+		}
+	}
+
+	// Connect any nodes being added to the cluster.
+	for id, address := range configuration.Members {
+		if _, ok := r.configuration.Members[id]; !ok {
+			if err := r.transport.Connect(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to connect to peer: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+		}
+	}
+
+	r.committedConfiguration = &configuration
+	r.configuration = &configuration
 }
 
 func (r *Raft) readOnlyLoop() {
@@ -1595,7 +1659,13 @@ func (r *Raft) resetSnapshotFiles() {
 }
 
 func (r *Raft) hasQuorum(count int) bool {
-	return count > len(r.followers)/2
+	voters := 0
+	for _, isVoter := range r.configuration.IsVoter {
+		if isVoter {
+			voters++
+		}
+	}
+	return count > voters/2
 }
 
 func (r *Raft) persistTermAndVote() {

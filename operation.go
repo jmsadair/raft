@@ -4,8 +4,7 @@ import (
 	"time"
 )
 
-// OperationType is the type of the operation that is being submitted to
-// raft.
+// OperationType is the type of the operation that is being submitted to raft.
 type OperationType uint32
 
 const (
@@ -120,20 +119,12 @@ func (r *operationManager) appliableReadOnlyOperations(
 }
 
 func (r *operationManager) notifyLostLeaderShip(id string, knownLeader string) {
-	response := &result[OperationResponse]{
-		err: NotLeaderError{ServerID: id, KnownLeader: knownLeader},
-	}
+	response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
 	for _, responseCh := range r.pendingReadOnly {
-		select {
-		case responseCh <- response:
-		default:
-		}
+		responseCh <- response
 	}
 	for _, responseCh := range r.pendingReplicated {
-		select {
-		case responseCh <- response:
-		default:
-		}
+		responseCh <- response
 	}
 	r.pendingReadOnly = make(map[*Operation]chan Result[OperationResponse])
 	r.pendingReplicated = make(map[uint64]chan Result[OperationResponse])

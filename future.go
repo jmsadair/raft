@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-var TimeoutError = errors.New(
+var ErrTimeout = errors.New(
 	"A timeout occured while waiting for the result - try submitting the operation again",
 )
 
@@ -47,7 +47,7 @@ func (f *future[T]) Await() Result[T] {
 	case response := <-f.responseCh:
 		f.response = response
 	case <-time.After(f.timeout):
-		f.response = &result[T]{err: TimeoutError}
+		f.response = &result[T]{err: ErrTimeout}
 	}
 	return f.response
 }
@@ -72,6 +72,10 @@ type result[T Response] struct {
 
 	// Any error that occured during the processing of the result.
 	err error
+}
+
+func newResult[T Response](response T, err error) Result[T] {
+	return &result[T]{success: response, err: err}
 }
 
 func (r *result[T]) Success() T {

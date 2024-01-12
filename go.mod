@@ -3,9 +3,8 @@ module github.com/jmsadair/raft
 go 1.19
 
 require (
-	github.com/fortytw2/leaktest v1.3.0
-	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.4
+	go.uber.org/goleak v1.3.0
 	golang.org/x/exp v0.0.0-20230108222341-4b8118a2686a
 	google.golang.org/grpc v1.60.1
 	google.golang.org/protobuf v1.32.0
@@ -14,6 +13,7 @@ require (
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/net v0.16.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect

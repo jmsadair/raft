@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fortytw2/leaktest"
 	"github.com/jmsadair/raft/internal/util"
+	"go.uber.org/goleak"
 )
 
 // Set by environment variable. Indicates whether snapshotting
@@ -25,15 +25,12 @@ var snapshotSize int
 func TestMain(m *testing.M) {
 	snapshotting = os.Getenv("SNAPSHOTS") == "true"
 	snapshotSize, _ = strconv.Atoi(os.Getenv("SNAPSHOT_SIZE"))
-	exitCode := m.Run()
-	os.Exit(exitCode)
+	goleak.VerifyTestMain(m)
 }
 
 // TestSingleServerElection checks whether a cluster consisting of
 // a single server can elect a leader.
 func TestSingleServerElection(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -45,8 +42,6 @@ func TestSingleServerElection(t *testing.T) {
 // TestBasicElection checks whether a cluster can elect a leader
 // when there are no failures.
 func TestBasicElection(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -58,8 +53,6 @@ func TestBasicElection(t *testing.T) {
 // TestElectLeaderDisconnect checks whether a cluster can
 // still elect a leader when a single server is Disconnected.
 func TestElectLeaderDisconnect(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -76,8 +69,6 @@ func TestElectLeaderDisconnect(t *testing.T) {
 // TestFailElectLeaderDisconnect checks whether a leader is
 // elected when a majority of the servers are Disconnected.
 func TestFailElectLeaderDisconnect(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -98,8 +89,6 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 // TestAddSingleServer checks that a single node can be added as a non-voting member
 // and then promoted to a voting member without issue.
 func TestAddSingleServer(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -117,8 +106,6 @@ func TestAddSingleServer(t *testing.T) {
 // considering quorum - if the cluster originally has 3 voting members and 2
 // non-voting members are added, leadership should only require 2 votes.
 func TestNonVoterElectionSuccess(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -142,8 +129,6 @@ func TestNonVoterElectionSuccess(t *testing.T) {
 // TestNotVoterElectionFail checks that non-voting members are unable
 // to elect a leader. Non-voting members cannot vote in elections.
 func TestNonVoterElectionFailure(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -173,8 +158,6 @@ func TestNonVoterElectionFailure(t *testing.T) {
 // TestSingleServerSubmit checks whether a cluster consisting of
 // a single server can commit a command.
 func TestSingleServerSubmit(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -190,8 +173,6 @@ func TestSingleServerSubmit(t *testing.T) {
 // TestSingleSubmit checks whether the cluster can successfully
 // commit a single command when there are no failures.
 func TestSingleSubmit(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -207,8 +188,6 @@ func TestSingleSubmit(t *testing.T) {
 // TestMultipleSubmit checks whether a cluster can successfully
 // commit multiple operations when there are no failures.
 func TestMultipleSubmit(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -227,8 +206,6 @@ func TestMultipleSubmit(t *testing.T) {
 // applied when there are multiple clients submitting operations
 // at the same time.
 func TestConcurrentSubmit(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -274,7 +251,6 @@ func TestConcurrentSubmit(t *testing.T) {
 // TestAddServerSubmit checks that submitted operations are correctly
 // replicated to newly added members of the cluster.
 func TestAddServerSubmit(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -309,8 +285,6 @@ func TestAddServerSubmit(t *testing.T) {
 // operations when a majority of its voting members are down. Non-voting
 // members should not affect quorum.
 func TestAddServerSubmitFail(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -335,8 +309,6 @@ func TestAddServerSubmitFail(t *testing.T) {
 // TestAddServerSubmitConcurrent checks that concurrently submitted operations are correctly
 // replicated to newly added members of the cluster.
 func TestAddServerSubmitConcurrent(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -389,8 +361,6 @@ func TestAddServerSubmitConcurrent(t *testing.T) {
 // TestSubmitDisconnect checks that a cluster can still
 // commit operations after the leader is disconnected.
 func TestSubmitDisconnect(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -411,8 +381,6 @@ func TestSubmitDisconnect(t *testing.T) {
 // handles leaders being disconnected and rejoining after operations
 // are submitted.
 func TestSubmitDisconnectRejoin(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -462,8 +430,6 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 // commit operations when a majority of the servers are completely
 // disconnected from the cluster but still online.
 func TestSubmitDisconnectFail(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -486,8 +452,6 @@ func TestSubmitDisconnectFail(t *testing.T) {
 // progress submitting multiple operations when multiple servers
 // become disconnected from the rest of the cluster.
 func TestUnreliableNetwork(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	done := int32(0)
@@ -538,8 +502,6 @@ func TestUnreliableNetwork(t *testing.T) {
 // progress submitting multiple operations when there is a single
 // partition.
 func TestBasicPartition(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -569,8 +531,6 @@ func TestBasicPartition(t *testing.T) {
 // progress submitting multiple operations in the presence of
 // multiple and changing partitions.
 func TestMultiPartition(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
@@ -618,8 +578,6 @@ func TestMultiPartition(t *testing.T) {
 // TestBasicCrash checks that a cluster can still make
 // progress after a single server crashes.
 func TestBasicCrash(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -645,8 +603,6 @@ func TestBasicCrash(t *testing.T) {
 // handles a server crashing and coming back online
 // after operations are submitted.
 func TestCrashRejoin(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -680,8 +636,6 @@ func TestCrashRejoin(t *testing.T) {
 // cluster in the face of multiple crashes. The added server itself
 // may be crashed as well.
 func TestMultiCrashAddServer(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
@@ -751,8 +705,6 @@ func TestMultiCrashAddServer(t *testing.T) {
 // progress committing operations in the face of multiple
 // crashes.
 func TestMultiCrash(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
@@ -804,8 +756,6 @@ func TestMultiCrash(t *testing.T) {
 // TestDisconnectCrashPartition checks whether the cluster can still
 // make progress when there are disconnections, crashes, and partitions.
 func TestDisconnectCrashPartition(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash, disconnect, and partition random servers every so often.
@@ -871,8 +821,6 @@ func TestDisconnectCrashPartition(t *testing.T) {
 // progress committing operations after all the servers
 // crash and come back online.
 func TestAllCrash(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -907,8 +855,6 @@ func TestAllCrash(t *testing.T) {
 // TestBasicReadOnly checks that a read-only operation submitted under normal conditions
 // are successful.
 func TestBasicReadOnly(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -923,8 +869,6 @@ func TestBasicReadOnly(t *testing.T) {
 
 // TestSingleServerReadOnly checks that read-only operations are successful in the single server case.
 func TestSingleServerReadOnly(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -944,8 +888,6 @@ func TestSingleServerReadOnly(t *testing.T) {
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
 // from a majority of the partition is rejected.
 func TestReadOnlyFail(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -973,8 +915,6 @@ func TestReadOnlyFail(t *testing.T) {
 // after the old one is disconnected, thereby allowing successful read-only
 // operations.
 func TestReadOnlyDisconnect(t *testing.T) {
-	defer leaktest.CheckTimeout(t, 1*time.Second)
-
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()

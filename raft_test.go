@@ -78,6 +78,10 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 	raft.votedFor = "leader1"
 	raft.state = Follower
 
+	// Make sure to set a configuration since it is nil until the node is started
+	// and we do not start the node.
+	raft.configuration = &Configuration{}
+
 	request := &AppendEntriesRequest{
 		LeaderID: "leader1",
 		Term:     2,

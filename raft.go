@@ -816,7 +816,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		// Fall back to the committed configuration if the current one is
 		// truncated. This is necessary since a partitioned leader may have
 		// recieved a membership change request.
-		if entry.Index > r.configuration.Index {
+		if entry.Index <= r.configuration.Index {
 			r.nextConfiguration(r.committedConfiguration)
 		}
 

@@ -276,7 +276,7 @@ func (r *Raft) restore() error {
 	if err != nil {
 		return fmt.Errorf("could not recover state from storage: %w", err)
 	}
-	r.currentTerm = util.Max(currentTerm, 1)
+	r.currentTerm = currentTerm
 	r.votedFor = votedFor
 
 	// Restore the state machine from the most recent snapshot if there was one.
@@ -339,16 +339,18 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 		return errors.New("node already has a configuration")
 	}
 
-	r.configuration = NewConfiguration(r.log.NextIndex(), configuration)
+	index := uint64(1)
+	term := uint64(1)
+	r.configuration = NewConfiguration(index, configuration)
 
 	// Append the configuration to the log.
 	data, err := r.transport.EncodeConfiguration(r.configuration)
 	if err != nil {
-		return fmt.Errorf("failed to encode configuration: %w", err)
+		return fmt.Errorf("could not encode configuration: %w", err)
 	}
-	configurationEntry := NewLogEntry(r.log.NextIndex(), r.currentTerm, data, ConfigurationEntry)
-	if err := r.log.AppendEntry(configurationEntry); err != nil {
-		return fmt.Errorf("failed to append configuration to log: %w", err)
+	entry := NewLogEntry(index, term, data, ConfigurationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		return fmt.Errorf("could not append configuration to log: %w", err)
 	}
 
 	return nil
@@ -377,7 +379,9 @@ func (r *Raft) start(restore bool) error {
 	}
 
 	if restore {
-		r.restore()
+		if err := r.restore(); err != nil {
+			return fmt.Errorf("could not restore state: %w", err)
+		}
 	}
 
 	if r.configuration == nil {
@@ -404,7 +408,12 @@ func (r *Raft) start(restore bool) error {
 			continue
 		}
 		if err := r.transport.Connect(address); err != nil {
-			r.options.logger.Errorf("failed to connect to node: error = %v", err)
+			r.options.logger.Errorf(
+				"failed to connect to node: id = %s, address = %s, error = %v",
+				id,
+				address,
+				err,
+			)
 		}
 	}
 
@@ -532,22 +541,23 @@ func (r *Raft) AddServer(
 	}
 
 	// Create the configuration that includes the new node as a non-voter.
-	configuration := NewConfiguration(r.log.NextIndex(), r.configuration.Members)
+	configuration := r.configuration.Clone()
 	configuration.Members[id] = address
 	configuration.IsVoter[id] = isVoter
+	configuration.Index = r.log.NextIndex()
 
 	// Create a log entry for the configuration and add it to the log.
-	data, err := r.transport.EncodeConfiguration(configuration)
+	data, err := r.transport.EncodeConfiguration(&configuration)
 	if err != nil {
 		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
 	}
-	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, data, ConfigurationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
 
-	r.configuration = configuration
-	r.followers[id] = new(follower)
+	r.configuration = &configuration
+	r.followers[id] = &follower{nextIndex: 1}
 	if err := r.transport.Connect(address); err != nil {
 		r.options.logger.Errorf(
 			"failed to connect to node: id = %s, address = %s, error = %v",
@@ -1525,11 +1535,16 @@ func (r *Raft) applyLoop() {
 			if entry.EntryType == ConfigurationEntry {
 				r.applyConfigurationEntry(entry)
 				r.lastApplied++
-				response := &result[Configuration]{success: *r.configuration}
+				response := newResult[Configuration](*r.configuration, nil)
 				select {
 				case r.configurationResponseCh <- response:
 				default:
 				}
+				r.options.logger.Debugf(
+					"applied configuration: logIndex = %d, logTerm = %d",
+					entry.Index,
+					entry.Term,
+				)
 				continue
 			}
 
@@ -1697,7 +1712,7 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.persistTermAndVote()
 	r.resetSnapshotFiles()
 
-	r.options.logger.Infof("entered the followers state: term = %d", r.currentTerm)
+	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 
 	// Cancel any pending operations.
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)

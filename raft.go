@@ -113,13 +113,14 @@ type Raft struct {
 	transport Transport
 
 	// The latest configuration of the cluster.
+	// This may or may not be committed.
 	configuration *Configuration
-
-	// A channel used to respond to membership change requests.
-	configurationResponseCh chan Result[Configuration]
 
 	// The most recently committed configuration of the cluster.
 	committedConfiguration *Configuration
+
+	// A channel used to respond to membership change requests.
+	configurationResponseCh chan Result[Configuration]
 
 	// Maps ID to the the state of the other nodes in the cluster.
 	// Maintained by the leader.
@@ -262,6 +263,7 @@ func NewRaft(
 	return raft, nil
 }
 
+// restore will recover any persisted state and initialize the node with it.
 func (r *Raft) restore() error {
 	// Prepare the log for operations.
 	if err := r.log.Open(); err != nil {
@@ -370,6 +372,8 @@ func (r *Raft) Restart() error {
 	return r.start(true)
 }
 
+// start will start this node if it is not already started. If restore is true,
+// then any persisted state will be restored.
 func (r *Raft) start(restore bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -600,6 +604,7 @@ func (r *Raft) SubmitOperation(
 	}
 }
 
+// submitReplicatedOperation submits a replicated operation to be applied to the state machine.
 func (r *Raft) submitReplicatedOperation(
 	operationBytes []byte,
 	timeout time.Duration,
@@ -634,6 +639,7 @@ func (r *Raft) submitReplicatedOperation(
 	return operationFuture
 }
 
+// submitReadOnlyOperation submits a read-only operation to be applied to the state machine.
 func (r *Raft) submitReadOnlyOperation(
 	operationBytes []byte,
 	readOnlyType OperationType,
@@ -807,6 +813,13 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			r.options.logger.Fatalf("failed to truncate log: %v", err)
 		}
 
+		// Fall back to the committed configuration if the current one is
+		// truncated. This is necessary since a partitioned leader may have
+		// recieved a membership change request.
+		if entry.Index > r.configuration.Index {
+			r.nextConfiguration(r.committedConfiguration)
+		}
+
 		toAppend = request.Entries[i:]
 		break
 	}
@@ -829,6 +842,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
+// sendAppendEntriesToPeers sends an AppendEntries RPC to all nodes.
 func (r *Raft) sendAppendEntriesToPeers() {
 	numResponses := 1
 	for id, address := range r.configuration.Members {
@@ -836,6 +850,8 @@ func (r *Raft) sendAppendEntriesToPeers() {
 	}
 }
 
+// sendAppendEntries sends an AppendEntries RPC to a node with the provided ID
+// and address.
 func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1020,6 +1036,8 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	return nil
 }
 
+// electionLoop is a long running loop that will kick off election when this node
+// has not beem contacted by the leader within the election timeout period.
 func (r *Raft) electionLoop() {
 	defer r.wg.Done()
 
@@ -1041,6 +1059,8 @@ func (r *Raft) electionLoop() {
 	}
 }
 
+// election will kick off an election if this node is a voting member and
+// it is not been contacted by the leader within the election timeout period.
 func (r *Raft) election() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1061,12 +1081,16 @@ func (r *Raft) election() {
 	r.sendRequestVoteToPeers(&votesReceived)
 }
 
+// sendRequestVoteToPeers sends a RequestVoteRPC to all nodes in the
+// cluster, excluding those that are non-voters.
 func (r *Raft) sendRequestVoteToPeers(votes *int) {
 	for id, address := range r.configuration.Members {
 		go r.sendRequestVote(id, address, votes)
 	}
 }
 
+// sendRequestVote sends a RequestVote RPC to the node with the provided
+// ID and address if it is a voting member.
 func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1288,6 +1312,7 @@ func (r *Raft) InstallSnapshot(
 	return nil
 }
 
+// takeSnapshot takes a snapshot of the state machine.
 func (r *Raft) takeSnapshot() {
 	// There is nothing new to snapshot.
 	if r.lastApplied <= r.lastIncludedIndex {
@@ -1356,6 +1381,7 @@ func (r *Raft) takeSnapshot() {
 	)
 }
 
+// sendInstallSnapshot sends a snapshot to the node with the provided ID and address.
 func (r *Raft) sendInstallSnapshot(id, address string) {
 	if r.state != Leader || r.lastIncludedIndex == 0 {
 		return
@@ -1432,6 +1458,8 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	follower.nextIndex = request.LastIncludedIndex + 1
 }
 
+// heartbeatLoop is a long running loop that periodically sends heartbeats to
+// followers if this node is the leader.
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
@@ -1454,6 +1482,7 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
+// commitLoop is a long running loop that updates the commit index of the leader.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1511,6 +1540,8 @@ func (r *Raft) commitLoop() {
 	}
 }
 
+// applyLoop is a long running loop that applies replicated operations to the state machine
+// and takes snapshots when necessary.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1595,45 +1626,17 @@ func (r *Raft) applyLoop() {
 	}
 }
 
+// applyConfigurationEntry applies a log entry that contains a configuration to this node.
 func (r *Raft) applyConfigurationEntry(entry *LogEntry) {
 	configuration, err := r.transport.DecodeConfiguration(entry.Data)
 	if err != nil {
 		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
 	}
-
-	// Disconnect any node being removed from the cluster.
-	for id, address := range r.configuration.Members {
-		if _, ok := configuration.Members[id]; !ok {
-			if err := r.transport.Close(address); err != nil {
-				r.options.logger.Errorf(
-					"failed to close connection to node: id = %s, address = %s, error = %v",
-					id,
-					address,
-					err,
-				)
-			}
-		}
-	}
-
-	// Connect any nodes being added to the cluster.
-	for id, address := range configuration.Members {
-		if _, ok := r.configuration.Members[id]; !ok {
-			if err := r.transport.Connect(address); err != nil {
-				r.options.logger.Errorf(
-					"failed to connect to peer: id = %s, address = %s, error = %v",
-					id,
-					address,
-					err,
-				)
-			}
-			r.followers[id] = new(follower)
-		}
-	}
-
+	r.nextConfiguration(&configuration)
 	r.committedConfiguration = &configuration
-	r.configuration = &configuration
 }
 
+// readOnlyLoop is a long running loop that applies read-only operations to the state machine.
 func (r *Raft) readOnlyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1677,6 +1680,7 @@ func (r *Raft) readOnlyLoop() {
 	}
 }
 
+// becomeCandidate transitions this node to the candidate state.
 func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
@@ -1684,6 +1688,7 @@ func (r *Raft) becomeCandidate() {
 	r.options.logger.Infof("entered the candidate state: term = %d", r.currentTerm)
 }
 
+// becomeLeader transitions this node to the leader state.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	r.resetSnapshotFiles()
@@ -1704,6 +1709,7 @@ func (r *Raft) becomeLeader() {
 	r.options.logger.Infof("entered the leader state: term = %d", r.currentTerm)
 }
 
+// becomeFollower transitions this node to the follower state.
 func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.state = Follower
 	r.currentTerm = term
@@ -1719,6 +1725,8 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 }
 
+// tryApplyReadOnlyOperations renews the lease and notifies the read-only
+// loop that it may be possible to apply some read-only operations.
 func (r *Raft) tryApplyReadOnlyOperations() {
 	r.operationManager.markAsVerified()
 	r.operationManager.leaderLease.renew()
@@ -1726,6 +1734,9 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 	r.readOnlyCond.Broadcast()
 }
 
+// resetSnapshotFiles closes or discards any open snapshot files on thos node.
+// If it is a snapshot file being written, the file is discarded. If it is a
+// snapshot file being read, it is closed.
 func (r *Raft) resetSnapshotFiles() {
 	for _, follower := range r.followers {
 		if follower.snapshot != nil {
@@ -1743,6 +1754,9 @@ func (r *Raft) resetSnapshotFiles() {
 	}
 }
 
+// hasQuorum returns true if the provided count makes constitutes
+// quorum for the cluster and false otherwise. Non-voting members
+// of the cluster are not considered for quorum.
 func (r *Raft) hasQuorum(count int) bool {
 	voters := 0
 	for _, isVoter := range r.configuration.IsVoter {
@@ -1753,8 +1767,46 @@ func (r *Raft) hasQuorum(count int) bool {
 	return count > voters/2
 }
 
+// persistTermAndVote writes the term and vote for this node to non-volatile storage.
 func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
 		r.options.logger.Fatalf("failed to persist term and vote: error = %v", err)
 	}
+}
+
+// nextConfiguration transitions this node to the provided configuration.
+// Any connections in the current configuration that are not in the next
+// configuration are closed. Any connections that are not in the current
+// current configuration but are in the next configuration are established.
+func (r *Raft) nextConfiguration(next *Configuration) {
+	// Close any connections with removed nodes.
+	for id, address := range r.configuration.Members {
+		if _, ok := next.Members[id]; !ok {
+			if err := r.transport.Close(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to close connection to node: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+		}
+	}
+
+	// Establish connection with any new nodes.
+	for id, address := range next.Members {
+		if _, ok := r.configuration.Members[id]; !ok {
+			if err := r.transport.Connect(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to connect to peer: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+			r.followers[id] = new(follower)
+		}
+	}
+
+	r.configuration = next
 }

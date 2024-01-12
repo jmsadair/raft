@@ -18,7 +18,7 @@ func TestNewRaft(t *testing.T) {
 	raft, err := NewRaft(id, address, fsm, tmpDir)
 	require.NoError(t, err)
 
-	require.Equal(t, uint64(1), raft.currentTerm)
+	require.Zero(t, raft.currentTerm)
 	require.Zero(t, raft.lastApplied)
 	require.Zero(t, raft.lastIncludedIndex)
 	require.Zero(t, raft.lastIncludedTerm)

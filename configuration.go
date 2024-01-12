@@ -30,13 +30,28 @@ type Configuration struct {
 func NewConfiguration(index uint64, members map[string]string) *Configuration {
 	configuration := &Configuration{
 		Index:   index,
+		Members: members,
 		IsVoter: make(map[string]bool, len(members)),
-		Members: make(map[string]string, len(members)),
 	}
-	for id, address := range members {
+	for id := range members {
 		configuration.IsVoter[id] = true
-		configuration.Members[id] = address
 	}
+	return configuration
+}
+
+// Clone creates a deep-copy of the configuration.
+func (c *Configuration) Clone() Configuration {
+	configuration := Configuration{
+		Index:   c.Index,
+		IsVoter: make(map[string]bool, len(c.Members)),
+		Members: make(map[string]string, len(c.Members)),
+	}
+
+	for id := range c.Members {
+		configuration.IsVoter[id] = c.IsVoter[id]
+		configuration.Members[id] = c.Members[id]
+	}
+
 	return configuration
 }
 

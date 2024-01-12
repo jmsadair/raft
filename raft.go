@@ -300,6 +300,7 @@ func (r *Raft) restore() error {
 			return fmt.Errorf("could not decode snapshot configuration: %w", err)
 		}
 		r.configuration = &configuration
+		r.committedConfiguration = &configuration
 		if err := file.Close(); err != nil {
 			return fmt.Errorf("could not close snapshot file: %w", err)
 		}

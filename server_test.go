@@ -575,6 +575,71 @@ func TestMultiPartition(t *testing.T) {
 	cluster.checkStateMachines(5, 3*time.Second)
 }
 
+// TestMultiPartition checks whether a cluster can still make
+// progress submitting multiple operations in the presence of
+// multiple partitions and members being added.
+func TestMultiPartitionAddServer(t *testing.T) {
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	// A go routine to crash random servers every so often.
+	done := int32(0)
+	wg := sync.WaitGroup{}
+	partitionRoutine := func() {
+		defer wg.Done()
+		for atomic.LoadInt32(&done) == 0 {
+			// Allow the cluster to make some progress with no failures.
+			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+
+			// Make a new partition.
+			cluster.createPartition()
+
+			// Allow the cluster to make progress with the partition.
+			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			time.Sleep(randomTime * time.Millisecond)
+
+			// Heal the partition.
+			cluster.reconnectAllServers()
+		}
+	}
+
+	addServerRoutine := func() {
+		defer wg.Done()
+
+		// Add two non-voting members.
+		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.addNonVoter()
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.addNonVoter()
+
+		// Promote the non-voting members to voting members.
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		cluster.promoteNonVoters()
+	}
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// Start partitioning
+	wg.Add(2)
+	go partitionRoutine()
+	go addServerRoutine()
+
+	// See if we can commit operations in the face of recurring partitions.
+	operations := makeOperations(1000)
+	for _, command := range operations {
+		cluster.submit(command, true, false, Replicated)
+	}
+
+	atomic.StoreInt32(&done, 1)
+	wg.Wait()
+
+	cluster.checkStateMachines(7, 3*time.Second)
+}
+
 // TestBasicCrash checks that a cluster can still make
 // progress after a single server crashes.
 func TestBasicCrash(t *testing.T) {
@@ -632,9 +697,9 @@ func TestCrashRejoin(t *testing.T) {
 }
 
 // TestMultiCrashAddServer checks if a cluster can still make
-// progress committing operations and handle new servers joining the
-// cluster in the face of multiple crashes. The added server itself
-// may be crashed as well.
+// progress committing operations and handle new member joining the
+// cluster in the face of multiple crashes. The added members may also
+// be crashed
 func TestMultiCrashAddServer(t *testing.T) {
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
@@ -677,6 +742,7 @@ func TestMultiCrashAddServer(t *testing.T) {
 
 		// Promote the non-voting members to voting members.
 		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
 		cluster.promoteNonVoters()
 	}
 

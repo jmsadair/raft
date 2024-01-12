@@ -6,7 +6,7 @@ import (
 )
 
 var ErrTimeout = errors.New(
-	"A timeout occured while waiting for the result - try submitting the operation again",
+	"a timeout occured while waiting for the result - try submitting the operation again",
 )
 
 // Response is the concrete result produced by a node after processing a client submitted operation.

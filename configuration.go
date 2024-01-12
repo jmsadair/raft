@@ -25,14 +25,19 @@ type Configuration struct {
 }
 
 // NewConfiguration creates a new configuration with the provided
-// members. By default, all members in the returned configuration
+// members and index. By default, all members in the returned configuration
 // will have voter status.
-func NewConfiguration(members map[string]string) *Configuration {
-	isVoter := make(map[string]bool, len(members))
-	for id := range members {
-		isVoter[id] = true
+func NewConfiguration(index uint64, members map[string]string) *Configuration {
+	configuration := &Configuration{
+		Index:   index,
+		IsVoter: make(map[string]bool, len(members)),
+		Members: make(map[string]string, len(members)),
 	}
-	return &Configuration{Members: members, IsVoter: isVoter}
+	for id, address := range members {
+		configuration.IsVoter[id] = true
+		configuration.Members[id] = address
+	}
+	return configuration
 }
 
 func encodeConfiguration(configuration *Configuration) ([]byte, error) {

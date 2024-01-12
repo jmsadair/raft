@@ -12,50 +12,22 @@ import (
 	"github.com/jmsadair/raft/internal/util"
 )
 
+var (
+	// ErrNotLeader is returned when an operation or configuration change is
+	// submitted to a node that is not a leader.
+	ErrNotLeader = errors.New("this node is not the leader")
+
+	// ErrInvalidLease is returned when a lease-based read-only operation is
+	// rejected due to the leader's lease having expired.
+	ErrInvalidLease = errors.New("this node does not have a valid lease")
+
+	// ErrPendingConfiguration is returned when a membership change is requested and their
+	// is a pending membership change that has not yet been committed.
+	ErrPendingConfiguration = errors.New("only one membership change may be committed at a time")
+)
+
+// The default chunk size for InstallSnapshot RPCs.
 const snapshotChunkSize = 32 * 1024
-
-// NotLeaderError is an error returned when an operation is submitted to a
-// server, and it is not the leader. Only the leader may submit operations.
-type NotLeaderError struct {
-	// The ID of the server the operation was submitted to.
-	ServerID string
-
-	// The ID of the server that this server recognizes as the leader. Note that this may not always be accurate.
-	KnownLeader string
-}
-
-// Error formats and returns an error message indicating that the server with
-// the ID e.ServerID is not the leader, and the known leader is e.KnownLeader.
-func (e NotLeaderError) Error() string {
-	return fmt.Sprintf("server %s is not the leader: knownLeader = %s", e.ServerID, e.KnownLeader)
-}
-
-// InvalidLeaseError is returned when a lease-based read-only operation is
-// submitted but the lease expires or the server loses leadership before
-// it can be applied to the state machine.
-type InvalidLeaseError struct {
-	// The ID of the server that the operation was submitted to.
-	ServerID string
-}
-
-// Error formats and returns an error message indicating that the server with
-// the ID e.ServerID does not have a valid lease.
-func (e InvalidLeaseError) Error() string {
-	return fmt.Sprintf("server %s does not have a valid lease", e.ServerID)
-}
-
-// InvalidOperationTypeError is returned when an operation type is submitted that is
-// not supported.
-type InvalidOperationTypeError struct {
-	// The operation type that is invalid.
-	OperationType OperationType
-}
-
-// Error formats and returns an error message indicating that operation type
-// e.OperationType is not valid.
-func (e InvalidOperationTypeError) Error() string {
-	return fmt.Sprintf("operation type '%s' is not a supported operation type", e.OperationType)
-}
 
 // State represents the current state of a raft node.
 // A raft node may either be shutdown, the leader, or a followers.
@@ -142,6 +114,9 @@ type Raft struct {
 
 	// The latest configuration of the cluster.
 	configuration *Configuration
+
+	// A channel used to respond to membership change requests.
+	configurationResponseCh chan Result[Configuration]
 
 	// The most recently committed configuration of the cluster.
 	committedConfiguration *Configuration
@@ -301,7 +276,7 @@ func (r *Raft) restore() error {
 	if err != nil {
 		return fmt.Errorf("could not recover state from storage: %w", err)
 	}
-	r.currentTerm = currentTerm
+	r.currentTerm = util.Max(currentTerm, 1)
 	r.votedFor = votedFor
 
 	// Restore the state machine from the most recent snapshot if there was one.
@@ -364,7 +339,7 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 		return errors.New("node already has a configuration")
 	}
 
-	r.configuration = NewConfiguration(configuration)
+	r.configuration = NewConfiguration(r.log.NextIndex(), configuration)
 
 	// Append the configuration to the log.
 	data, err := r.transport.EncodeConfiguration(r.configuration)
@@ -513,6 +488,86 @@ func (r *Raft) Status() Status {
 	}
 }
 
+// AddServer adds a node with the provided ID and address to the cluster.
+// If voter is true, the node will be added as a voting member. Otherwise,
+// if voter is false, the node will be added as a non-voting member. It is
+// recommended that a node be added as a non-voter first so that it has
+// a chance to sync with the leader. Once the operation is successful, it can
+// be added as a voting member.
+func (r *Raft) AddServer(
+	id string,
+	address string,
+	isVoter bool,
+	timeout time.Duration,
+) Future[Configuration] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	configurationFuture := newFuture[Configuration](timeout)
+
+	// Only the leader can make membership changes.
+	if r.state != Leader {
+		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrNotLeader)
+		return configurationFuture
+	}
+
+	// The membership change that adds the provided node is still pending - return a new future for the response.
+	if _, ok := r.configuration.Members[id]; ok && r.commitIndex < r.configuration.Index {
+		r.configurationResponseCh = configurationFuture.responseCh
+		return configurationFuture
+	}
+
+	// The membership change is still pending - a different node cannot be added at this time.
+	if r.commitIndex < r.configuration.Index {
+		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrPendingConfiguration)
+		return configurationFuture
+	}
+
+	// The provided node is already a part of the cluster.
+	if memberAddress, ok := r.configuration.Members[id]; ok &&
+		r.configuration.IsVoter[id] == isVoter &&
+		memberAddress == address {
+		configurationFuture.responseCh <- newResult[Configuration](*r.configuration, nil)
+		return configurationFuture
+	}
+
+	// Create the configuration that includes the new node as a non-voter.
+	configuration := NewConfiguration(r.log.NextIndex(), r.configuration.Members)
+	configuration.Members[id] = address
+	configuration.IsVoter[id] = isVoter
+
+	// Create a log entry for the configuration and add it to the log.
+	data, err := r.transport.EncodeConfiguration(configuration)
+	if err != nil {
+		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
+	}
+	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+	}
+
+	r.configuration = configuration
+	r.followers[id] = new(follower)
+	if err := r.transport.Connect(address); err != nil {
+		r.options.logger.Errorf(
+			"failed to connect to node: id = %s, address = %s, error = %v",
+			id,
+			address,
+			err,
+		)
+	}
+
+	r.options.logger.Debugf(
+		"request to add node submitted: id = %s, address = %s, isVoter = %v, logIndex = %d",
+		id,
+		address,
+		isVoter,
+		configuration.Index,
+	)
+
+	return configurationFuture
+}
+
 // SubmitOperation accepts an operation from a client for replication and returns a future
 // for the response to the operation. Note that submitting an operation for replication does
 // not guarantee replication if there are failures. Once the operation has been applied to
@@ -529,9 +584,7 @@ func (r *Raft) SubmitOperation(
 		return r.submitReadOnlyOperation(operation, operationType, timeout)
 	default:
 		operationFuture := newFuture[OperationResponse](timeout)
-		response := &result[OperationResponse]{
-			err: InvalidOperationTypeError{OperationType: operationType},
-		}
+		response := newResult(OperationResponse{}, errors.New("operation type is not valid"))
 		operationFuture.responseCh <- response
 		return operationFuture
 	}
@@ -547,9 +600,7 @@ func (r *Raft) submitReplicatedOperation(
 	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		response := &result[OperationResponse]{
-			err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId},
-		}
+		response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
 		operationFuture.responseCh <- response
 		return operationFuture
 	}
@@ -584,9 +635,7 @@ func (r *Raft) submitReadOnlyOperation(
 	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		response := &result[OperationResponse]{
-			err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId},
-		}
+		response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
 		operationFuture.responseCh <- response
 		return operationFuture
 	}
@@ -650,7 +699,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// if the request is rejected due to having a non-matching previous log entry.
 	r.lastContact = time.Now()
 
-	// Update the ID of the server that this server recognizes as the leader.
+	// Update the ID of the node that this node recognizes as the leader.
 	r.leaderId = request.LeaderID
 
 	// If the request has a more up-to-date term, update current term and
@@ -785,7 +834,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 		return
 	}
 
-	// Handle the single server case.
+	// Handle the single node case.
 	if id == r.id {
 		if len(r.configuration.Members) == 1 {
 			if r.log.LastIndex() > r.commitIndex {
@@ -921,7 +970,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		response.Term = r.currentTerm
 	}
 
-	// Reject the request if this server has already voted.
+	// Reject the request if this node has already voted.
 	if r.votedFor != "" && r.votedFor != request.CandidateID {
 		r.options.logger.Debugf(
 			"RequestVote RPC rejected: reason = already voted, votedFor = %s",
@@ -966,7 +1015,7 @@ func (r *Raft) electionLoop() {
 
 	for {
 		// A random timeout between the specified election timeout (by default 200 ms) and twice the
-		// election timeout is chosen to sleep for in order to prevent multiple servers from becoming
+		// election timeout is chosen to sleep for in order to prevent multiple nodes from becoming
 		// candidates at the same time.
 		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
 		time.Sleep(timeout * time.Millisecond)
@@ -1015,10 +1064,15 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	// The candidate will vote for itself.
 	if id == r.id {
 		*votes++
-		// Handle the single server case.
+		// Handle the single node case.
 		if r.hasQuorum(*votes) {
 			r.becomeLeader()
 		}
+		return
+	}
+
+	// Do not send request to any non-voting members.
+	if !r.configuration.IsVoter[id] {
 		return
 	}
 
@@ -1034,7 +1088,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	r.mu.Lock()
 
 	// Ensure this response is not stale. It is possible that this
-	// server has started another election.
+	// node has started another election.
 	if err != nil || r.currentTerm != request.Term {
 		return
 	}
@@ -1371,7 +1425,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
-	// If this server is the leader, broadcast heartbeat messages to followers
+	// If this node is the leader, broadcast heartbeat messages to followers
 	// once every heartbeat interval.
 	for {
 		time.Sleep(r.options.heartbeatInterval)
@@ -1408,7 +1462,7 @@ func (r *Raft) commitLoop() {
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
 			// It is NOT safe for the leader to commit an entry with a term
 			// different from the current term. It is possible for a log entry
-			// to be agreed upon by the majority of servers in the cluster, but
+			// to be agreed upon by the majority of node in the cluster, but
 			// be overwritten by a future leader.
 			if entry, err := r.log.GetEntry(index); err != nil {
 				r.options.logger.Fatalf("failed to get  entry from log: error = %v", err)
@@ -1416,10 +1470,11 @@ func (r *Raft) commitLoop() {
 				continue
 			}
 
-			// Check whether the majority of servers in the cluster agree on the entry.
+			// Check whether the majority of nodes in the cluster agree on the entry.
 			// If they do, it is safe to commit.
 			matches := 1
 			for id, follower := range r.followers {
+				// Ignore this node and any nodes which are not voting members.
 				if id == r.id || !r.configuration.IsVoter[id] {
 					continue
 				}
@@ -1470,6 +1525,11 @@ func (r *Raft) applyLoop() {
 			if entry.EntryType == ConfigurationEntry {
 				r.applyConfigurationEntry(entry)
 				r.lastApplied++
+				response := &result[Configuration]{success: *r.configuration}
+				select {
+				case r.configurationResponseCh <- response:
+				default:
+				}
 				continue
 			}
 
@@ -1493,7 +1553,7 @@ func (r *Raft) applyLoop() {
 				ApplicationResponse: r.fsm.Apply(&operation),
 			}
 			if ok {
-				responseCh <- &result[OperationResponse]{success: response}
+				responseCh <- newResult[OperationResponse](response, nil)
 			}
 			r.options.logger.Debugf(
 				"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
@@ -1551,6 +1611,7 @@ func (r *Raft) applyConfigurationEntry(entry *LogEntry) {
 					err,
 				)
 			}
+			r.followers[id] = new(follower)
 		}
 	}
 
@@ -1577,7 +1638,7 @@ func (r *Raft) readOnlyLoop() {
 
 			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
-				responseCh <- &result[OperationResponse]{err: InvalidLeaseError{ServerID: r.id}}
+				responseCh <- newResult[OperationResponse](OperationResponse{}, ErrInvalidLease)
 				continue
 			}
 
@@ -1586,7 +1647,7 @@ func (r *Raft) readOnlyLoop() {
 				Operation:           *operation,
 				ApplicationResponse: r.fsm.Apply(operation),
 			}
-			responseCh <- &result[OperationResponse]{success: response}
+			responseCh <- newResult[OperationResponse](response, nil)
 			r.options.logger.Debugf(
 				"applied operation to state machine: readIndex = %d, type = %s",
 				operation.readIndex,

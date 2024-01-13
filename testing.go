@@ -252,59 +252,72 @@ func (tc *testCluster) stopCluster() {
 	for _, node := range tc.rafts {
 		node.Stop()
 	}
+	for _, node := range tc.rafts {
+		t := node.transport.(*transport)
+		if len(t.connections) != 0 {
+			tc.t.Fatalf(
+				"unclosed connections: id = %s, address = %s, connections = %v",
+				node.id,
+				node.address,
+				t.connections,
+			)
+		}
+	}
 }
 
 func (tc *testCluster) submit(
-	operation []byte,
 	retry bool,
 	expectFail bool,
 	operationType OperationType,
+	operations ...[]byte,
 ) {
 	// Time between submission attempts. If no leader was found, allow for
 	// an election to complete.
 	electionTimeout := 200 * time.Millisecond
 
-	// Attempt to submit the operation.
-	// Allow for a maximum of three seconds if retry is enabled.
-	index := 0
-	start := time.Now()
-	for time.Since(start).Seconds() < 3 {
-		tc.mu.Lock()
-		if index >= len(tc.rafts) && !retry {
-			tc.mu.Unlock()
-			break
-		}
-		index %= len(tc.rafts)
-		node := tc.rafts[index]
-		index++
-		tc.mu.Unlock()
-
-		// Submit the operation. This node might be the leader.
-		operationFuture := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
-		response := operationFuture.Await()
-		if err := response.Error(); err == nil {
-			if expectFail {
-				tc.t.Fatal("expected the operation to fail, but it was successful")
+	for _, operation := range operations {
+		// Attempt to submit the operation.
+		// Allow for a maximum of three seconds if retry is enabled.
+		index := 0
+		start := time.Now()
+		for time.Since(start).Seconds() < 3 {
+			tc.mu.Lock()
+			if index >= len(tc.rafts) && !retry {
+				tc.mu.Unlock()
+				break
 			}
-			result := response.Success()
-			if string(result.Operation.Bytes) != string(operation) {
-				tc.t.Fatal("operation response does not match submitted operation")
-			}
-			return
-		}
-
-		tc.mu.Lock()
-		if index < len(tc.rafts) {
+			index %= len(tc.rafts)
+			node := tc.rafts[index]
+			index++
 			tc.mu.Unlock()
-			continue
+
+			// Submit the operation. This node might be the leader.
+			operationFuture := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
+			response := operationFuture.Await()
+			if err := response.Error(); err == nil {
+				if expectFail {
+					tc.t.Fatal("expected the operation to fail, but it was successful")
+				}
+				result := response.Success()
+				if string(result.Operation.Bytes) != string(operation) {
+					tc.t.Fatal("operation response does not match submitted operation")
+				}
+				return
+			}
+
+			tc.mu.Lock()
+			if index < len(tc.rafts) {
+				tc.mu.Unlock()
+				continue
+			}
+			tc.mu.Unlock()
+
+			time.Sleep(electionTimeout)
 		}
-		tc.mu.Unlock()
 
-		time.Sleep(electionTimeout)
-	}
-
-	if !expectFail {
-		tc.t.Fatalf("cluster failed to apply operation: operation = %s", string(operation))
+		if !expectFail {
+			tc.t.Fatalf("cluster failed to apply operation: operation = %s", string(operation))
+		}
 	}
 }
 
@@ -434,11 +447,15 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 		}
 
 		if matches >= expectedMatches {
+			// Make sure operations are monotically increasing.
+			for _, operations := range appliedOperationsPerServer {
+				tc.checkMonotonicity(operations)
+			}
 			return
 		}
 	}
 
-	// Find where two logs differ.
+	// Find where two state machines differ.
 	for i := 0; i < len(appliedOperationsPerServer); i++ {
 		for j := 0; j < len(appliedOperationsPerServer); j++ {
 			applied1 := appliedOperationsPerServer[i]
@@ -446,30 +463,56 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 			if i == j {
 				continue
 			}
-			if reflect.DeepEqual(applied1, applied2) {
-				continue
-			}
-
-			for k := 0; k < util.Min(len(applied1), len(applied2)); k++ {
-				op1 := applied1[k]
-				op2 := applied2[k]
-				if reflect.DeepEqual(op1, op2) {
-					continue
-				}
-				tc.t.Fatalf(
-					"state machines do not match: id1 = %d, index1 = %d, term1 = %d, id2 = %d, index2 = %d, term2 = %d",
-					i,
-					op1.LogIndex,
-					op1.LogTerm,
-					j,
-					op2.LogIndex,
-					op2.LogTerm,
-				)
-			}
+			tc.compareOperations(i, applied1, j, applied2)
 		}
 	}
+}
 
-	tc.t.Fatalf("state machines do not match")
+func (tc *testCluster) checkMonotonicity(operations []Operation) {
+	lastIndex := uint64(0)
+	for _, operation := range operations {
+		if operation.LogIndex < lastIndex {
+			tc.t.Fatalf(
+				"operations are not monotonic - indices should never decrease: lastIndex = %d, index = %d",
+				lastIndex,
+				operation.LogIndex,
+			)
+		}
+	}
+}
+
+func (tc *testCluster) compareOperations(
+	node1 int,
+	operations1 []Operation,
+	node2 int,
+	operations2 []Operation,
+) {
+	if reflect.DeepEqual(operations1, operations2) {
+		return
+	}
+
+	for k := 0; k < util.Min(len(operations1), len(operations2)); k++ {
+		operation1 := operations1[k]
+		operation2 := operations2[k]
+		if reflect.DeepEqual(operation1, operation2) {
+			return
+		}
+		tc.t.Fatalf(
+			"state machines do not match: id1 = %d, index1 = %d, term1 = %d, id2 = %d, index2 = %d, term2 = %d",
+			node1,
+			operation1.LogIndex,
+			operation1.LogTerm,
+			node2,
+			operation2.LogIndex,
+			operation2.LogTerm,
+		)
+	}
+
+	tc.t.Fatalf(
+		"state machines do not match: one state machine has more operations than another: id1 = %d, id2 = %d",
+		node1,
+		node2,
+	)
 }
 
 func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
@@ -545,7 +588,8 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 }
 
 func (tc *testCluster) crashServer(node int) {
-	tc.disconnectServer(node)
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	tc.rafts[node].Stop()
 }
 
@@ -570,20 +614,6 @@ func (tc *testCluster) restartServer(node int) {
 	if err := raft.Start(); err != nil {
 		tc.t.Fatalf("failed to start node: error = %v", err)
 	}
-
-	address := tc.configuration.Members[id]
-	for i := 0; i < len(tc.rafts); i++ {
-		if err := tc.rafts[i].transport.Connect(address); err != nil {
-			tc.t.Fatalf(
-				"failed reconnecting node: id = %d, connectingTo = %d, error = %v",
-				i,
-				node,
-				err,
-			)
-		}
-	}
-
-	tc.disconnected[node] = false
 }
 
 func (tc *testCluster) createPartition() {
@@ -645,6 +675,10 @@ func (tc *testCluster) reconnectServer(node int) {
 	id := fmt.Sprint(node)
 
 	for i := 0; i < len(tc.rafts); i++ {
+		if i == node {
+			continue
+		}
+
 		address1 := tc.configuration.Members[id]
 		address2 := tc.configuration.Members[fmt.Sprint(i)]
 		if err := tc.rafts[i].transport.Connect(address1); err != nil {
@@ -674,6 +708,9 @@ func (tc *testCluster) reconnectAllServers() {
 
 	for i := 0; i < len(tc.rafts); i++ {
 		for j := 0; j < len(tc.rafts); j++ {
+			if i == j {
+				continue
+			}
 			address := tc.configuration.Members[fmt.Sprint(j)]
 			if err := tc.rafts[i].transport.Connect(address); err != nil {
 				tc.t.Fatalf(
@@ -698,6 +735,10 @@ func (tc *testCluster) disconnectServer(node int) {
 	id := fmt.Sprint(node)
 
 	for i := 0; i < len(tc.rafts); i++ {
+		if i == node {
+			continue
+		}
+
 		address1 := tc.configuration.Members[id]
 		address2 := tc.configuration.Members[fmt.Sprint(i)]
 		if err := tc.rafts[i].transport.Close(address1); err != nil {

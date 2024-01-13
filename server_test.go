@@ -244,9 +244,9 @@ func TestConcurrentSubmit(t *testing.T) {
 	cluster.checkStateMachines(5, 3*time.Second)
 }
 
-// TestAddServerSubmit checks that submitted operations are correctly
-// replicated to newly added members of the cluster.
-func TestAddServerSubmit(t *testing.T) {
+// TestSubmitMembership checks that submitted operations are correctly
+// replicated to new members of the cluster.
+func TestSubmitMembership(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -271,10 +271,10 @@ func TestAddServerSubmit(t *testing.T) {
 	cluster.checkStateMachines(4, 3*time.Second)
 }
 
-// TestAddServerSubmitFail checks that a cluster is unable to commit
+// TestSubmitFailMembership checks that a cluster is unable to commit
 // operations when a majority of its voting members are down. Non-voting
 // members should not affect quorum.
-func TestAddServerSubmitFail(t *testing.T) {
+func TestSubmitFailMembership(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -296,9 +296,9 @@ func TestAddServerSubmitFail(t *testing.T) {
 	cluster.submit(true, true, Replicated, operations...)
 }
 
-// TestAddServerSubmitConcurrent checks that concurrently submitted operations are correctly
-// replicated to newly added members of the cluster.
-func TestAddServerSubmitConcurrent(t *testing.T) {
+// TestSubmitConcurrentMembers checks that concurrently submitted operations are correctly
+// replicated to new memebers of the cluster.
+func TestSubmitConcurrentMembership(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -546,8 +546,8 @@ func TestMultiPartition(t *testing.T) {
 
 // TestMultiPartition checks whether a cluster can still make
 // progress submitting multiple operations in the presence of
-// multiple partitions and members being added.
-func TestMultiPartitionAddServer(t *testing.T) {
+// multiple partitions and changing membership.
+func TestMultiPartitionMembership(t *testing.T) {
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
@@ -654,11 +654,11 @@ func TestCrashRejoin(t *testing.T) {
 	cluster.checkStateMachines(5, 3*time.Second)
 }
 
-// TestMultiCrashAddServer checks if a cluster can still make
+// TestMultiCrashMembership checks if a cluster can still make
 // progress committing operations and handle new member joining the
 // cluster in the face of multiple crashes. The added members may also
 // be crashed
-func TestMultiCrashAddServer(t *testing.T) {
+func TestMultiCrashMembership(t *testing.T) {
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.

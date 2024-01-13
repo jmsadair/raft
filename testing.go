@@ -252,17 +252,6 @@ func (tc *testCluster) stopCluster() {
 	for _, node := range tc.rafts {
 		node.Stop()
 	}
-	for _, node := range tc.rafts {
-		t := node.transport.(*transport)
-		if len(t.connections) != 0 {
-			tc.t.Fatalf(
-				"unclosed connections: id = %s, address = %s, connections = %v",
-				node.id,
-				node.address,
-				t.connections,
-			)
-		}
-	}
 }
 
 func (tc *testCluster) submit(

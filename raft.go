@@ -255,7 +255,6 @@ func NewRaft(
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
 
-	// Restore any existing state from disk.
 	if err := raft.restore(); err != nil {
 		return nil, fmt.Errorf("could not restore node: %w", err)
 	}
@@ -265,7 +264,6 @@ func NewRaft(
 
 // restore will recover any persisted state and initialize the node with it.
 func (r *Raft) restore() error {
-	// Prepare the log for operations.
 	if err := r.log.Open(); err != nil {
 		return fmt.Errorf("could not open log: %w", err)
 	}
@@ -273,7 +271,7 @@ func (r *Raft) restore() error {
 		return fmt.Errorf("could not replay log: %w", err)
 	}
 
-	// Restore the current term and vote if they have been persisted.
+	// Restore the current term and vote.
 	currentTerm, votedFor, err := r.stateStorage.State()
 	if err != nil {
 		return fmt.Errorf("could not recover state from storage: %w", err)
@@ -281,7 +279,7 @@ func (r *Raft) restore() error {
 	r.currentTerm = currentTerm
 	r.votedFor = votedFor
 
-	// Restore the state machine from the most recent snapshot if there was one.
+	// Restore the state machine from the most recent snapshot.
 	file, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		return fmt.Errorf("could not get snapshot file: %w", err)
@@ -306,7 +304,7 @@ func (r *Raft) restore() error {
 		}
 	}
 
-	// Use the most recent configuration from the log if there is one.
+	// Use the most recent configuration from the log.
 	for index := r.log.LastIndex(); index > r.lastIncludedIndex; index-- {
 		entry, err := r.log.GetEntry(index)
 		if err != nil {
@@ -356,6 +354,8 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 		return fmt.Errorf("could not append configuration to log: %w", err)
 	}
 
+	r.options.logger.Infof("node bootstrapped: configuration = %s", r.configuration.String())
+
 	return nil
 }
 
@@ -390,10 +390,11 @@ func (r *Raft) start(restore bool) error {
 	}
 
 	if r.configuration == nil {
-		r.configuration = &Configuration{
-			Members: map[string]string{r.id: r.address},
-			IsVoter: map[string]bool{r.id: false},
-		}
+		r.resetConfiguration()
+		r.options.logger.Infof(
+			"node has no configuration, will start as non-voter: configuration = %s",
+			r.configuration.String(),
+		)
 	}
 
 	// Register the functions for handling RPCs.
@@ -467,14 +468,7 @@ func (r *Raft) Stop() {
 	r.mu.Lock()
 
 	// Close any connections to other nodes in the cluster and stop accepting RPCs.
-	for id, address := range r.configuration.Members {
-		if id == r.id {
-			continue
-		}
-		if err := r.transport.Close(address); err != nil {
-			r.options.logger.Errorf("failed to disconnect from node: error = %v", err)
-		}
-	}
+	r.transport.CloseAll()
 	r.transport.Shutdown()
 
 	if err := r.log.Close(); err != nil {
@@ -552,11 +546,8 @@ func (r *Raft) AddServer(
 	configuration.Index = r.log.NextIndex()
 
 	// Create a log entry for the configuration and add it to the log.
-	data, err := r.transport.EncodeConfiguration(&configuration)
-	if err != nil {
-		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
-	}
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, data, ConfigurationEntry)
+	data := r.encodeConfiguration(&configuration)
+	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
@@ -573,7 +564,7 @@ func (r *Raft) AddServer(
 	}
 
 	r.options.logger.Debugf(
-		"request to add node submitted: id = %s, address = %s, isVoter = %v, logIndex = %d",
+		"request to add node submitted: id = %s, address = %s, voter = %t, logIndex = %d",
 		id,
 		address,
 		isVoter,
@@ -830,13 +821,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	}
 
 	if request.LeaderCommit > r.commitIndex {
-		commitIndex := util.Min(request.LeaderCommit, r.log.LastIndex())
-		r.options.logger.Debugf(
-			"updating commit index: currentCommitIndex = %d, newCommitIndex = %d",
-			r.commitIndex,
-			commitIndex,
-		)
-		r.commitIndex = commitIndex
+		r.commitIndex = util.Min(request.LeaderCommit, r.log.LastIndex())
 		r.applyCond.Broadcast()
 	}
 
@@ -1304,6 +1289,11 @@ func (r *Raft) InstallSnapshot(
 	r.lastApplied = request.LastIncludedIndex
 	r.commitIndex = request.LastIncludedIndex
 
+	// Update the configuration.
+	configuration := r.decodeConfiguration(request.Configuration)
+	r.nextConfiguration(&configuration)
+	r.committedConfiguration = &configuration
+
 	r.options.logger.Infof(
 		"snapshot installation completed successfully: lastIndex = %d, lastTerm = %d",
 		request.LastIncludedIndex,
@@ -1313,7 +1303,9 @@ func (r *Raft) InstallSnapshot(
 	return nil
 }
 
-// takeSnapshot takes a snapshot of the state machine.
+// takeSnapshot takes a snapshot of the state machine. A snapshot will
+// only be taken if there is new state since the previous snapshot and there
+// is not a pending configuration change.
 func (r *Raft) takeSnapshot() {
 	// There is nothing new to snapshot.
 	if r.lastApplied <= r.lastIncludedIndex {
@@ -1337,10 +1329,7 @@ func (r *Raft) takeSnapshot() {
 	)
 
 	// Create a new snapshot file.
-	configurationData, err := r.transport.EncodeConfiguration(r.configuration)
-	if err != nil {
-		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
-	}
+	configurationData := r.encodeConfiguration(r.committedConfiguration)
 	snapshot, err := r.snapshotStorage.NewSnapshotFile(
 		lastAppliedEntry.Index,
 		lastAppliedEntry.Term,
@@ -1384,8 +1373,13 @@ func (r *Raft) takeSnapshot() {
 
 // sendInstallSnapshot sends a snapshot to the node with the provided ID and address.
 func (r *Raft) sendInstallSnapshot(id, address string) {
-	if r.state != Leader || r.lastIncludedIndex == 0 {
+	// Only the leader may send snapshots.
+	if r.state != Leader {
 		return
+	}
+
+	if r.lastIncludedIndex == 0 {
+		r.options.logger.Warn("cannot send snapshot to follower because one has not been taken")
 	}
 
 	follower := r.followers[id]
@@ -1418,8 +1412,10 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	var buf bytes.Buffer
 	n, err := io.Copy(&buf, follower.snapshot)
 	if err != nil {
+		if err := follower.snapshot.Close(); err != nil {
+			r.options.logger.Errorf("failed to close snapshot file: error = %v", err)
+		}
 		r.options.logger.Fatalf("failed to read snapshot file: error = %v", err)
-		follower.snapshot.Close()
 	}
 	request.Bytes = buf.Bytes()
 	request.Done = n < snapshotChunkSize
@@ -1483,7 +1479,8 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-// commitLoop is a long running loop that updates the commit index of the leader.
+// commitLoop is a long running loop that verifies quorum has been achieved
+// for log entries and updates the commit index of the leader.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1500,7 +1497,7 @@ func (r *Raft) commitLoop() {
 		committed := false
 
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
-			// It is NOT safe for the leader to commit an entry with a term
+			// It is not safe for the leader to commit an entry with a term
 			// different from the current term. It is possible for a log entry
 			// to be agreed upon by the majority of node in the cluster, but
 			// be overwritten by a future leader.
@@ -1524,11 +1521,6 @@ func (r *Raft) commitLoop() {
 			}
 
 			if r.hasQuorum(matches) {
-				r.options.logger.Debugf(
-					"leader updating commit index: currentCommitIndex = %d, newCommitIndex = %d",
-					r.commitIndex,
-					index,
-				)
 				r.commitIndex = index
 				committed = true
 			}
@@ -1568,15 +1560,10 @@ func (r *Raft) applyLoop() {
 				r.applyConfigurationEntry(entry)
 				r.lastApplied++
 				response := newResult[Configuration](*r.configuration, nil)
-				select {
-				case r.configurationResponseCh <- response:
-				default:
+				if r.configurationResponseCh != nil {
+					r.configurationResponseCh <- response
+					r.configurationResponseCh = nil
 				}
-				r.options.logger.Debugf(
-					"applied configuration: logIndex = %d, logTerm = %d",
-					entry.Index,
-					entry.Term,
-				)
 				continue
 			}
 
@@ -1591,7 +1578,6 @@ func (r *Raft) applyLoop() {
 				Bytes:         entry.Data,
 				OperationType: Replicated,
 			}
-
 			lastApplied := r.lastApplied
 
 			r.mu.Unlock()
@@ -1610,6 +1596,8 @@ func (r *Raft) applyLoop() {
 			)
 			r.mu.Lock()
 
+			// It's possible a snapshot was installed while the lock was released.
+			// It's not safe to increment the last applied index if it has changed.
 			if r.lastApplied != lastApplied {
 				continue
 			}
@@ -1627,12 +1615,9 @@ func (r *Raft) applyLoop() {
 	}
 }
 
-// applyConfigurationEntry applies a log entry that contains a configuration to this node.
+// applyConfigurationEntry applies a log entry containing a configuration to this node.
 func (r *Raft) applyConfigurationEntry(entry *LogEntry) {
-	configuration, err := r.transport.DecodeConfiguration(entry.Data)
-	if err != nil {
-		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
-	}
+	configuration := r.decodeConfiguration(entry.Data)
 	r.nextConfiguration(&configuration)
 	r.committedConfiguration = &configuration
 }
@@ -1654,7 +1639,6 @@ func (r *Raft) readOnlyLoop() {
 
 		appliableOperations := r.operationManager.appliableReadOnlyOperations(r.lastApplied)
 		for operation, responseCh := range appliableOperations {
-
 			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
 				responseCh <- newResult[OperationResponse](OperationResponse{}, ErrInvalidLease)
@@ -1692,19 +1676,19 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transitions this node to the leader state.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
-	r.resetSnapshotFiles()
+	r.configurationResponseCh = nil
+	r.operationManager = newOperationManager(r.options.leaseDuration)
 	for _, follower := range r.followers {
 		follower.nextIndex = r.log.LastIndex() + 1
 		follower.matchIndex = 0
 	}
+	r.resetSnapshotFiles()
 
-	r.operationManager = newOperationManager(r.options.leaseDuration)
-
+	// Append a new log entry for this term.
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatal("failed to append entry to log: error = %v", err)
 	}
-
 	r.sendAppendEntriesToPeers()
 
 	r.options.logger.Infof("entered the leader state: term = %d", r.currentTerm)
@@ -1716,14 +1700,15 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.currentTerm = term
 	r.leaderId = leaderID
 	r.votedFor = ""
+	r.configurationResponseCh = nil
 	r.persistTermAndVote()
 	r.resetSnapshotFiles()
-
-	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 
 	// Cancel any pending operations.
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
+
+	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 }
 
 // tryApplyReadOnlyOperations renews the lease and notifies the read-only
@@ -1735,9 +1720,8 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 	r.readOnlyCond.Broadcast()
 }
 
-// resetSnapshotFiles closes or discards any open snapshot files on thos node.
-// If it is a snapshot file being written, the file is discarded. If it is a
-// snapshot file being read, it is closed.
+// resetSnapshotFiles closes or discards any open snapshot files on this node.
+// If the file is being written, it is discarded. If it is being read, it is closed.
 func (r *Raft) resetSnapshotFiles() {
 	for _, follower := range r.followers {
 		if follower.snapshot != nil {
@@ -1775,11 +1759,19 @@ func (r *Raft) persistTermAndVote() {
 	}
 }
 
-// nextConfiguration transitions this node to the provided configuration.
-// Any connections in the current configuration that are not in the next
-// configuration are closed. Any connections that are not in the current
-// current configuration but are in the next configuration are established.
+// nextConfiguration transitions this node from its current configuration to
+// to the provided configuration. Any unused connections will be torn down
+// and any new connections will be estabslished. If this node is not a member
+// of the next configuration, it will transition to a configuration consisting
+// of only itself with non-voter status.
 func (r *Raft) nextConfiguration(next *Configuration) {
+	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
+
+	if _, ok := next.Members[r.id]; !ok {
+		r.resetConfiguration()
+		return
+	}
+
 	// Close any connections with removed nodes.
 	for id, address := range r.configuration.Members {
 		if _, ok := next.Members[id]; !ok {
@@ -1810,4 +1802,33 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 	}
 
 	r.configuration = next
+}
+
+// resetConfiguration sets the configuration for this node to one
+// that contains only itself as a non-voting member. This is useful
+// for when a node has been removed from the cluster.
+func (r *Raft) resetConfiguration() {
+	r.configuration = &Configuration{
+		Members: map[string]string{r.id: r.address},
+		IsVoter: map[string]bool{r.id: false},
+	}
+	r.transport.CloseAll()
+}
+
+// encodeConfiguration encodes the provided configuration.
+func (r *Raft) encodeConfiguration(configuration *Configuration) []byte {
+	data, err := r.transport.EncodeConfiguration(configuration)
+	if err != nil {
+		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
+	}
+	return data
+}
+
+// decodeConfiguration decodes the provided bytes into a configuration.
+func (r *Raft) decodeConfiguration(data []byte) Configuration {
+	configuration, err := r.transport.DecodeConfiguration(data)
+	if err != nil {
+		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
+	}
+	return configuration
 }

@@ -56,6 +56,9 @@ type Transport interface {
 	// Close tears down a connection with the provided address if there is one.
 	Close(address string) error
 
+	// CloseAll tears down all connections.
+	CloseAll()
+
 	// EncodeConfiguration accepts a configuration and encodes it such that it can be
 	// decoded by DecodeConfiguration.
 	EncodeConfiguration(configuration *Configuration) ([]byte, error)
@@ -266,9 +269,8 @@ func (t *transport) Connect(address string) error {
 	if err != nil {
 		return fmt.Errorf("could not estabslish connection: %w", err)
 	}
-	client := pb.NewRaftClient(conn)
 	t.connections[address] = conn
-	t.clients[address] = client
+	t.clients[address] = pb.NewRaftClient(conn)
 
 	return nil
 }
@@ -288,6 +290,17 @@ func (t *transport) Close(address string) error {
 	delete(t.clients, address)
 
 	return nil
+}
+
+func (t *transport) CloseAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for address, conn := range t.connections {
+		conn.Close()
+		delete(t.connections, address)
+		delete(t.clients, address)
+	}
 }
 
 // AppendEntries handles the AppendEntries gRPC request.

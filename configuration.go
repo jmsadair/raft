@@ -2,6 +2,7 @@ package raft
 
 import (
 	"fmt"
+	"strings"
 
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/protobuf/proto"
@@ -53,6 +54,22 @@ func (c *Configuration) Clone() Configuration {
 	}
 
 	return configuration
+}
+
+// String returns a string representation of the configuration.
+func (c *Configuration) String() string {
+	var builder strings.Builder
+
+	builder.WriteString(fmt.Sprintf("logIndex: %d members:", c.Index))
+	for nodeID, address := range c.Members {
+		if c.IsVoter[nodeID] {
+			builder.WriteString(fmt.Sprintf("(%s, %s, voter),", nodeID, address))
+		} else {
+			builder.WriteString(fmt.Sprintf("%s, %s, non-voter),", nodeID, address))
+		}
+	}
+
+	return fmt.Sprintf("{%s}", strings.TrimSuffix(builder.String(), ","))
 }
 
 func encodeConfiguration(configuration *Configuration) ([]byte, error) {

@@ -60,12 +60,12 @@ func (c *Configuration) Clone() Configuration {
 func (c *Configuration) String() string {
 	var builder strings.Builder
 
-	builder.WriteString(fmt.Sprintf("logIndex: %d members:", c.Index))
+	builder.WriteString(fmt.Sprintf("logIndex: %d members: ", c.Index))
 	for nodeID, address := range c.Members {
 		if c.IsVoter[nodeID] {
 			builder.WriteString(fmt.Sprintf("(%s, %s, voter),", nodeID, address))
 		} else {
-			builder.WriteString(fmt.Sprintf("%s, %s, non-voter),", nodeID, address))
+			builder.WriteString(fmt.Sprintf("(%s, %s, non-voter),", nodeID, address))
 		}
 	}
 

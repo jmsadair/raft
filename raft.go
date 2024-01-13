@@ -329,15 +329,21 @@ func (r *Raft) restore() error {
 // in the cluster including this one and all nodes must agree on
 // this configuration. This should only be called when starting a
 // cluster for the first time and there is no existing configuration.
-// All nodes in the configuration will have voter status. If you intend
-// to dynamically add this node to an existing cluster, you should not call
-// Bootstrap.
+// All nodes in the configuration will have voter status.
 func (r *Raft) Bootstrap(configuration map[string]string) error {
 	if address, ok := configuration[r.id]; !ok || r.address != address {
-		return errors.New("configuration must contain the ID and address of this node")
+		return errors.New("configuration must contain this node")
 	}
 	if r.configuration != nil {
-		return errors.New("node already has a configuration")
+		return fmt.Errorf(
+			"node already has an existing configuration: Bootstrap should only be called for a cluster starting for the first time: configuration = %s",
+			r.configuration.String(),
+		)
+	}
+	if r.log.LastIndex() > 0 {
+		return errors.New(
+			"node already has existing state: Bootstrap should only be called for a clustrer starting for the first time",
+		)
 	}
 
 	index := uint64(1)
@@ -367,8 +373,8 @@ func (r *Raft) Start() error {
 }
 
 // Restart starts a node that has been started and stopped before. The difference
-// between Restart and Start is that Restart restores the state of the node from disk
-// whereas Start does not.
+// between Restart and Start is that Restart restores the state of the node from
+// non-volatile whereas Start does not.
 func (r *Raft) Restart() error {
 	return r.start(true)
 }
@@ -475,13 +481,15 @@ func (r *Raft) Stop() {
 		r.options.logger.Errorf("failed to close log: %v", err)
 	}
 
+	// Close or diacrd of any snapshot files.
 	r.resetSnapshotFiles()
 
 	r.options.logger.Info("node stopped")
 }
 
 // Status returns the status of this node. The status includes
-// the ID, address, term, commit index, last applied index, and state.
+// the ID, address, term, commit index, last applied index, and
+// state of this node.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -494,6 +502,17 @@ func (r *Raft) Status() Status {
 		LastApplied: r.lastApplied,
 		State:       r.state,
 	}
+}
+
+// Configuration returns the most current configuration of this node.
+// This configuration may or may not have been committed yet.
+func (r *Raft) Configuration() Configuration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.configuration == nil {
+		return Configuration{}
+	}
+	return r.configuration.Clone()
 }
 
 // AddServer adds a node with the provided ID and address to the cluster.
@@ -1380,6 +1399,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 
 	if r.lastIncludedIndex == 0 {
 		r.options.logger.Warn("cannot send snapshot to follower because one has not been taken")
+		return
 	}
 
 	follower := r.followers[id]
@@ -1767,8 +1787,15 @@ func (r *Raft) persistTermAndVote() {
 func (r *Raft) nextConfiguration(next *Configuration) {
 	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
+	// The configuration does not contain this node.
 	if _, ok := next.Members[r.id]; !ok {
 		r.resetConfiguration()
+		return
+	}
+
+	// The leader already updates the configuration when it recieves the request, unless
+	// it is removing itself.
+	if r.state == Leader {
 		return
 	}
 
@@ -1783,6 +1810,7 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 					err,
 				)
 			}
+			delete(r.followers, id)
 		}
 	}
 
@@ -1812,6 +1840,13 @@ func (r *Raft) resetConfiguration() {
 		Members: map[string]string{r.id: r.address},
 		IsVoter: map[string]bool{r.id: false},
 	}
+
+	for id := range r.followers {
+		if id != r.id {
+			delete(r.followers, id)
+		}
+	}
+
 	r.transport.CloseAll()
 }
 

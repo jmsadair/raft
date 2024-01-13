@@ -447,11 +447,11 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Dura
 	// Find where two state machines differ.
 	for i := 0; i < len(appliedOperationsPerServer); i++ {
 		for j := 0; j < len(appliedOperationsPerServer); j++ {
-			applied1 := appliedOperationsPerServer[i]
-			applied2 := appliedOperationsPerServer[j]
 			if i == j {
 				continue
 			}
+			applied1 := appliedOperationsPerServer[i]
+			applied2 := appliedOperationsPerServer[j]
 			tc.compareOperations(i, applied1, j, applied2)
 		}
 	}
@@ -467,6 +467,7 @@ func (tc *testCluster) checkMonotonicity(operations []Operation) {
 				operation.LogIndex,
 			)
 		}
+		lastIndex = operation.LogIndex
 	}
 }
 
@@ -480,11 +481,11 @@ func (tc *testCluster) compareOperations(
 		return
 	}
 
-	for k := 0; k < util.Min(len(operations1), len(operations2)); k++ {
-		operation1 := operations1[k]
-		operation2 := operations2[k]
+	for i := 0; i < util.Min(len(operations1), len(operations2)); i++ {
+		operation1 := operations1[i]
+		operation2 := operations2[i]
 		if reflect.DeepEqual(operation1, operation2) {
-			return
+			continue
 		}
 		tc.t.Fatalf(
 			"state machines do not match: id1 = %d, index1 = %d, term1 = %d, id2 = %d, index2 = %d, term2 = %d",

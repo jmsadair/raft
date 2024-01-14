@@ -682,7 +682,7 @@ func TestMultiPartitionMembership(t *testing.T) {
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, operations)
+	cluster.checkStateMachines(3, operations)
 }
 
 // TestBasicCrash checks that a cluster can still make

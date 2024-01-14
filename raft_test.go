@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TODO: Fix tests for intall snapshot RPC.
+
 // TestNewRaft checks that a newly created raft with no provided options does not have any persisted state and
 // has the default options.
 func TestNewRaft(t *testing.T) {
@@ -395,10 +397,14 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 	raft.currentTerm = 1
 	raft.votedFor = "leader1"
 	raft.state = Follower
+	raft.configuration = &Configuration{}
 
 	data, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
 	)
+	require.NoError(t, err)
+
+	configurationData, err := raft.transport.EncodeConfiguration(&Configuration{})
 	require.NoError(t, err)
 
 	chunk1 := data[:len(data)/2]
@@ -408,6 +414,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
 		Bytes:             chunk1,
+		Configuration:     configurationData,
 		Offset:            0,
 		Done:              false,
 	}
@@ -428,6 +435,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
 		Bytes:             chunk2,
+		Configuration:     configurationData,
 		Offset:            int64(len(chunk1)),
 		Done:              true,
 	}
@@ -455,10 +463,14 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 
 	raft.currentTerm = 1
 	raft.state = Leader
+	raft.configuration = &Configuration{}
 
 	data, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
 	)
+	require.NoError(t, err)
+
+	configurationData, err := raft.transport.EncodeConfiguration(&Configuration{})
 	require.NoError(t, err)
 
 	request := &InstallSnapshotRequest{
@@ -467,6 +479,7 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
 		Bytes:             data,
+		Configuration:     configurationData,
 		Offset:            int64(0),
 		Done:              true,
 	}
@@ -491,10 +504,14 @@ func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	raft.currentTerm = 2
 	raft.votedFor = "leader1"
 	raft.state = Follower
+	raft.configuration = &Configuration{}
 
 	data, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
 	)
+	require.NoError(t, err)
+
+	configurationData, err := raft.transport.EncodeConfiguration(&Configuration{})
 	require.NoError(t, err)
 
 	request := &InstallSnapshotRequest{
@@ -503,6 +520,7 @@ func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
 		Bytes:             data,
+		Configuration:     configurationData,
 		Offset:            int64(0),
 		Done:              true,
 	}

@@ -798,7 +798,7 @@ func TestMultiCrashMembership(t *testing.T) {
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(7, operations)
+	cluster.checkStateMachines(3, operations)
 }
 
 // TestMultiCrash checks if a cluster can still make

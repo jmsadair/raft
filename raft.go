@@ -913,8 +913,10 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 		return
 	}
 
-	// It's possible this node was removed from the cluster or its address was changed.
-	if r.configuration.Members[id] != address {
+	// It's possible that this node was removed from the cluster while the lock
+	// was released.
+	follower, ok := r.followers[id]
+	if !ok {
 		return
 	}
 
@@ -928,8 +930,6 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 		}
 		return
 	}
-
-	follower := r.followers[id]
 
 	// Send a snapshot instead if the follower log no longer contains the previous log entry.
 	if follower.nextIndex <= r.lastIncludedIndex {
@@ -975,18 +975,19 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	response, err := r.transport.SendAppendEntries(address, request)
 	r.mu.Lock()
 
-	if err != nil || r.state != Leader {
+	// Quit if RPC failed, leadership was lost, or the node was removed from the cluster.
+	if _, ok := r.followers[id]; !ok || err != nil || r.state != Leader {
 		return
 	}
 
-	// Become a followers if a followers has a more up-to-date term.
+	// Become a follower if a follower has a more up-to-date term.
 	if response.Term > r.currentTerm {
 		r.becomeFollower(id, response.Term)
 		return
 	}
 
-	// Renew the lease if the majority of followers have responded.
-	// Update any pending read-only operations to indicate that the quorum was just verified.
+	// Recieved ack from majority of cluster - this node is a legitimate leader.
+	// Try to apply pending read-only operations.
 	if numResponses != nil {
 		*numResponses += 1
 		if r.hasQuorum(*numResponses) {
@@ -1338,7 +1339,7 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	// Discard the entire log and restore the state machine with the snapshot.
+	// Restore the state machine with the snapshot.
 	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
@@ -1356,6 +1357,10 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	r.mu.Lock()
+	r.lastApplied = request.LastIncludedIndex
+	r.commitIndex = request.LastIncludedIndex
+
+	// Discard the entire log.
 	r.options.logger.Warnf(
 		"discarding log: lastIndex = %d, lastTerm = %d",
 		request.LastIncludedIndex,
@@ -1364,8 +1369,6 @@ func (r *Raft) InstallSnapshot(
 	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
 		r.options.logger.Fatalf("failed to discard log entries: error = %v", err)
 	}
-	r.lastApplied = request.LastIncludedIndex
-	r.commitIndex = request.LastIncludedIndex
 
 	// Update the configuration.
 	configuration := r.decodeConfiguration(request.Configuration)

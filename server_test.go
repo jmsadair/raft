@@ -776,6 +776,7 @@ func TestMultiCrashMembership(t *testing.T) {
 			id, address := cluster.unusedIDandAddress()
 			cluster.addServer(id, address, false)
 			randomTime = util.RandomTimeout(100*time.Millisecond, 200*time.Millisecond)
+			time.Sleep(randomTime)
 			cluster.addServer(id, address, true)
 		}
 

@@ -1642,9 +1642,9 @@ func (r *Raft) applyLoop() {
 				r.applyConfigurationEntry(entry)
 				r.lastApplied++
 				response := newResult[Configuration](*r.configuration, nil)
-				if r.configurationResponseCh != nil {
-					r.configurationResponseCh <- response
-					r.configurationResponseCh = nil
+				select {
+				case r.configurationResponseCh <- response:
+				default:
 				}
 				continue
 			}
@@ -1758,7 +1758,6 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transitions this node to the leader state.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
-	r.configurationResponseCh = nil
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 	for _, follower := range r.followers {
 		follower.nextIndex = r.log.LastIndex() + 1
@@ -1782,7 +1781,6 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.currentTerm = term
 	r.leaderId = leaderID
 	r.votedFor = ""
-	r.configurationResponseCh = nil
 	r.persistTermAndVote()
 	r.resetSnapshotFiles()
 

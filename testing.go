@@ -261,6 +261,9 @@ func (tc *testCluster) startCluster() {
 }
 
 func (tc *testCluster) stopCluster() {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
 	for _, node := range tc.nodes {
 		node.Stop()
 	}

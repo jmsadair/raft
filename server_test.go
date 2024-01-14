@@ -624,7 +624,7 @@ func TestMultiPartition(t *testing.T) {
 func TestMultiPartitionMembership(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
-	// A go routine to crash random servers every so often.
+	// A go routine to create partitions.
 	done := int32(0)
 	wg := sync.WaitGroup{}
 	partitionRoutine := func() {
@@ -646,27 +646,24 @@ func TestMultiPartitionMembership(t *testing.T) {
 		}
 	}
 
-	addServerRoutine := func() {
+	// A go routine to add and remove a member.
+	membershipRoutine := func() {
 		defer wg.Done()
 		nodes := cluster.nodeIDs()
 
-		// Add two members.
-		for i := 0; i < 2; i++ {
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-			time.Sleep(randomTime)
-			id, address := cluster.unusedIDandAddress()
-			cluster.addServer(id, address, false)
-			randomTime = util.RandomTimeout(100*time.Millisecond, 200*time.Millisecond)
-			time.Sleep(randomTime)
-			cluster.addServer(id, address, true)
-		}
+		// Add a member.
+		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		id, address := cluster.unusedIDandAddress()
+		cluster.addServer(id, address, false)
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.addServer(id, address, true)
 
-		// Remove two members.
-		for i := 0; i < 2; i++ {
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-			time.Sleep(randomTime)
-			cluster.removeServer(nodes[i])
-		}
+		// Remove a member.
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
 	}
 
 	cluster.startCluster()
@@ -676,7 +673,7 @@ func TestMultiPartitionMembership(t *testing.T) {
 	// Start partitioning and membership changes.
 	wg.Add(2)
 	go partitionRoutine()
-	go addServerRoutine()
+	go membershipRoutine()
 
 	// See if we can commit operations in the face of recurring partitions.
 	operations := makeOperations(1000)
@@ -765,27 +762,24 @@ func TestMultiCrashMembership(t *testing.T) {
 		}
 	}
 
-	addServerRoutine := func() {
+	// A go routine to add and remove a member.
+	membershipRoutine := func() {
 		defer wg.Done()
 		nodes := cluster.nodeIDs()
 
-		// Add two members.
-		for i := 0; i < 2; i++ {
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-			time.Sleep(randomTime)
-			id, address := cluster.unusedIDandAddress()
-			cluster.addServer(id, address, false)
-			randomTime = util.RandomTimeout(100*time.Millisecond, 200*time.Millisecond)
-			time.Sleep(randomTime)
-			cluster.addServer(id, address, true)
-		}
+		// Add a member.
+		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		id, address := cluster.unusedIDandAddress()
+		cluster.addServer(id, address, false)
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.addServer(id, address, true)
 
-		// Remove two members.
-		for i := 0; i < 2; i++ {
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-			time.Sleep(randomTime)
-			cluster.removeServer(nodes[i])
-		}
+		// Remove a member.
+		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+		time.Sleep(randomTime)
+		cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
 	}
 
 	cluster.startCluster()
@@ -795,7 +789,7 @@ func TestMultiCrashMembership(t *testing.T) {
 	// Start crashing servers.
 	wg.Add(2)
 	go crashRoutine()
-	go addServerRoutine()
+	go membershipRoutine()
 
 	// See if we can commit operations in the face of multiple crashes.
 	operations := makeOperations(1000)

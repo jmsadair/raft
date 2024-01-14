@@ -396,11 +396,8 @@ func (r *Raft) start(restore bool) error {
 	}
 
 	if r.configuration == nil {
-		r.resetConfiguration()
-		r.options.logger.Infof(
-			"node has no configuration, will start as non-voter: configuration = %s",
-			r.configuration.String(),
-		)
+		r.configuration = &Configuration{}
+		r.options.logger.Infof("node has no configuration, will start as non-voter")
 	}
 
 	// Register the functions for handling RPCs.
@@ -481,7 +478,7 @@ func (r *Raft) Stop() {
 		r.options.logger.Errorf("failed to close log: %v", err)
 	}
 
-	// Close or diacrd of any snapshot files.
+	// Close or discard of any snapshot files.
 	r.resetSnapshotFiles()
 
 	r.options.logger.Info("node stopped")
@@ -562,14 +559,9 @@ func (r *Raft) AddServer(
 	configuration := r.configuration.Clone()
 	configuration.Members[id] = address
 	configuration.IsVoter[id] = isVoter
-	configuration.Index = r.log.NextIndex()
 
-	// Create a log entry for the configuration and add it to the log.
-	data := r.encodeConfiguration(&configuration)
-	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
-	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
-	}
+	// Add the configuration to the log.
+	r.appendConfiguration(&configuration)
 
 	r.configuration = &configuration
 	r.followers[id] = &follower{nextIndex: 1}
@@ -582,11 +574,66 @@ func (r *Raft) AddServer(
 		)
 	}
 
+	r.sendAppendEntriesToPeers()
+
 	r.options.logger.Debugf(
 		"request to add node submitted: id = %s, address = %s, voter = %t, logIndex = %d",
 		id,
 		address,
 		isVoter,
+		configuration.Index,
+	)
+
+	return configurationFuture
+}
+
+// RemoveServer will remove the node with the provided ID from the cluster.
+// Once the node is removed, it can safely be shutdown.
+func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configuration] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	configurationFuture := newFuture[Configuration](timeout)
+
+	// Only the leader can make membership changes.
+	if r.state != Leader {
+		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrNotLeader)
+		return configurationFuture
+	}
+
+	// The membership change that removes the node is still pending - return a new future for the response.
+	// Note that if the node being removed is the leader, it will remain in the configurtion until applied.
+	if _, ok := r.configuration.Members[id]; (!ok || id == r.id) &&
+		r.commitIndex < r.configuration.Index {
+		r.configurationResponseCh = configurationFuture.responseCh
+		return configurationFuture
+	}
+
+	// The membership change is still pending - a different node cannot be removed at this time.
+	if r.commitIndex < r.configuration.Index {
+		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrPendingConfiguration)
+		return configurationFuture
+	}
+
+	// The provided node is already removed from the cluster.
+	if _, ok := r.configuration.Members[id]; !ok {
+		configurationFuture.responseCh <- newResult[Configuration](*r.configuration, nil)
+		return configurationFuture
+	}
+
+	// Create the configuration without the node.
+	configuration := r.configuration.Clone()
+	delete(configuration.Members, id)
+	delete(configuration.IsVoter, id)
+
+	// Add the configuration to the log.
+	r.appendConfiguration(&configuration)
+
+	r.sendAppendEntriesToPeers()
+
+	r.options.logger.Debugf(
+		"request to remove node submitted: id = %s, logIndex = %d",
+		id,
 		configuration.Index,
 	)
 
@@ -861,7 +908,13 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Only leader may send AppendEntries RPCs.
 	if r.state != Leader {
+		return
+	}
+
+	// It's possible this node was removed from the cluster or its address was changed.
+	if r.configuration.Members[id] != address {
 		return
 	}
 
@@ -984,6 +1037,12 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	response.Term = r.currentTerm
 	response.VoteGranted = false
+
+	// Unless this node is a leader that needs to step down, ignore any requests for
+	// a vote if this node has heard from the leader within an election timeout.
+	if r.state != Leader && time.Since(r.lastContact) < r.options.electionTimeout {
+		return nil
+	}
 
 	// Reject the request if the term is out-of-date.
 	if request.Term < r.currentTerm {
@@ -1705,7 +1764,7 @@ func (r *Raft) becomeLeader() {
 	r.resetSnapshotFiles()
 
 	// Append a new log entry for this term.
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, []byte{}, NoOpEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatal("failed to append entry to log: error = %v", err)
 	}
@@ -1787,21 +1846,19 @@ func (r *Raft) persistTermAndVote() {
 func (r *Raft) nextConfiguration(next *Configuration) {
 	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
-	// The configuration does not contain this node.
+	// Step down if this node is being removed.
 	if _, ok := next.Members[r.id]; !ok {
-		r.resetConfiguration()
-		return
-	}
-
-	// The leader already updates the configuration when it recieves the request, unless
-	// it is removing itself.
-	if r.state == Leader {
-		return
+		r.resetSnapshotFiles()
+		r.state = Follower
 	}
 
 	// Close any connections with removed nodes.
 	for id, address := range r.configuration.Members {
 		if _, ok := next.Members[id]; !ok {
+			delete(r.followers, id)
+			if id == r.id {
+				continue
+			}
 			if err := r.transport.Close(address); err != nil {
 				r.options.logger.Errorf(
 					"failed to close connection to node: id = %s, address = %s, error = %v",
@@ -1810,13 +1867,16 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 					err,
 				)
 			}
-			delete(r.followers, id)
 		}
 	}
 
 	// Establish connection with any new nodes.
 	for id, address := range next.Members {
 		if _, ok := r.configuration.Members[id]; !ok {
+			r.followers[id] = new(follower)
+			if id == r.id {
+				continue
+			}
 			if err := r.transport.Connect(address); err != nil {
 				r.options.logger.Errorf(
 					"failed to connect to peer: id = %s, address = %s, error = %v",
@@ -1825,29 +1885,10 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 					err,
 				)
 			}
-			r.followers[id] = new(follower)
 		}
 	}
 
 	r.configuration = next
-}
-
-// resetConfiguration sets the configuration for this node to one
-// that contains only itself as a non-voting member. This is useful
-// for when a node has been removed from the cluster.
-func (r *Raft) resetConfiguration() {
-	r.configuration = &Configuration{
-		Members: map[string]string{r.id: r.address},
-		IsVoter: map[string]bool{r.id: false},
-	}
-
-	for id := range r.followers {
-		if id != r.id {
-			delete(r.followers, id)
-		}
-	}
-
-	r.transport.CloseAll()
 }
 
 // encodeConfiguration encodes the provided configuration.
@@ -1866,4 +1907,15 @@ func (r *Raft) decodeConfiguration(data []byte) Configuration {
 		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
 	}
 	return configuration
+}
+
+// appendConfiguration sets the log index associated with the
+// configuration and appends it to the log.
+func (r *Raft) appendConfiguration(configuration *Configuration) {
+	configuration.Index = r.log.NextIndex()
+	data := r.encodeConfiguration(configuration)
+	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+	}
 }

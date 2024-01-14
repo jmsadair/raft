@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +13,23 @@ import (
 	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	// Max amount of time to elect a leader in seconds.
+	maxElectionTime = 5
+
+	// Max amount of time for a configuration change to complete in seconds.
+	maxMembershipChangeTime = 3
+
+	// Max amount of time for an operation to be applied in seconds.
+	maxSubmissionTime = 3
+
+	// Max amount of time for state machines to match in seconds.
+	maxMatchTime = 3
+
+	// Default timeout for futures.
+	futureTimeout = 200 * time.Millisecond
 )
 
 func validateLogEntry(
@@ -178,23 +194,20 @@ type testCluster struct {
 	// The testing instance associated with the cluster.
 	t *testing.T
 
-	// The raft instances that make up the cluster.
-	rafts []*Raft
+	// The nodes that make up the cluster.
+	nodes map[string]*Raft
 
 	// The ID, address, and voting status of all cluster members.
 	configuration Configuration
 
-	// The directories containing the persisted state for each
-	// node, where dirs[i] is the directory for rafts[i].
-	dirs []string
+	// The directories containing the persisted state for each node.
+	dirs map[string]string
 
-	// The nodes which are disconnected, where disconnected[i] being
-	// true indicates rafts[i] is disconnected.
-	disconnected []bool
+	// The nodes which are disconnected.
+	disconnected map[string]bool
 
-	// The state machine associated with each node, where fsm[i]
-	// corresponds to the state machine for rafts[i].
-	fsm []*stateMachineMock
+	// The state machine associated with each node.
+	stateMachines map[string]*stateMachineMock
 
 	// Indicates whether auto snapshotting will be used.
 	snapshotting bool
@@ -202,35 +215,34 @@ type testCluster struct {
 	// The maximum number of log entries per snapshot if snapshotting is enabled.
 	snapshotSize int
 
-	mu sync.Mutex
+	mu sync.RWMutex
 }
 
 func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
-	rafts := make([]*Raft, numServers)
-	dirs := make([]string, numServers)
-	fsm := make([]*stateMachineMock, numServers)
-	disconnected := make([]bool, numServers)
+	nodes := make(map[string]*Raft, numServers)
+	dirs := make(map[string]string, numServers)
+	stateMachines := make(map[string]*stateMachineMock, numServers)
+	disconnected := make(map[string]bool)
 	configuration := makeClusterConfiguration(numServers)
 
-	// Create nodes.
-	for i := 0; i < numServers; i++ {
-		id := fmt.Sprint(i)
+	// Create the nodes.
+	for id, address := range configuration.Members {
 		tmpDir := t.TempDir()
-		raft, err := makeRaft(id, configuration.Members[id], tmpDir, snapshotting, snapshotSize)
+		node, err := makeRaft(id, address, tmpDir, snapshotting, snapshotSize)
 		if err != nil {
 			t.Fatalf("failed to create raft instance: error = %v", err)
 		}
-		fsm[i] = raft.fsm.(*stateMachineMock)
-		dirs[i] = tmpDir
-		rafts[i] = raft
+		stateMachines[id] = node.fsm.(*stateMachineMock)
+		dirs[id] = tmpDir
+		nodes[id] = node
 	}
 
 	return &testCluster{
 		t:             t,
-		rafts:         rafts,
+		nodes:         nodes,
 		disconnected:  disconnected,
 		configuration: configuration,
-		fsm:           fsm,
+		stateMachines: stateMachines,
 		dirs:          dirs,
 		snapshotting:  snapshotting,
 		snapshotSize:  snapshotSize,
@@ -238,7 +250,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 }
 
 func (tc *testCluster) startCluster() {
-	for _, node := range tc.rafts {
+	for _, node := range tc.nodes {
 		if err := node.Bootstrap(tc.configuration.Members); err != nil {
 			tc.t.Fatalf("failed to bootstrap node: error = %v", err)
 		}
@@ -249,220 +261,262 @@ func (tc *testCluster) startCluster() {
 }
 
 func (tc *testCluster) stopCluster() {
-	for _, node := range tc.rafts {
+	for _, node := range tc.nodes {
 		node.Stop()
 	}
 }
 
 func (tc *testCluster) submit(
-	retry bool,
 	expectFail bool,
 	operationType OperationType,
 	operations ...[]byte,
 ) {
-	// Time between submission attempts. If no leader was found, allow for
-	// an election to complete.
-	electionTimeout := 200 * time.Millisecond
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	for _, operation := range operations {
-		// Attempt to submit the operation.
-		// Allow for a maximum of three seconds if retry is enabled.
-		index := 0
+
+		// Attempt to submit the operations.
 		start := time.Now()
-		for time.Since(start).Seconds() < 3 {
-			tc.mu.Lock()
-			if index >= len(tc.rafts) && !retry {
-				tc.mu.Unlock()
+		success := false
+		for time.Since(start).Seconds() < maxSubmissionTime {
+			// Try to submit to this node. It might be the leader.
+			for _, node := range tc.nodes {
+				operationFuture := node.SubmitOperation(operation, operationType, futureTimeout)
+				response := operationFuture.Await()
+				if err := response.Error(); err == nil {
+					if expectFail {
+						tc.t.Fatal("expected the operation to fail, but it was successful")
+					}
+					result := response.Success()
+					if string(result.Operation.Bytes) != string(operation) {
+						tc.t.Fatal("operation response does not match submitted operation")
+					}
+					success = true
+				}
+			}
+
+			if success {
 				break
 			}
-			index %= len(tc.rafts)
-			node := tc.rafts[index]
-			index++
-			tc.mu.Unlock()
 
-			// Submit the operation. This node might be the leader.
-			operationFuture := node.SubmitOperation(operation, operationType, 200*time.Millisecond)
-			response := operationFuture.Await()
-			if err := response.Error(); err == nil {
-				if expectFail {
-					tc.t.Fatal("expected the operation to fail, but it was successful")
-				}
-				result := response.Success()
-				if string(result.Operation.Bytes) != string(operation) {
-					tc.t.Fatal("operation response does not match submitted operation")
-				}
-				return
-			}
-
-			tc.mu.Lock()
-			if index < len(tc.rafts) {
-				tc.mu.Unlock()
-				continue
-			}
-			tc.mu.Unlock()
-
-			time.Sleep(electionTimeout)
+			// Sleep a little bit in case the cluster needs to stabilize.
+			tc.mu.RUnlock()
+			time.Sleep(defaultElectionTimeout)
+			tc.mu.RLock()
 		}
 
-		if !expectFail {
-			tc.t.Fatalf("cluster failed to apply operation: operation = %s", string(operation))
-		}
-	}
-}
-
-func (tc *testCluster) addNonVoter() {
-	var newNode *Raft
-	tmpDir := tc.t.TempDir()
-	configuration := makeClusterConfiguration(len(tc.configuration.Members) + 1)
-
-	tc.mu.Lock()
-	for id, address := range configuration.Members {
-		if isVoter, ok := tc.configuration.IsVoter[id]; ok {
-			configuration.IsVoter[id] = isVoter
-		} else {
-			// Create the node to be added.
-			raft, err := makeRaft(id, address, tmpDir, tc.snapshotting, tc.snapshotSize)
-			if err != nil {
-				tc.t.Fatalf("failed to make raft: error = %v", err)
-			}
-			newNode = raft
-
-			configuration.IsVoter[id] = false
-
-			// The new node will be started at as a non-voter initially.
-			if err := raft.Start(); err != nil {
-				tc.t.Fatalf("failed to start raft: error = %v", err)
-			}
-
-		}
-	}
-	tc.mu.Unlock()
-
-	tc.addServer(newNode.id, newNode.address, false)
-
-	// Update the test cluster with the successfully added node.
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	tc.configuration = configuration
-	tc.rafts = append(tc.rafts, newNode)
-	tc.dirs = append(tc.dirs, tmpDir)
-	tc.fsm = append(tc.fsm, newNode.fsm.(*stateMachineMock))
-	tc.disconnected = append(tc.disconnected, false)
-}
-
-func (tc *testCluster) promoteNonVoters() {
-	nonVoters := make(map[string]string)
-	tc.mu.Lock()
-	for id, address := range tc.configuration.Members {
-		if isVoter := tc.configuration.IsVoter[id]; !isVoter {
-			nonVoters[id] = address
-		}
-	}
-	tc.mu.Unlock()
-
-	for id, address := range nonVoters {
-		tc.addServer(id, address, true)
-		tc.mu.Lock()
-		tc.configuration.IsVoter[id] = true
-		tc.mu.Unlock()
-	}
-}
-
-func (tc *testCluster) addServer(id string, address string, voter bool) {
-	// Attempt to add the node to the cluster.
-	// Allow for a maximum of three seconds.
-	start := time.Now()
-	timeout := 500 * time.Millisecond
-	index := 0
-	for time.Since(start).Seconds() < 3 {
-		tc.mu.Lock()
-		index %= len(tc.rafts)
-		if index >= len(tc.rafts) {
-			tc.t.Fatal("the cluster must contain atleast one node")
-		}
-		node := tc.rafts[index]
-		index++
-		tc.mu.Unlock()
-
-		// Submit the request to add a  member to the cluster.
-		// This node might be the leader.
-		future := node.AddServer(id, address, voter, timeout)
-		response := future.Await()
-		if err := response.Error(); err != nil {
-			continue
-		}
-
-		// Make sure the configuration contains the server added.
-		configuration := response.Success()
-		if configurationAddress, ok := configuration.Members[id]; !ok ||
-			address != configurationAddress ||
-			configuration.IsVoter[id] != voter {
+		if !success && !expectFail {
 			tc.t.Fatalf(
-				"node is missing from configuration, has incorrect address, or has incorrect voting status",
+				"cluster timed out trying to apply operation: operation = %s",
+				string(operation),
+			)
+		}
+	}
+}
+
+func (tc *testCluster) addServer(id string, address string, isVoter bool) {
+	// Create a new node if necessary.
+	tc.mu.Lock()
+	if _, ok := tc.nodes[id]; !ok {
+		// This is currently not supported and it isn't really useful to create a new node
+		// as a voting member if it is going to be dynamically added to the cluster.
+		if isVoter {
+			tc.t.Fatalf(
+				"cannot add a node as a voter that does not already exist as a non-voting member",
 			)
 		}
 
-		return
-	}
-
-	tc.t.Fatalf("cluster took too long to add a new server")
-}
-
-func (tc *testCluster) checkStateMachines(expectedMatches int, timeout time.Duration) {
-	startTime := time.Now()
-	appliedOperationsPerServer := make([][]Operation, len(tc.rafts))
-
-	for time.Since(startTime) < timeout {
-		// Take the longest array of applied operations to be the source of truth.
-		longestAppliedIndex := -1
-		for i := 0; i < len(tc.rafts); i++ {
-			appliedOperations := tc.fsm[i].appliedOperations()
-			if longestAppliedIndex == -1 ||
-				len(appliedOperations) > len(appliedOperationsPerServer[longestAppliedIndex]) {
-				longestAppliedIndex = i
-			}
-			appliedOperationsPerServer[i] = appliedOperations
+		// Create the node
+		tmpDir := tc.t.TempDir()
+		node, err := makeRaft(id, address, tmpDir, tc.snapshotting, tc.snapshotSize)
+		if err != nil {
+			tc.t.Fatalf("failed to make raft: error = %v", err)
 		}
+		tc.nodes[id] = node
+		tc.dirs[id] = tmpDir
+		tc.stateMachines[id] = node.fsm.(*stateMachineMock)
 
-		// Check if the other arrays of applied operations match the longest array of applied operations.
-		matches := 1
-		for i, applied := range appliedOperationsPerServer {
-			if i == longestAppliedIndex {
+		// Start the node as a non-voting member with no configuration.
+		if err := node.Start(); err != nil {
+			tc.t.Fatalf("failed to start raft: error = %v", err)
+		}
+	}
+	tc.mu.Unlock()
+
+	// Attempt to add the node to the cluster.
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	start := time.Now()
+	for time.Since(start).Seconds() < maxMembershipChangeTime {
+		for _, node := range tc.nodes {
+			// Submit the request to add a  member to the cluster.
+			// This node might be the leader.
+			future := node.AddServer(id, address, isVoter, futureTimeout)
+			response := future.Await()
+			if err := response.Error(); err != nil {
 				continue
 			}
-			if reflect.DeepEqual(appliedOperationsPerServer[longestAppliedIndex], applied) {
+
+			// Make sure the configuration contains the node.
+			configuration := response.Success()
+			actualAddress, ok := configuration.Members[id]
+			actualIsVoter := configuration.IsVoter[id]
+			if !ok {
+				tc.t.Fatalf(
+					"membership change returned success, but node is missing from configurationL ID = %s",
+					id,
+				)
+			}
+			if actualAddress != address {
+				tc.t.Fatalf(
+					"membership change returned success, but node has incorrect address: ID = %s, actualAddress = %s, expectedAddress = %s",
+					id,
+					actualAddress,
+					address,
+				)
+			}
+			if actualIsVoter != isVoter {
+				tc.t.Fatalf(
+					"membership change returned success, but node has incorrect voting status: ID = %s, actualIsVoter = %t, expectedIsVoter = %t",
+					id,
+					actualIsVoter,
+					isVoter,
+				)
+			}
+
+			return
+		}
+
+		// Sleep a little in case the cluster needs to stabilize.
+		tc.mu.RUnlock()
+		time.Sleep(defaultElectionTimeout)
+		tc.mu.RLock()
+	}
+
+	tc.t.Fatalf("timed out trying to add a node")
+}
+
+func (tc *testCluster) removeServer(id string) {
+	// Remove the node now to prevent a concurrent go routine accessing it.
+	tc.mu.Lock()
+	removeNode, ok := tc.nodes[id]
+	if !ok {
+		tc.t.Fatalf("tried to remove a node that does not exist: ID = %s", id)
+	}
+	delete(tc.nodes, id)
+	delete(tc.dirs, id)
+	delete(tc.stateMachines, id)
+	tc.mu.Unlock()
+
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	// Since we removed the node, we have to create a new array containing the nodes
+	// because the removed node might be the leader.
+	nodes := make(map[string]*Raft, len(tc.nodes)+1)
+	for otherID, node := range tc.nodes {
+		nodes[otherID] = node
+	}
+	nodes[id] = removeNode
+
+	// Attempt to remove the node from the cluster.
+	start := time.Now()
+	for time.Since(start).Seconds() < maxMembershipChangeTime {
+		for _, node := range nodes {
+			// Submit the request to remove a member to the cluster.
+			// This node might be the leader.
+			future := node.RemoveServer(id, futureTimeout)
+			response := future.Await()
+			if err := response.Error(); err != nil {
+				continue
+			}
+
+			// Make sure the configuration foes not contain the removed node.
+			configuration := response.Success()
+			_, inMembers := configuration.Members[id]
+			_, inIsVoter := configuration.IsVoter[id]
+			if inMembers || inIsVoter {
+				tc.t.Fatalf(
+					"membership change returned success, but node is still in configuration: ID = %s",
+					id,
+				)
+			}
+			removeNode.Stop()
+			return
+		}
+
+		// Sleep a little in case the cluster needs to stabilize.
+		tc.mu.RUnlock()
+		time.Sleep(defaultElectionTimeout)
+		tc.mu.RLock()
+	}
+
+	tc.t.Fatalf("timed out trying to remove a node")
+}
+
+func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperations [][]byte) {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	var matchID string
+	startTime := time.Now()
+	allAppliedOperations := make(map[string][]Operation, len(tc.nodes))
+	for time.Since(startTime) < maxMatchTime {
+		// Take the state machine with the most applied operations to be the source of truth.
+		for id := range tc.nodes {
+			appliedOperations := tc.stateMachines[id].appliedOperations()
+			if matchID == "" || len(appliedOperations) > len(allAppliedOperations[matchID]) {
+				matchID = id
+			}
+			allAppliedOperations[id] = appliedOperations
+		}
+
+		// Check if the applied operations from the other state machines match source of truth.
+		matches := 1
+		for id, appliedOperations := range allAppliedOperations {
+			if id == matchID {
+				continue
+			}
+			if reflect.DeepEqual(allAppliedOperations[matchID], appliedOperations) {
 				matches++
 			}
 		}
 
+		// Check that we have atleast the expected number of matches and that
+		// the applied operations are correct.
 		if matches >= expectedMatches {
-			// Make sure operations are monotically increasing.
-			for _, operations := range appliedOperationsPerServer {
+			// Check that log indices are monotonically increasing on all
+			// state machines, not just those that are supposed to match.
+			for _, operations := range allAppliedOperations {
 				tc.checkMonotonicity(operations)
 			}
+			// Check that the matching state machines do contain all submitted
+			// operations. Since these match, it's fine to just check one.
+			tc.checkContainsAll(matchID, submittedOperations, allAppliedOperations[matchID])
 			return
 		}
 	}
 
-	// Find where two state machines differ.
-	for i := 0; i < len(appliedOperationsPerServer); i++ {
-		for j := 0; j < len(appliedOperationsPerServer); j++ {
-			if i == j {
-				continue
-			}
-			applied1 := appliedOperationsPerServer[i]
-			applied2 := appliedOperationsPerServer[j]
-			tc.compareOperations(i, applied1, j, applied2)
+	// There are not enough matches.
+	// The state machines have diverged. Find where two state machines differ.
+	expectedAppliedOperation := allAppliedOperations[matchID]
+	for actualID, actualAppliedOperations := range allAppliedOperations {
+		if actualID == matchID {
+			continue
 		}
+		tc.compareOperations(matchID, expectedAppliedOperation, actualID, actualAppliedOperations)
 	}
 }
 
 func (tc *testCluster) checkMonotonicity(operations []Operation) {
 	lastIndex := uint64(0)
 	for _, operation := range operations {
-		if operation.LogIndex < lastIndex {
+		// The log index of each operation should never decrease.
+		// Note that there may be skipped log indices due to no-op entries and configuration entries.
+		if operation.LogIndex <= lastIndex {
 			tc.t.Fatalf(
-				"operations are not monotonic - indices should never decrease: lastIndex = %d, index = %d",
+				"operations are not monotonic, indices should strictly increase: lastIndex = %d, index = %d",
 				lastIndex,
 				operation.LogIndex,
 			)
@@ -471,87 +525,87 @@ func (tc *testCluster) checkMonotonicity(operations []Operation) {
 	}
 }
 
-func (tc *testCluster) compareOperations(
-	node1 int,
-	operations1 []Operation,
-	node2 int,
-	operations2 []Operation,
+func (tc *testCluster) checkContainsAll(
+	id string,
+	submittedOperations [][]byte,
+	appliedOperations []Operation,
 ) {
-	if reflect.DeepEqual(operations1, operations2) {
+	appliedSet := make(map[string]bool)
+	for _, operation := range appliedOperations {
+		appliedSet[string(operation.Bytes)] = true
+	}
+	for _, operation := range submittedOperations {
+		if _, ok := appliedSet[string(operation)]; !ok {
+			tc.t.Fatalf("state machine is missing operations: ID = %s", id)
+		}
+	}
+}
+
+func (tc *testCluster) compareOperations(
+	expectedID string,
+	expectedOperations []Operation,
+	actualID string,
+	actualOperations []Operation,
+) {
+	// The arrays of operations match one another.
+	if reflect.DeepEqual(expectedOperations, actualOperations) {
 		return
 	}
 
-	for i := 0; i < util.Min(len(operations1), len(operations2)); i++ {
-		operation1 := operations1[i]
-		operation2 := operations2[i]
-		if reflect.DeepEqual(operation1, operation2) {
+	// The arrays of operations do not match.
+	// Try to find the first index where they differ for debugging purposes.
+	for i := 0; i < util.Min(len(expectedOperations), len(actualOperations)); i++ {
+		expectedOperation := expectedOperations[i]
+		actualOperation := actualOperations[i]
+		if reflect.DeepEqual(expectedOperation, actualOperation) {
 			continue
 		}
 		tc.t.Fatalf(
-			"state machines do not match: id1 = %d, index1 = %d, term1 = %d, id2 = %d, index2 = %d, term2 = %d",
-			node1,
-			operation1.LogIndex,
-			operation1.LogTerm,
-			node2,
-			operation2.LogIndex,
-			operation2.LogTerm,
+			"state machines do not match: expectedID = %s, expectedLogIndex = %d, expectedLogTerm = %d, actualID = %s, actualLogIndex = %d, actualLogTerm = %d",
+			expectedID,
+			expectedOperation.LogIndex,
+			expectedOperation.LogTerm,
+			actualID,
+			actualOperation.LogIndex,
+			actualOperation.LogTerm,
 		)
 	}
 
-	tc.t.Fatalf(
-		"state machines do not match: one state machine has more operations than another: id1 = %d, id2 = %d",
-		node1,
-		node2,
-	)
+	// The prefix of both arrays match, but one is shorter or longer than the other.
+	tc.t.Fatal("state machines do not match: incorrect number of operations")
 }
 
-func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
+func (tc *testCluster) checkLeaders(expectNoLeader bool) string {
 	// Any leaders detected.
-	leaders := make([]int, 0)
-
-	// Time between checks for a leader.
-	// This amount should be large enough to allow an election to take place.
-	electionTimeout := 300 * time.Millisecond
+	leaders := make([]string, 0, 1)
 
 	// Check the nodes to see which, if any, are in the leader state.
-	// A maximum of 5 seconds is given to successfully elect a leader.
-	index := 0
 	start := time.Now()
-	for time.Since(start).Seconds() < 5 {
-		tc.mu.Lock()
-		index %= len(tc.rafts)
-		node := tc.rafts[index]
+	for time.Since(start).Seconds() < maxElectionTime {
+		tc.mu.RLock()
+		for _, node := range tc.nodes {
+			// Get the status of the node, it may be a leader.
+			status := node.Status()
 
-		// Get the status of the node, it may be a leader.
-		status := node.Status()
-
-		// If the node is a leader, and it is connected, then it is
-		// a legitimate leader. Leaders that are disconnected or
-		// partitioned are ignored. It is assumed that disconnected
-		// nodes are either:
-		// 1. Completely disconnected from all other nodes - it
-		//    cannot communicate with any other nodes, and no other
-		//    nodes can communicate with it.
-		// 2. In a minority partition - it may only communicate with
-		//    a minority of the cluster. Members of the majority partition
-		//    cannot communicate with it.
-		if status.State == Leader && !tc.disconnected[index] {
-			index, _ := strconv.Atoi(status.ID)
-			leaders = append(leaders, index)
+			// If the node is a leader, and it is connected, then it is
+			// a legitimate leader. Leaders that are disconnected or
+			// partitioned are ignored. It is assumed that disconnected
+			// nodes are either:
+			// 1. Completely disconnected from all other nodes - it
+			//    cannot communicate with any other nodes, and no other
+			//    nodes can communicate with it.
+			// 2. In a minority partition - it may only communicate with
+			//    a minority of the cluster. Members of the majority partition
+			//    cannot communicate with it.
+			if status.State == Leader && !tc.disconnected[status.ID] {
+				leaders = append(leaders, status.ID)
+			}
 		}
+		tc.mu.RUnlock()
 
 		if len(leaders) > 1 {
 			tc.t.Fatalf("cluster has more than one leader: leaders = %v", leaders)
 		}
-
-		index++
-
-		// Iterate over all the nodes atleast one before returning to check for multiple leaders.
-		if index < len(tc.rafts) {
-			tc.mu.Unlock()
-			continue
-		}
-		tc.mu.Unlock()
 
 		if len(leaders) == 1 {
 			break
@@ -559,7 +613,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 
 		// If no leaders were found, sleep for a sufficient amount of time to allow
 		// an election to take place.
-		time.Sleep(electionTimeout)
+		time.Sleep(defaultElectionTimeout)
 	}
 
 	if len(leaders) == 0 && !expectNoLeader {
@@ -571,37 +625,57 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) int {
 	}
 
 	if expectNoLeader {
-		return -1
+		return ""
 	}
 
 	return leaders[0]
 }
 
-func (tc *testCluster) crashServer(node int) {
+func (tc *testCluster) crashServer(id string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
-	tc.rafts[node].Stop()
+
+	node, ok := tc.nodes[id]
+	if !ok {
+		tc.t.Fatalf("attempted to crash node that does not exist: ID = %s", id)
+	}
+	node.Stop()
 }
 
-func (tc *testCluster) restartServer(node int) {
+func (tc *testCluster) crashRandom() string {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	id := fmt.Sprint(node)
-	raft, err := makeRaft(
-		id,
-		tc.configuration.Members[id],
-		tc.dirs[node],
-		tc.snapshotting,
-		tc.snapshotSize,
-	)
-	if err != nil {
-		tc.t.Fatalf("failed to create raft instance: error = %v", err)
+	notCrashed := make([]*Raft, 0, len(tc.nodes))
+	for _, node := range tc.nodes {
+		status := node.Status()
+		if status.State != Shutdown {
+			notCrashed = append(notCrashed, node)
+		}
 	}
-	tc.fsm[node] = raft.fsm.(*stateMachineMock)
-	tc.rafts[node] = raft
+	i := util.RandomInt(0, len(notCrashed))
 
-	if err := raft.Start(); err != nil {
+	notCrashed[i].Stop()
+
+	return notCrashed[i].id
+}
+
+func (tc *testCluster) restartServer(id string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	if _, ok := tc.nodes[id]; !ok {
+		tc.t.Fatalf("attempted to restart node that does not exist: ID = %s", id)
+	}
+
+	node, err := makeRaft(id, tc.nodes[id].address, tc.dirs[id], tc.snapshotting, tc.snapshotSize)
+	if err != nil {
+		tc.t.Fatalf("failed to create node: error = %v", err)
+	}
+	tc.stateMachines[id] = node.fsm.(*stateMachineMock)
+	tc.nodes[id] = node
+
+	if err := node.Start(); err != nil {
 		tc.t.Fatalf("failed to start node: error = %v", err)
 	}
 }
@@ -611,41 +685,41 @@ func (tc *testCluster) createPartition() {
 	defer tc.mu.Unlock()
 
 	// The number of nodes in the partition.
-	partitionSize := len(tc.rafts) / 2
+	partitionSize := len(tc.nodes) / 2
 
 	// The nodes in the partition.
-	partitionSet := make(map[int]bool)
+	partitionSet := make(map[string]bool)
 
 	// Choose random nodes to partition.
-	index := util.RandomInt(0, len(tc.rafts))
-	for i := 0; i < partitionSize; i++ {
-		partitionSet[(index+i)%len(tc.rafts)] = true
+	for id := range tc.nodes {
+		partitionSet[id] = true
+		if len(partitionSet) == partitionSize {
+			break
+		}
 	}
 
 	// Disconnect all nodes in the partition set from those
 	// that are not, but maintain connections between the nodes
 	// that are in the partition set.
-	for i := 0; i < len(tc.rafts); i++ {
-		if _, ok := partitionSet[i]; ok {
-			for j := 0; j < len(tc.rafts); j++ {
-				if _, ok := partitionSet[j]; ok {
+	for id1, node1 := range tc.nodes {
+		if _, ok := partitionSet[id1]; ok {
+			for id2, node2 := range tc.nodes {
+				if _, ok := partitionSet[id2]; ok {
 					continue
 				}
-				address1 := tc.configuration.Members[fmt.Sprint(j)]
-				address2 := tc.configuration.Members[fmt.Sprint(i)]
-				if err := tc.rafts[i].transport.Close(address1); err != nil {
+				if err := node1.transport.Close(node2.address); err != nil {
 					tc.t.Fatalf(
-						"failed disconnecting node: id = %d, disconnectingFrom = %d, error = %v",
-						i,
-						j,
+						"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
+						node1.id,
+						node2.id,
 						err,
 					)
 				}
-				if err := tc.rafts[j].transport.Close(address2); err != nil {
+				if err := node2.transport.Close(node1.address); err != nil {
 					tc.t.Fatalf(
-						"failed disconnecting node: id = %d, disconnectingFrom = %d, error = %v",
-						j,
-						i,
+						"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
+						node2.id,
+						node1.id,
 						err,
 					)
 				}
@@ -653,101 +727,168 @@ func (tc *testCluster) createPartition() {
 		}
 	}
 
-	for index := range partitionSet {
-		tc.disconnected[index] = true
+	for id := range partitionSet {
+		tc.disconnected[id] = true
 	}
 }
 
-func (tc *testCluster) reconnectServer(node int) {
+func (tc *testCluster) reconnectServer(id string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	id := fmt.Sprint(node)
+	node1, ok := tc.nodes[id]
+	if !ok {
+		tc.t.Fatalf("attempted to reconnect node that does not exist: ID = %s", id)
+	}
 
-	for i := 0; i < len(tc.rafts); i++ {
-		if i == node {
+	for _, node2 := range tc.nodes {
+		if node1 == node2 {
 			continue
 		}
-
-		address1 := tc.configuration.Members[id]
-		address2 := tc.configuration.Members[fmt.Sprint(i)]
-		if err := tc.rafts[i].transport.Connect(address1); err != nil {
+		if err := node1.transport.Connect(node2.address); err != nil {
 			tc.t.Fatalf(
-				"failed reconnecting node: id = %d, connectingTo = %d, error = %v",
-				i,
-				node,
+				"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
+				node1.id,
+				node2.id,
 				err,
 			)
 		}
-		if err := tc.rafts[node].transport.Connect(address2); err != nil {
+		if err := node2.transport.Connect(node1.address); err != nil {
 			tc.t.Fatalf(
-				"failed reconnecting node: id = %d, connectingTo = %d, error = %v",
-				node,
-				i,
+				"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
+				node1.id,
+				node2.id,
 				err,
 			)
 		}
 	}
 
-	tc.disconnected[node] = false
+	delete(tc.disconnected, id)
 }
 
 func (tc *testCluster) reconnectAllServers() {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	for i := 0; i < len(tc.rafts); i++ {
-		for j := 0; j < len(tc.rafts); j++ {
-			if i == j {
+	for _, node1 := range tc.nodes {
+		for _, node2 := range tc.nodes {
+			if node1 == node2 {
 				continue
 			}
-			address := tc.configuration.Members[fmt.Sprint(j)]
-			if err := tc.rafts[i].transport.Connect(address); err != nil {
+			if err := node1.transport.Connect(node2.address); err != nil {
 				tc.t.Fatalf(
-					"failed reconnecting node: id = %d, connectingTo = %d, error = %v",
-					i,
-					j,
+					"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
+					node1.id,
+					node2.id,
 					err,
 				)
 			}
 		}
 	}
 
-	for i := 0; i < len(tc.rafts); i++ {
-		tc.disconnected[i] = false
-	}
+	tc.disconnected = map[string]bool{}
 }
 
-func (tc *testCluster) disconnectServer(node int) {
+func (tc *testCluster) disconnectRandom() string {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	id := fmt.Sprint(node)
+	notDisconnected := make([]string, 0, len(tc.nodes))
 
-	for i := 0; i < len(tc.rafts); i++ {
-		if i == node {
+	for id := range tc.nodes {
+		if _, ok := tc.disconnected[id]; !ok {
+			notDisconnected = append(notDisconnected, id)
+		}
+	}
+
+	i := util.RandomInt(0, len(notDisconnected))
+	tc.disconnect(notDisconnected[i])
+
+	return notDisconnected[i]
+}
+
+func (tc *testCluster) disconnectServer(id string) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	tc.disconnect(id)
+}
+
+func (tc *testCluster) disconnect(id string) {
+	node1, ok := tc.nodes[id]
+	if !ok {
+		tc.t.Fatalf("attempted to disconnected node that does not exist: ID = %s", id)
+	}
+
+	for _, node2 := range tc.nodes {
+		if node1 == node2 {
 			continue
 		}
-
-		address1 := tc.configuration.Members[id]
-		address2 := tc.configuration.Members[fmt.Sprint(i)]
-		if err := tc.rafts[i].transport.Close(address1); err != nil {
+		if err := node1.transport.Close(node2.address); err != nil {
 			tc.t.Fatalf(
-				"failed disconnecting node: id = %d, disconnectingFrom = %d, error = %v",
-				i,
-				node,
-				err.Error(),
+				"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
+				node1.id,
+				node2.id,
+				err,
 			)
 		}
-		if err := tc.rafts[node].transport.Close(address2); err != nil {
+		if err := node2.transport.Close(node1.address); err != nil {
 			tc.t.Fatalf(
-				"failed disconnecting node: id = %d, disconnectingFrom = %d, error = %v",
-				node,
-				i,
+				"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
+				node2.id,
+				node1.id,
 				err,
 			)
 		}
 	}
 
-	tc.disconnected[node] = true
+	tc.disconnected[id] = true
+}
+
+func (tc *testCluster) unusedIDandAddress() (string, string) {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	// Collect the addresses being used.
+	addresses := make(map[string]bool, len(tc.nodes))
+	for _, node := range tc.nodes {
+		addresses[node.address] = true
+	}
+
+	// Find an unused ID.
+	i := 0
+	var id string
+	for {
+		id = fmt.Sprint(i)
+		if _, ok := tc.nodes[id]; !ok {
+			break
+		}
+		i++
+	}
+
+	// Find an unused address.
+	i = 0
+	var address string
+	for {
+		address = fmt.Sprintf("127.0.0.%d:8080", i)
+		if _, ok := addresses[address]; !ok {
+			break
+		}
+		i++
+	}
+
+	return id, address
+}
+
+func (tc *testCluster) nodeIDs() []string {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	// Collect all node IDs.
+	nodeIDs := make([]string, 0, len(tc.nodes))
+	for id := range tc.nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+
+	return nodeIDs
 }

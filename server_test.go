@@ -77,28 +77,25 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 	// Disconnect the leader and one other server, leaving
 	// only one server that is capable of communicating.
 	disconnected1 := cluster.checkLeaders(false)
-	disconnected2 := (disconnected1 + 1) % 3
 	cluster.disconnectServer(disconnected1)
-	cluster.disconnectServer(disconnected2)
+	cluster.disconnectRandom()
 
 	// Check if the server can elect itself as the leader.
 	// This should not be successful.
 	cluster.checkLeaders(true)
 }
 
-// TestAddSingleServer checks that a single node can be added as a non-voting member
-// and then promoted to a voting member without issue.
-func TestAddSingleServer(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+// TestRemoveLeaderElection checks that a cluster can still elect a leader when the
+// current one is removed.
+func TestRemoveLeaderElection(t *testing.T) {
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	leader := cluster.checkLeaders(false)
+	cluster.removeServer(leader)
 	cluster.checkLeaders(false)
-
-	// Add a non-voting member to the cluster and then make it a voter.
-	cluster.addNonVoter()
-	cluster.promoteNonVoters()
 }
 
 // TestNotVoterElectionSuccess checks that non-voting members do not prevent
@@ -114,8 +111,10 @@ func TestNonVoterElectionSuccess(t *testing.T) {
 	cluster.checkLeaders(false)
 
 	// Add non-voting members.
-	cluster.addNonVoter()
-	cluster.addNonVoter()
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
+	id2, address2 := cluster.unusedIDandAddress()
+	cluster.addServer(id2, address2, false)
 
 	// Disconnect the leader.
 	disconnected1 := cluster.checkLeaders(false)
@@ -137,8 +136,10 @@ func TestNonVoterElectionFailure(t *testing.T) {
 	cluster.checkLeaders(false)
 
 	// Add non-voting members.
-	cluster.addNonVoter()
-	cluster.addNonVoter()
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
+	id2, address2 := cluster.unusedIDandAddress()
+	cluster.addServer(id2, address2, false)
 
 	// Disconnect the leader.
 	disconnected1 := cluster.checkLeaders(false)
@@ -155,8 +156,40 @@ func TestNonVoterElectionFailure(t *testing.T) {
 	cluster.reconnectAllServers()
 }
 
+// TestNewMembersCanLead checks that voting members added to
+// an existing cluster are able to be elected as leaders.
+func TestNewMembersCanLead(t *testing.T) {
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	nodes := cluster.nodeIDs()
+
+	cluster.checkLeaders(false)
+
+	// Add three new nodes to the cluster.
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
+	cluster.addServer(id1, address1, true)
+	id2, address2 := cluster.unusedIDandAddress()
+	cluster.addServer(id2, address2, false)
+	cluster.addServer(id2, address2, true)
+	id3, address3 := cluster.unusedIDandAddress()
+	cluster.addServer(id3, address3, false)
+	cluster.addServer(id3, address3, true)
+
+	// Remove the original nodes.
+	for _, node := range nodes {
+		cluster.removeServer(node)
+	}
+
+	// Make sure a leader was elected.
+	cluster.checkLeaders(false)
+}
+
 // TestSingleServerSubmit checks whether a cluster consisting of
-// a single server can commit a command.
+// a single server can commit a single operation.
 func TestSingleServerSubmit(t *testing.T) {
 	cluster := newCluster(t, 1, snapshotting, snapshotSize)
 
@@ -165,14 +198,14 @@ func TestSingleServerSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
-	cluster.checkStateMachines(1, 3*time.Second)
+	cluster.checkStateMachines(1, operations)
 }
 
-// TestSingleSubmit checks whether the cluster can successfully
-// commit a single command when there are no failures.
-func TestSingleSubmit(t *testing.T) {
+// TestSubmit checks whether the cluster can successfully
+// commit a single operation when there are no failures.
+func TestSubmit(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -180,9 +213,9 @@ func TestSingleSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
-	cluster.checkStateMachines(3, 3*time.Second)
+	cluster.checkStateMachines(3, operations)
 }
 
 // TestMultipleSubmit checks whether a cluster can successfully
@@ -195,9 +228,9 @@ func TestMultipleSubmit(t *testing.T) {
 
 	cluster.checkLeaders(false)
 	operations := makeOperations(1000)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestConcurrentSubmit test whether operations are correctly
@@ -218,7 +251,7 @@ func TestConcurrentSubmit(t *testing.T) {
 	client := func(operations [][]byte, readyCh chan interface{}) {
 		defer wg.Done()
 		<-readyCh
-		cluster.submit(true, false, Replicated, operations...)
+		cluster.submit(false, Replicated, operations...)
 	}
 
 	// The number of clients submitting operations concurrently.
@@ -241,12 +274,12 @@ func TestConcurrentSubmit(t *testing.T) {
 	close(readyCh)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
-// TestSubmitMembership checks that submitted operations are correctly
+// TestNewMemberSubmit checks that submitted operations are correctly
 // replicated to new members of the cluster.
-func TestSubmitMembership(t *testing.T) {
+func TestNewMemberSubmit(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
@@ -254,34 +287,38 @@ func TestSubmitMembership(t *testing.T) {
 
 	// Submit some operations to the cluster.
 	operations := makeOperations(300)
-	cluster.submit(true, false, Replicated, operations[:100]...)
+	cluster.submit(false, Replicated, operations[:100]...)
 
 	// Add a non-voting member.
-	cluster.addNonVoter()
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
 
 	// Submit some more operations to the cluster.
-	cluster.submit(true, false, Replicated, operations[100:200]...)
+	cluster.submit(false, Replicated, operations[100:200]...)
 
 	// Promote the non-voter.
-	cluster.promoteNonVoters()
+	cluster.addServer(id1, address1, true)
 
 	// Submit some operations to the clutser.
-	cluster.submit(true, false, Replicated, operations[200:]...)
+	cluster.submit(false, Replicated, operations[200:]...)
 
-	cluster.checkStateMachines(4, 3*time.Second)
+	cluster.checkStateMachines(4, operations)
 }
 
-// TestSubmitFailMembership checks that a cluster is unable to commit
+// TestNonVoterSubmitFail checks that a cluster is unable to commit
 // operations when a majority of its voting members are down. Non-voting
 // members should not affect quorum.
-func TestSubmitFailMembership(t *testing.T) {
+func TestNonVoterSubmitFail(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	cluster.checkLeaders(false)
+
 	// Add a non-voting member.
-	cluster.addNonVoter()
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
 
 	// Disconnect the leader.
 	disconnect1 := cluster.checkLeaders(false)
@@ -293,19 +330,51 @@ func TestSubmitFailMembership(t *testing.T) {
 
 	// This should fail since a majority of voting members are down.
 	operations := makeOperations(1)
-	cluster.submit(true, true, Replicated, operations...)
+	cluster.submit(true, Replicated, operations...)
 }
 
-// TestSubmitConcurrentMembers checks that concurrently submitted operations are correctly
-// replicated to new memebers of the cluster.
+// TestRemoveSubmitSuccess checks that operations can be committed
+// after members of the cluster are removed.
+func TestRemoveSubmitSuccess(t *testing.T) {
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+
+	nodes := cluster.nodeIDs()
+
+	// Remove the leader.
+	remove1 := cluster.checkLeaders(false)
+	cluster.crashServer(remove1)
+
+	// Remove another node.
+	for _, remove2 := range nodes {
+		if remove1 == remove2 {
+			continue
+		}
+		cluster.crashServer(remove2)
+		break
+	}
+
+	cluster.checkLeaders(false)
+
+	// Check if operations can be submitted.
+	operations := makeOperations(10)
+	cluster.submit(false, Replicated, operations...)
+}
+
+// TestSubmitConcurrentMembers checks that concurrently submitted operations are committed
+// in the face of membership changes.
 func TestSubmitConcurrentMembership(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	cluster.checkLeaders(false)
+	nodes := cluster.nodeIDs()
 	operations := makeOperations(1000)
+
+	cluster.checkLeaders(false)
 
 	var wg sync.WaitGroup
 
@@ -313,7 +382,7 @@ func TestSubmitConcurrentMembership(t *testing.T) {
 	client := func(operations [][]byte, readyCh chan interface{}) {
 		defer wg.Done()
 		<-readyCh
-		cluster.submit(true, false, Replicated, operations...)
+		cluster.submit(false, Replicated, operations...)
 	}
 
 	// The number of clients submitting operations concurrently.
@@ -336,14 +405,19 @@ func TestSubmitConcurrentMembership(t *testing.T) {
 	close(readyCh)
 
 	// Add a non-voter and then promote it.
-	cluster.addNonVoter()
-	time.Sleep(100 * time.Millisecond)
-	cluster.promoteNonVoters()
+	id1, address1 := cluster.unusedIDandAddress()
+	cluster.addServer(id1, address1, false)
+	time.Sleep(200 * time.Millisecond)
+	cluster.addServer(id1, address1, true)
+
+	// Remove a random server that was  part of the existing cluster.
+	remove := util.RandomInt(0, len(nodes))
+	cluster.removeServer(nodes[remove])
 
 	// Wait for clients to finish.
 	wg.Wait()
 
-	cluster.checkStateMachines(4, 3*time.Second)
+	cluster.checkStateMachines(4, operations)
 }
 
 // TestSubmitDisconnect checks that a cluster can still
@@ -358,9 +432,9 @@ func TestSubmitDisconnect(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 	cluster.disconnectServer(leader)
 	operations := makeOperations(20)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
-	cluster.checkStateMachines(2, 3*time.Second)
+	cluster.checkStateMachines(2, operations)
 }
 
 // TestSubmitDisconnectRejoin checks that a cluster correctly
@@ -377,28 +451,28 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 
 	// Submit some operations with this leader.
 	operations := makeOperations(80)
-	cluster.submit(true, false, Replicated, operations[:20]...)
+	cluster.submit(false, Replicated, operations[:20]...)
 
 	// Disconnect the leader.
 	cluster.disconnectServer(leader1)
 
 	// Submit some more operations.
-	cluster.submit(true, false, Replicated, operations[20:40]...)
+	cluster.submit(false, Replicated, operations[20:40]...)
 
 	// Disconnect the second leader.
 	leader2 := cluster.checkLeaders(false)
 
 	// Submit some more operations.
-	cluster.submit(true, false, Replicated, operations[40:60]...)
+	cluster.submit(false, Replicated, operations[40:60]...)
 
 	// Allow the old leaders to rejoin.
 	cluster.reconnectServer(leader1)
 	cluster.reconnectServer(leader2)
 
 	// Submit some more operations.
-	cluster.submit(true, false, Replicated, operations[60:]...)
+	cluster.submit(false, Replicated, operations[60:]...)
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestSubmitDisconnectFail checks that a cluster is unable to
@@ -410,17 +484,16 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
-	// Disconnect the leader and two other servers, leaving
-	// only a minority of the server able to communicate.
-	leader := cluster.checkLeaders(false)
-	cluster.disconnectServer(leader)
-	cluster.disconnectServer((leader + 1) % 5)
-	cluster.disconnectServer((leader + 2) % 5)
+	// Disconnect three nodes, leaving only a minority of the server able to communicate.
+	nodes := cluster.nodeIDs()
+	for i := 0; i < 3; i++ {
+		cluster.disconnectServer(nodes[i])
+	}
 
 	// Try to submit an operation. This should be unsuccessful
 	// since only a minority of the cluster can communicate.
 	operations := makeOperations(1)
-	cluster.submit(true, true, Replicated, operations...)
+	cluster.submit(true, Replicated, operations...)
 }
 
 // TestUnreliableNetwork tests whether a cluster can still make
@@ -435,17 +508,18 @@ func TestUnreliableNetwork(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Disconnect two random servers.
-			disconnect1 := util.RandomInt(0, 5)
-			disconnect2 := (disconnect1 + 1) % 5
-			cluster.disconnectServer(disconnect1)
-			cluster.disconnectServer(disconnect2)
+			// Disconnect two random nodes.
+			nodes := cluster.nodeIDs()
+			disconnect1 := util.RandomInt(0, len(nodes))
+			disconnect2 := (disconnect1 + 1) % len(nodes)
+			cluster.disconnectServer(nodes[disconnect1])
+			cluster.disconnectServer(nodes[disconnect2])
 
 			// Allow the cluster to make progress while the servers are disconnected.
-			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Reconnect the servers.
@@ -463,12 +537,12 @@ func TestUnreliableNetwork(t *testing.T) {
 
 	// See if we can commit operations in the face of network failures.
 	operations := makeOperations(500)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestBasicPartition checks that a cluster can still make
@@ -490,17 +564,17 @@ func TestBasicPartition(t *testing.T) {
 	cluster.checkLeaders(false)
 
 	operations := makeOperations(50)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	// Heal the partition.
 	cluster.reconnectAllServers()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestMultiPartition checks whether a cluster can still make
 // progress submitting multiple operations in the presence of
-// multiple and changing partitions.
+// multiple partitions.
 func TestMultiPartition(t *testing.T) {
 	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
@@ -536,19 +610,19 @@ func TestMultiPartition(t *testing.T) {
 
 	// See if we can commit operations in the face of recurring partitions.
 	operations := makeOperations(500)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
-// TestMultiPartition checks whether a cluster can still make
+// TestMultiPartitionMembership checks whether a cluster can still make
 // progress submitting multiple operations in the presence of
-// multiple partitions and changing membership.
+// multiple and changing partitions and changing membership.
 func TestMultiPartitionMembership(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -574,38 +648,44 @@ func TestMultiPartitionMembership(t *testing.T) {
 
 	addServerRoutine := func() {
 		defer wg.Done()
+		nodes := cluster.nodeIDs()
 
-		// Add two non-voting members.
-		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addNonVoter()
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addNonVoter()
+		// Add two members.
+		for i := 0; i < 2; i++ {
+			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			time.Sleep(randomTime)
+			id, address := cluster.unusedIDandAddress()
+			cluster.addServer(id, address, false)
+			randomTime = util.RandomTimeout(100*time.Millisecond, 200*time.Millisecond)
+			time.Sleep(randomTime)
+			cluster.addServer(id, address, true)
+		}
 
-		// Promote the non-voting members to voting members.
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.promoteNonVoters()
+		// Remove two members.
+		for i := 0; i < 2; i++ {
+			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			time.Sleep(randomTime)
+			cluster.removeServer(nodes[i])
+		}
 	}
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
 	cluster.checkLeaders(false)
 
-	// Start partitioning
+	// Start partitioning and membership changes.
 	wg.Add(2)
 	go partitionRoutine()
 	go addServerRoutine()
 
 	// See if we can commit operations in the face of recurring partitions.
 	operations := makeOperations(1000)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(7, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestBasicCrash checks that a cluster can still make
@@ -619,13 +699,13 @@ func TestBasicCrash(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
-	cluster.submit(true, false, Replicated, operations[:25]...)
+	cluster.submit(false, Replicated, operations[:25]...)
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
-	cluster.submit(true, false, Replicated, operations[25:]...)
+	cluster.submit(false, Replicated, operations[25:]...)
 
-	cluster.checkStateMachines(4, 3*time.Second)
+	cluster.checkStateMachines(4, operations)
 }
 
 // TestCrashRejoin checks that a cluster correctly
@@ -640,18 +720,18 @@ func TestCrashRejoin(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(200)
-	cluster.submit(true, false, Replicated, operations[:25]...)
+	cluster.submit(false, Replicated, operations[:25]...)
 
 	// Crash the leader and see if we can still make progress.
 	cluster.crashServer(leader)
-	cluster.submit(true, false, Replicated, operations[25:150]...)
+	cluster.submit(false, Replicated, operations[25:150]...)
 
 	// Allow the leader to rejoin and see if we can make progress
 	// committing operations.
 	cluster.restartServer(leader)
-	cluster.submit(true, false, Replicated, operations[150:]...)
+	cluster.submit(false, Replicated, operations[150:]...)
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestMultiCrashMembership checks if a cluster can still make
@@ -659,7 +739,7 @@ func TestCrashRejoin(t *testing.T) {
 // cluster in the face of multiple crashes. The added members may also
 // be crashed
 func TestMultiCrashMembership(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -671,37 +751,40 @@ func TestMultiCrashMembership(t *testing.T) {
 			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Crash two random servers.
-			crash1 := util.RandomInt(0, 5)
-			crash2 := (crash1 + 1) % 5
-			cluster.crashServer(crash1)
-			cluster.crashServer(crash2)
+			// Crash a random server.
+			crash := cluster.crashRandom()
+			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
+			time.Sleep(randomTime)
 
-			// Allow the cluster to make progress while the servers are offline.
+			// Allow the cluster to make progress while the server is offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the servers back online.
-			cluster.restartServer(crash1)
-			cluster.restartServer(crash2)
+			cluster.restartServer(crash)
 		}
 	}
 
 	addServerRoutine := func() {
 		defer wg.Done()
+		nodes := cluster.nodeIDs()
 
-		// Add two non-voting members.
-		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addNonVoter()
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addNonVoter()
+		// Add two members.
+		for i := 0; i < 2; i++ {
+			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			time.Sleep(randomTime)
+			id, address := cluster.unusedIDandAddress()
+			cluster.addServer(id, address, false)
+			randomTime = util.RandomTimeout(100*time.Millisecond, 200*time.Millisecond)
+			cluster.addServer(id, address, true)
+		}
 
-		// Promote the non-voting members to voting members.
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.promoteNonVoters()
+		// Remove two members.
+		for i := 0; i < 2; i++ {
+			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			time.Sleep(randomTime)
+			cluster.removeServer(nodes[i])
+		}
 	}
 
 	cluster.startCluster()
@@ -715,12 +798,12 @@ func TestMultiCrashMembership(t *testing.T) {
 
 	// See if we can commit operations in the face of multiple crashes.
 	operations := makeOperations(1000)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(7, 3*time.Second)
+	cluster.checkStateMachines(7, operations)
 }
 
 // TestMultiCrash checks if a cluster can still make
@@ -740,10 +823,10 @@ func TestMultiCrash(t *testing.T) {
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash two random servers.
-			crash1 := util.RandomInt(0, 5)
-			crash2 := (crash1 + 1) % 5
-			cluster.crashServer(crash1)
-			cluster.crashServer(crash2)
+			crash1 := cluster.crashRandom()
+			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
+			time.Sleep(randomTime)
+			crash2 := cluster.crashRandom()
 
 			// Allow the cluster to make progress while the servers are offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
@@ -751,7 +834,10 @@ func TestMultiCrash(t *testing.T) {
 
 			// Bring the servers back online.
 			cluster.restartServer(crash1)
+			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
+			time.Sleep(randomTime)
 			cluster.restartServer(crash2)
+
 		}
 	}
 
@@ -765,12 +851,12 @@ func TestMultiCrash(t *testing.T) {
 
 	// See if we can commit operations in the face of multiple crashes.
 	operations := makeOperations(500)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestDisconnectCrashPartition checks whether the cluster can still
@@ -794,18 +880,16 @@ func TestDisconnectCrashPartition(t *testing.T) {
 			switch action {
 			// Crash a single server.
 			case 0:
-				crash := util.RandomInt(0, 5)
-				cluster.crashServer(crash)
+				crash := cluster.crashRandom()
 				randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.restartServer(crash)
 			// Disconnect a single server.
 			case 1:
-				disconnect := util.RandomInt(0, 5)
-				cluster.disconnectServer(disconnect)
+				disconnect := cluster.disconnectRandom()
 				randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
-				cluster.reconnectAllServers()
+				cluster.reconnectServer(disconnect)
 			// Partition the servers into two separate groups.
 			case 2:
 				cluster.createPartition()
@@ -827,12 +911,12 @@ func TestDisconnectCrashPartition(t *testing.T) {
 	// See if we can commit operations in the face of random network and server failures.
 	// Submit enough operations to ensure that a variety of failures occur.
 	operations := makeOperations(1000)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestAllCrash checks that a cluster can still make
@@ -844,26 +928,28 @@ func TestAllCrash(t *testing.T) {
 	cluster.startCluster()
 	defer cluster.stopCluster()
 
+	nodes := cluster.nodeIDs()
+
 	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
 	operations := makeOperations(50)
-	cluster.submit(true, false, Replicated, operations[:25]...)
+	cluster.submit(false, Replicated, operations[:25]...)
 
 	// Crash all servers.
-	for i := 0; i < 5; i++ {
-		cluster.crashServer(i)
+	for _, node := range nodes {
+		cluster.crashServer(node)
 	}
 
 	// Restart all the servers.
-	for i := 0; i < 5; i++ {
-		cluster.restartServer(i)
+	for _, node := range nodes {
+		cluster.restartServer(node)
 	}
 
 	// Wait for another leader and submit more operations.
 	cluster.checkLeaders(false)
-	cluster.submit(true, false, Replicated, operations[25:]...)
+	cluster.submit(false, Replicated, operations[25:]...)
 
-	cluster.checkStateMachines(5, 3*time.Second)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestBasicReadOnly checks that a read-only operation submitted under normal conditions
@@ -877,8 +963,8 @@ func TestBasicReadOnly(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
 	operations := makeOperations(1)
-	cluster.submit(true, false, Replicated, operations...)
-	cluster.submit(true, false, LeaseBasedReadOnly, []byte{})
+	cluster.submit(false, Replicated, operations...)
+	cluster.submit(false, LeaseBasedReadOnly, []byte{})
 }
 
 // TestSingleServerReadOnly checks that read-only operations are successful in the single server case.
@@ -891,10 +977,10 @@ func TestSingleServerReadOnly(t *testing.T) {
 	// Wait for a leader and submit some operations.
 	cluster.checkLeaders(false)
 	operations := makeOperations(10)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
-	cluster.submit(true, false, LeaseBasedReadOnly, []byte{})
-	cluster.submit(true, false, LinearizableReadOnly, []byte{})
+	cluster.submit(false, LeaseBasedReadOnly, []byte{})
+	cluster.submit(false, LinearizableReadOnly, []byte{})
 }
 
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
@@ -909,18 +995,18 @@ func TestReadOnlyFail(t *testing.T) {
 	leader := cluster.checkLeaders(false)
 
 	// Disconnect the other two servers in the cluster.
-	cluster.disconnectServer((leader + 1) % 3)
-	cluster.disconnectServer((leader + 2) % 3)
+	cluster.disconnectServer(leader)
+	cluster.disconnectRandom()
 
 	// Linearizable read-only operation should fail since the heartbeats
 	// of the leader will not be succesful.
-	cluster.submit(true, true, LinearizableReadOnly, []byte{})
+	cluster.submit(true, LinearizableReadOnly, []byte{})
 
 	// Give the lease some time to expire.
 	time.Sleep(defaultLeaseDuration)
 
 	// Make sure the read-only operation fails.
-	cluster.submit(true, true, LeaseBasedReadOnly, []byte{})
+	cluster.submit(true, LeaseBasedReadOnly, []byte{})
 }
 
 // TestReadOnlyDisconnect checks that a new leader will renew its lease
@@ -935,7 +1021,7 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	// Submit some operations to the initial leader.
 	leader := cluster.checkLeaders(false)
 	operations := makeOperations(10)
-	cluster.submit(true, false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations...)
 
 	// Disconnect the leader and wait for a new one.
 	cluster.disconnectServer(leader)
@@ -945,5 +1031,5 @@ func TestReadOnlyDisconnect(t *testing.T) {
 	time.Sleep(defaultElectionTimeout)
 
 	// Check that read-only operation is successful.
-	cluster.submit(true, false, LeaseBasedReadOnly, []byte{})
+	cluster.submit(false, LeaseBasedReadOnly, []byte{})
 }

@@ -1043,6 +1043,10 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	// Unless this node is a leader that needs to step down, ignore any requests for
 	// a vote if this node has heard from the leader within an election timeout.
 	if r.state != Leader && time.Since(r.lastContact) < r.options.electionTimeout {
+		r.options.logger.Debugf(
+			"RequestVote RPC rejected: reason = recent contact from leader, knownLeader = %s",
+			r.leaderId,
+		)
 		return nil
 	}
 
@@ -1079,7 +1083,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	if request.LastLogTerm < r.log.LastTerm() ||
 		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
 		r.options.logger.Debugf(
-			"RequestVote RPC rejected: reason = out-of-date log, localLastLogIndex = %d, localLastLogTerm = %d, remoteLastLogTerm = %d, remoteLastLogIndex = %d",
+			"RequestVote RPC rejected: reason = out-of-date log, localLastLogIndex = %d, localLastLogTerm = %d, remoteLastLogIndex = %d, remoteLastLogTerm = %d",
 			r.log.LastIndex(),
 			r.log.LastTerm(),
 			request.LastLogIndex,
@@ -1088,7 +1092,6 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		return nil
 	}
 
-	r.lastContact = time.Now()
 	response.VoteGranted = true
 	r.votedFor = request.CandidateID
 	r.persistTermAndVote()

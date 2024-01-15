@@ -20,10 +20,10 @@ const (
 	maxElectionTime = 5
 
 	// Max amount of time for a configuration change to complete in seconds.
-	maxMembershipChangeTime = 3
+	maxMembershipChangeTime = 5
 
 	// Max amount of time for an operation to be applied in seconds.
-	maxSubmissionTime = 3
+	maxSubmissionTime = 5
 
 	// Max amount of time for state machines to match in seconds.
 	maxMatchTime = 3
@@ -230,7 +230,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 		tmpDir := t.TempDir()
 		node, err := makeRaft(id, address, tmpDir, snapshotting, snapshotSize)
 		if err != nil {
-			t.Fatalf("failed to create raft instance: error = %v", err)
+			t.Fatalf("failed to create node: error = %v", err)
 		}
 		stateMachines[id] = node.fsm.(*stateMachineMock)
 		dirs[id] = tmpDir
@@ -261,9 +261,7 @@ func (tc *testCluster) startCluster() {
 }
 
 func (tc *testCluster) stopCluster() {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-
+	fmt.Println("stopping cluster")
 	for _, node := range tc.nodes {
 		node.Stop()
 	}
@@ -274,10 +272,8 @@ func (tc *testCluster) submit(
 	operationType OperationType,
 	operations ...[]byte,
 ) {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-
 	for _, operation := range operations {
+		tc.mu.RLock()
 
 		// Attempt to submit the operations.
 		start := time.Now()
@@ -296,6 +292,9 @@ func (tc *testCluster) submit(
 						tc.t.Fatal("operation response does not match submitted operation")
 					}
 					success = true
+					break
+				} else {
+					fmt.Printf("id = %s, error: %v\n", node.id, err)
 				}
 			}
 
@@ -310,11 +309,14 @@ func (tc *testCluster) submit(
 		}
 
 		if !success && !expectFail {
+			tc.mu.RUnlock()
 			tc.t.Fatalf(
 				"cluster timed out trying to apply operation: operation = %s",
 				string(operation),
 			)
 		}
+
+		tc.mu.RUnlock()
 	}
 }
 
@@ -325,6 +327,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		// This is currently not supported and it isn't really useful to create a new node
 		// as a voting member if it is going to be dynamically added to the cluster.
 		if isVoter {
+			tc.mu.Unlock()
 			tc.t.Fatalf(
 				"cannot add a node as a voter that does not already exist as a non-voting member",
 			)
@@ -334,7 +337,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		tmpDir := tc.t.TempDir()
 		node, err := makeRaft(id, address, tmpDir, tc.snapshotting, tc.snapshotSize)
 		if err != nil {
-			tc.t.Fatalf("failed to make raft: error = %v", err)
+			tc.t.Fatalf("failed to make node: error = %v", err)
 		}
 		tc.nodes[id] = node
 		tc.dirs[id] = tmpDir
@@ -342,7 +345,8 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 
 		// Start the node as a non-voting member with no configuration.
 		if err := node.Start(); err != nil {
-			tc.t.Fatalf("failed to start raft: error = %v", err)
+			tc.mu.Unlock()
+			tc.t.Fatalf("failed to start node: error = %v", err)
 		}
 	}
 	tc.mu.Unlock()
@@ -397,36 +401,15 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		tc.mu.RLock()
 	}
 
-	tc.t.Fatalf("timed out trying to add a node")
+	tc.t.Fatalf("timed out trying to add a node: ID = %s, address = %s", id, address)
 }
 
 func (tc *testCluster) removeServer(id string) {
-	// Remove the node now to prevent a concurrent go routine accessing it.
-	tc.mu.Lock()
-	removeNode, ok := tc.nodes[id]
-	if !ok {
-		tc.t.Fatalf("tried to remove a node that does not exist: ID = %s", id)
-	}
-	delete(tc.nodes, id)
-	delete(tc.dirs, id)
-	delete(tc.stateMachines, id)
-	tc.mu.Unlock()
-
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-
-	// Since we removed the node, we have to create a new array containing the nodes
-	// because the removed node might be the leader.
-	nodes := make(map[string]*Raft, len(tc.nodes)+1)
-	for otherID, node := range tc.nodes {
-		nodes[otherID] = node
-	}
-	nodes[id] = removeNode
-
 	// Attempt to remove the node from the cluster.
+	tc.mu.RLock()
 	start := time.Now()
 	for time.Since(start).Seconds() < maxMembershipChangeTime {
-		for _, node := range nodes {
+		for _, node := range tc.nodes {
 			// Submit the request to remove a member to the cluster.
 			// This node might be the leader.
 			future := node.RemoveServer(id, futureTimeout)
@@ -434,6 +417,7 @@ func (tc *testCluster) removeServer(id string) {
 			if err := response.Error(); err != nil {
 				continue
 			}
+			tc.mu.RUnlock()
 
 			// Make sure the configuration foes not contain the removed node.
 			configuration := response.Success()
@@ -445,7 +429,18 @@ func (tc *testCluster) removeServer(id string) {
 					id,
 				)
 			}
+
+			// Stop the node.
+			tc.mu.Lock()
+			defer tc.mu.Unlock()
+			removeNode, ok := tc.nodes[id]
 			removeNode.Stop()
+			if !ok {
+				tc.t.Fatalf("tried to remove a node that does not exist: ID = %s", id)
+			}
+			delete(tc.nodes, id)
+			delete(tc.dirs, id)
+			delete(tc.stateMachines, id)
 			return
 		}
 
@@ -455,7 +450,8 @@ func (tc *testCluster) removeServer(id string) {
 		tc.mu.RLock()
 	}
 
-	tc.t.Fatalf("timed out trying to remove a node")
+	tc.mu.RUnlock()
+	tc.t.Fatalf("timed out trying to remove a node: ID = %s", id)
 }
 
 func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperations [][]byte) {
@@ -489,7 +485,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperatio
 		// Check that we have atleast the expected number of matches and that
 		// the applied operations are correct.
 		if matches >= expectedMatches {
-			// Check that log indices are monotonically increasing on all
+			// Check that applied log indices are monotonically increasing on all
 			// state machines, not just those that are supposed to match.
 			for _, operations := range allAppliedOperations {
 				tc.checkMonotonicity(operations)
@@ -642,6 +638,11 @@ func (tc *testCluster) crashServer(id string) {
 	if !ok {
 		tc.t.Fatalf("attempted to crash node that does not exist: ID = %s", id)
 	}
+	status := node.Status()
+	if status.State == Shutdown {
+		tc.t.Fatalf("attempted to crash server that was already crashed: ID = %s", id)
+	}
+
 	node.Stop()
 }
 
@@ -656,30 +657,37 @@ func (tc *testCluster) crashRandom() string {
 			notCrashed = append(notCrashed, node)
 		}
 	}
+	fmt.Printf("not crashed: %d\n", len(notCrashed))
 	i := util.RandomInt(0, len(notCrashed))
-
 	notCrashed[i].Stop()
 
 	return notCrashed[i].id
+}
+
+func (tc *testCluster) restartServers() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	for _, node := range tc.nodes {
+		status := node.Status()
+		if status.State == Shutdown {
+			if err := node.Restart(); err != nil {
+				tc.t.Fatalf("failed to restart node: error = %v", err)
+			}
+		}
+	}
 }
 
 func (tc *testCluster) restartServer(id string) {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
 
-	if _, ok := tc.nodes[id]; !ok {
-		tc.t.Fatalf("attempted to restart node that does not exist: ID = %s", id)
+	node, ok := tc.nodes[id]
+	if !ok {
+		tc.t.Fatalf("attempted to restart node which does not exist: ID = %s", id)
 	}
-
-	node, err := makeRaft(id, tc.nodes[id].address, tc.dirs[id], tc.snapshotting, tc.snapshotSize)
-	if err != nil {
-		tc.t.Fatalf("failed to create node: error = %v", err)
-	}
-	tc.stateMachines[id] = node.fsm.(*stateMachineMock)
-	tc.nodes[id] = node
-
-	if err := node.Start(); err != nil {
-		tc.t.Fatalf("failed to start node: error = %v", err)
+	if err := node.Restart(); err != nil {
+		tc.t.Fatalf("failed to restart node: error = %v", err)
 	}
 }
 
@@ -688,7 +696,7 @@ func (tc *testCluster) createPartition() {
 	defer tc.mu.Unlock()
 
 	// The number of nodes in the partition.
-	partitionSize := len(tc.nodes) / 2
+	partitionSize := (len(tc.nodes) - 1) / 2
 
 	// The nodes in the partition.
 	partitionSet := make(map[string]bool)

@@ -622,7 +622,7 @@ func TestMultiPartition(t *testing.T) {
 // progress submitting multiple operations in the presence of
 // multiple and changing partitions and changing membership.
 func TestMultiPartitionMembership(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to create partitions.
 	done := int32(0)
@@ -682,7 +682,7 @@ func TestMultiPartitionMembership(t *testing.T) {
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(3, operations)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestBasicCrash checks that a cluster can still make
@@ -736,7 +736,7 @@ func TestCrashRejoin(t *testing.T) {
 // cluster in the face of multiple crashes. The added members may also
 // be crashed
 func TestMultiCrashMembership(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -749,16 +749,14 @@ func TestMultiCrashMembership(t *testing.T) {
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash a random server.
-			crash := cluster.crashRandom()
-			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
-			time.Sleep(randomTime)
+			cluster.crashRandom()
 
 			// Allow the cluster to make progress while the server is offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the servers back online.
-			cluster.restartServer(crash)
+			cluster.restartServers()
 		}
 	}
 
@@ -767,11 +765,13 @@ func TestMultiCrashMembership(t *testing.T) {
 		defer wg.Done()
 		nodes := cluster.nodeIDs()
 
-		// Add a member.
+		// Add a non-voter.
 		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 		time.Sleep(randomTime)
 		id, address := cluster.unusedIDandAddress()
 		cluster.addServer(id, address, false)
+
+		// Promote the non-voter to a voter.
 		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 		time.Sleep(randomTime)
 		cluster.addServer(id, address, true)
@@ -791,14 +791,15 @@ func TestMultiCrashMembership(t *testing.T) {
 	go crashRoutine()
 	go membershipRoutine()
 
-	// See if we can commit operations in the face of multiple crashes.
+	// See if we can commit operations in the face of multiple crashes
+	// and changing membership.
 	operations := makeOperations(1000)
 	cluster.submit(false, Replicated, operations...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(3, operations)
+	cluster.checkStateMachines(5, operations)
 }
 
 // TestMultiCrash checks if a cluster can still make
@@ -818,20 +819,15 @@ func TestMultiCrash(t *testing.T) {
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash two random servers.
-			crash1 := cluster.crashRandom()
-			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
-			time.Sleep(randomTime)
-			crash2 := cluster.crashRandom()
+			cluster.crashRandom()
+			cluster.crashRandom()
 
 			// Allow the cluster to make progress while the servers are offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the servers back online.
-			cluster.restartServer(crash1)
-			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
-			time.Sleep(randomTime)
-			cluster.restartServer(crash2)
+			cluster.restartServers()
 
 		}
 	}

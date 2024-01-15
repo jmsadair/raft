@@ -119,12 +119,11 @@ func (r *operationManager) appliableReadOnlyOperations(
 }
 
 func (r *operationManager) notifyLostLeaderShip(id string, knownLeader string) {
-	response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
 	for _, responseCh := range r.pendingReadOnly {
-		responseCh <- response
+		respond(responseCh, OperationResponse{}, ErrNotLeader)
 	}
 	for _, responseCh := range r.pendingReplicated {
-		responseCh <- response
+		respond(responseCh, OperationResponse{}, ErrNotLeader)
 	}
 	r.pendingReadOnly = make(map[*Operation]chan Result[OperationResponse])
 	r.pendingReplicated = make(map[uint64]chan Result[OperationResponse])

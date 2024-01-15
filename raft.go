@@ -531,7 +531,7 @@ func (r *Raft) AddServer(
 
 	// Only the leader can make membership changes.
 	if r.state != Leader {
-		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrNotLeader)
+		respond(configurationFuture.responseCh, Configuration{}, ErrNotLeader)
 		return configurationFuture
 	}
 
@@ -543,7 +543,7 @@ func (r *Raft) AddServer(
 
 	// The membership change is still pending - a different node cannot be added at this time.
 	if r.commitIndex < r.configuration.Index {
-		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrPendingConfiguration)
+		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
 		return configurationFuture
 	}
 
@@ -551,7 +551,7 @@ func (r *Raft) AddServer(
 	if memberAddress, ok := r.configuration.Members[id]; ok &&
 		r.configuration.IsVoter[id] == isVoter &&
 		memberAddress == address {
-		configurationFuture.responseCh <- newResult[Configuration](*r.configuration, nil)
+		respond(configurationFuture.responseCh, *r.configuration, nil)
 		return configurationFuture
 	}
 
@@ -597,7 +597,7 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 
 	// Only the leader can make membership changes.
 	if r.state != Leader {
-		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrNotLeader)
+		respond(configurationFuture.responseCh, Configuration{}, ErrNotLeader)
 		return configurationFuture
 	}
 
@@ -611,13 +611,13 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 
 	// The membership change is still pending - a different node cannot be removed at this time.
 	if r.commitIndex < r.configuration.Index {
-		configurationFuture.responseCh <- newResult[Configuration](Configuration{}, ErrPendingConfiguration)
+		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
 		return configurationFuture
 	}
 
 	// The provided node is already removed from the cluster.
 	if _, ok := r.configuration.Members[id]; !ok {
-		configurationFuture.responseCh <- newResult[Configuration](*r.configuration, nil)
+		respond(configurationFuture.responseCh, *r.configuration, nil)
 		return configurationFuture
 	}
 
@@ -656,8 +656,11 @@ func (r *Raft) SubmitOperation(
 		return r.submitReadOnlyOperation(operation, operationType, timeout)
 	default:
 		operationFuture := newFuture[OperationResponse](timeout)
-		response := newResult(OperationResponse{}, errors.New("operation type is not valid"))
-		operationFuture.responseCh <- response
+		respond(
+			operationFuture.responseCh,
+			OperationResponse{},
+			errors.New("operation type is not valid"),
+		)
 		return operationFuture
 	}
 }
@@ -673,8 +676,7 @@ func (r *Raft) submitReplicatedOperation(
 	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
-		operationFuture.responseCh <- response
+		respond(operationFuture.responseCh, OperationResponse{}, ErrNotLeader)
 		return operationFuture
 	}
 
@@ -709,8 +711,7 @@ func (r *Raft) submitReadOnlyOperation(
 	operationFuture := newFuture[OperationResponse](timeout)
 
 	if r.state != Leader {
-		response := newResult[OperationResponse](OperationResponse{}, ErrNotLeader)
-		operationFuture.responseCh <- response
+		respond(operationFuture.responseCh, OperationResponse{}, ErrNotLeader)
 		return operationFuture
 	}
 
@@ -1641,11 +1642,7 @@ func (r *Raft) applyLoop() {
 			if entry.EntryType == ConfigurationEntry {
 				r.applyConfigurationEntry(entry)
 				r.lastApplied++
-				response := newResult[Configuration](*r.configuration, nil)
-				select {
-				case r.configurationResponseCh <- response:
-				default:
-				}
+				respond(r.configurationResponseCh, *r.configuration, nil)
 				continue
 			}
 
@@ -1667,9 +1664,7 @@ func (r *Raft) applyLoop() {
 				Operation:           operation,
 				ApplicationResponse: r.fsm.Apply(&operation),
 			}
-			if ok {
-				responseCh <- newResult[OperationResponse](response, nil)
-			}
+			respond(responseCh, response, nil)
 			r.options.logger.Debugf(
 				"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
 				operation.LogIndex,
@@ -1723,7 +1718,7 @@ func (r *Raft) readOnlyLoop() {
 		for operation, responseCh := range appliableOperations {
 			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
-				responseCh <- newResult[OperationResponse](OperationResponse{}, ErrInvalidLease)
+				respond(responseCh, OperationResponse{}, ErrInvalidLease)
 				continue
 			}
 
@@ -1732,7 +1727,7 @@ func (r *Raft) readOnlyLoop() {
 				Operation:           *operation,
 				ApplicationResponse: r.fsm.Apply(operation),
 			}
-			responseCh <- newResult[OperationResponse](response, nil)
+			respond(responseCh, response, nil)
 			r.options.logger.Debugf(
 				"applied operation to state machine: readIndex = %d, type = %s",
 				operation.readIndex,
@@ -1848,7 +1843,7 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
 	// Step down if this node is being removed.
-	if _, ok := next.Members[r.id]; !ok {
+	if r.configuration.Members[r.id] != next.Members[r.id] {
 		r.resetSnapshotFiles()
 		r.state = Follower
 	}

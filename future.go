@@ -74,14 +74,19 @@ type result[T Response] struct {
 	err error
 }
 
-func newResult[T Response](response T, err error) Result[T] {
-	return &result[T]{success: response, err: err}
-}
-
 func (r *result[T]) Success() T {
 	return r.success
 }
 
 func (r *result[T]) Error() error {
 	return r.err
+}
+
+// respond creates a result with the provided response and error and sends
+// it to the response channel without blocking.
+func respond[T Response](responseCh chan Result[T], response T, err error) {
+	select {
+	case responseCh <- &result[T]{success: response, err: err}:
+	default:
+	}
 }

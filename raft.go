@@ -1119,6 +1119,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	// Only vote if this is a real election.
 	if !request.Prevote {
+		r.lastContact = time.Now()
 		r.votedFor = request.CandidateID
 		r.persistTermAndVote()
 	}
@@ -2006,4 +2007,11 @@ func (r *Raft) isMember(id string) bool {
 // this node as a voting member.
 func (r *Raft) isSingleServerCluster() bool {
 	return len(r.configuration.Members) == 1 && r.configuration.IsVoter[r.id]
+}
+
+// pendingConfigurationChange returns true if the current configuration
+// has not been committed.
+func (r *Raft) pendingConfigurationChange() bool {
+	return r.committedConfiguration == nil ||
+		r.committedConfiguration.Index != r.configuration.Index
 }

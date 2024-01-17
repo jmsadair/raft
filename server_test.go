@@ -580,7 +580,7 @@ func TestMultiPartition(t *testing.T) {
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	partitionRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
@@ -622,11 +622,11 @@ func TestMultiPartition(t *testing.T) {
 // progress submitting multiple operations in the presence of
 // multiple and changing partitions and changing membership.
 func TestMultiPartitionMembership(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	// A go routine to create partitions.
 	done := int32(0)
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	partitionRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
@@ -646,43 +646,39 @@ func TestMultiPartitionMembership(t *testing.T) {
 		}
 	}
 
-	// A go routine to add and remove a member.
-	membershipRoutine := func() {
-		defer wg.Done()
-		nodes := cluster.nodeIDs()
-
-		// Add a member.
-		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		id, address := cluster.unusedIDandAddress()
-		cluster.addServer(id, address, false)
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addServer(id, address, true)
-
-		// Remove a member.
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
-	}
-
 	cluster.startCluster()
 	defer cluster.stopCluster()
 	cluster.checkLeaders(false)
 
-	// Start partitioning and membership changes.
-	wg.Add(2)
+	// Start partitioning.
+	wg.Add(1)
 	go partitionRoutine()
-	go membershipRoutine()
 
-	// See if we can commit operations in the face of recurring partitions.
+	// Submit some operations.
 	operations := makeOperations(1000)
-	cluster.submit(false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations[:250]...)
+
+	// Add a member as a non-voter.
+	id, address := cluster.unusedIDandAddress()
+	cluster.addServer(id, address, false)
+
+	// Submit some more operations.
+	cluster.submit(false, Replicated, operations[250:500]...)
+
+	// Promote the non-voter to a voter.
+	cluster.addServer(id, address, true)
+
+	// Remove a server.
+	nodes := cluster.nodeIDs()
+	cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
+
+	// Submit some more operations.
+	cluster.submit(false, Replicated, operations[500:]...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, operations)
+	cluster.checkStateMachines(3, operations)
 }
 
 // TestBasicCrash checks that a cluster can still make
@@ -736,11 +732,11 @@ func TestCrashRejoin(t *testing.T) {
 // cluster in the face of multiple crashes. The added members may also
 // be crashed
 func TestMultiCrashMembership(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	crashRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
@@ -748,38 +744,16 @@ func TestMultiCrashMembership(t *testing.T) {
 			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Crash a random server.
+			// Crash a random node.
 			cluster.crashRandom()
 
-			// Allow the cluster to make progress while the server is offline.
+			// Allow the cluster to make progress while the node is offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Bring the servers back online.
+			// Bring the node back online.
 			cluster.restartServers()
 		}
-	}
-
-	// A go routine to add and remove a member.
-	membershipRoutine := func() {
-		defer wg.Done()
-		nodes := cluster.nodeIDs()
-
-		// Add a non-voter.
-		randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		id, address := cluster.unusedIDandAddress()
-		cluster.addServer(id, address, false)
-
-		// Promote the non-voter to a voter.
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.addServer(id, address, true)
-
-		// Remove a member.
-		randomTime = util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
-		time.Sleep(randomTime)
-		cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
 	}
 
 	cluster.startCluster()
@@ -787,19 +761,34 @@ func TestMultiCrashMembership(t *testing.T) {
 	cluster.checkLeaders(false)
 
 	// Start crashing servers.
-	wg.Add(2)
+	wg.Add(1)
 	go crashRoutine()
-	go membershipRoutine()
 
-	// See if we can commit operations in the face of multiple crashes
-	// and changing membership.
+	// Submit some operations.
 	operations := makeOperations(1000)
-	cluster.submit(false, Replicated, operations...)
+	cluster.submit(false, Replicated, operations[:250]...)
+
+	// Add a member as a non-voter.
+	id, address := cluster.unusedIDandAddress()
+	cluster.addServer(id, address, false)
+
+	// Submit some more operations.
+	cluster.submit(false, Replicated, operations[250:500]...)
+
+	// Promote the non-voter to a voter.
+	cluster.addServer(id, address, true)
+
+	// Remove a server.
+	nodes := cluster.nodeIDs()
+	cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
+
+	// Submit some more operations.
+	cluster.submit(false, Replicated, operations[500:]...)
 
 	atomic.StoreInt32(&done, 1)
 	wg.Wait()
 
-	cluster.checkStateMachines(5, operations)
+	cluster.checkStateMachines(3, operations)
 }
 
 // TestMultiCrash checks if a cluster can still make
@@ -810,7 +799,7 @@ func TestMultiCrash(t *testing.T) {
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
-	wg := sync.WaitGroup{}
+	var wg sync.WaitGroup
 	crashRoutine := func() {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
@@ -818,15 +807,15 @@ func TestMultiCrash(t *testing.T) {
 			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Crash two random servers.
+			// Crash two random nodes.
 			cluster.crashRandom()
 			cluster.crashRandom()
 
-			// Allow the cluster to make progress while the servers are offline.
+			// Allow the cluster to make progress while the nodes are offline.
 			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
-			// Bring the servers back online.
+			// Bring the nodes back online.
 			cluster.restartServers()
 
 		}

@@ -20,10 +20,10 @@ const (
 	maxElectionTime = 5
 
 	// Max amount of time for a configuration change to complete in seconds.
-	maxMembershipChangeTime = 5
+	maxMembershipChangeTime = 3
 
 	// Max amount of time for an operation to be applied in seconds.
-	maxSubmissionTime = 5
+	maxSubmissionTime = 3
 
 	// Max amount of time for state machines to match in seconds.
 	maxMatchTime = 3
@@ -261,7 +261,6 @@ func (tc *testCluster) startCluster() {
 }
 
 func (tc *testCluster) stopCluster() {
-	fmt.Println("stopping cluster")
 	for _, node := range tc.nodes {
 		node.Stop()
 	}
@@ -293,8 +292,6 @@ func (tc *testCluster) submit(
 					}
 					success = true
 					break
-				} else {
-					fmt.Printf("id = %s, error: %v\n", node.id, err)
 				}
 			}
 
@@ -327,7 +324,6 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		// This is currently not supported and it isn't really useful to create a new node
 		// as a voting member if it is going to be dynamically added to the cluster.
 		if isVoter {
-			tc.mu.Unlock()
 			tc.t.Fatalf(
 				"cannot add a node as a voter that does not already exist as a non-voting member",
 			)
@@ -345,7 +341,6 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 
 		// Start the node as a non-voting member with no configuration.
 		if err := node.Start(); err != nil {
-			tc.mu.Unlock()
 			tc.t.Fatalf("failed to start node: error = %v", err)
 		}
 	}
@@ -362,6 +357,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 			future := node.AddServer(id, address, isVoter, futureTimeout)
 			response := future.Await()
 			if err := response.Error(); err != nil {
+				fmt.Println(err.Error())
 				continue
 			}
 
@@ -391,7 +387,6 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 					isVoter,
 				)
 			}
-
 			return
 		}
 
@@ -441,6 +436,9 @@ func (tc *testCluster) removeServer(id string) {
 			delete(tc.nodes, id)
 			delete(tc.dirs, id)
 			delete(tc.stateMachines, id)
+			if _, ok := tc.disconnected[id]; ok {
+				delete(tc.disconnected, id)
+			}
 			return
 		}
 
@@ -495,6 +493,10 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperatio
 			tc.checkContainsAll(matchID, submittedOperations, allAppliedOperations[matchID])
 			return
 		}
+
+		tc.mu.RUnlock()
+		time.Sleep(defaultElectionTimeout)
+		tc.mu.RLock()
 	}
 
 	// There are not enough matches.
@@ -631,8 +633,8 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) string {
 }
 
 func (tc *testCluster) crashServer(id string) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	node, ok := tc.nodes[id]
 	if !ok {
@@ -647,8 +649,8 @@ func (tc *testCluster) crashServer(id string) {
 }
 
 func (tc *testCluster) crashRandom() string {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	notCrashed := make([]*Raft, 0, len(tc.nodes))
 	for _, node := range tc.nodes {
@@ -657,7 +659,6 @@ func (tc *testCluster) crashRandom() string {
 			notCrashed = append(notCrashed, node)
 		}
 	}
-	fmt.Printf("not crashed: %d\n", len(notCrashed))
 	i := util.RandomInt(0, len(notCrashed))
 	notCrashed[i].Stop()
 
@@ -665,8 +666,8 @@ func (tc *testCluster) crashRandom() string {
 }
 
 func (tc *testCluster) restartServers() {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	for _, node := range tc.nodes {
 		status := node.Status()
@@ -679,8 +680,8 @@ func (tc *testCluster) restartServers() {
 }
 
 func (tc *testCluster) restartServer(id string) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
 
 	node, ok := tc.nodes[id]
 	if !ok {
@@ -698,13 +699,10 @@ func (tc *testCluster) createPartition() {
 	// The number of nodes in the partition.
 	partitionSize := (len(tc.nodes) - 1) / 2
 
-	// The nodes in the partition.
-	partitionSet := make(map[string]bool)
-
 	// Choose random nodes to partition.
 	for id := range tc.nodes {
-		partitionSet[id] = true
-		if len(partitionSet) == partitionSize {
+		tc.disconnected[id] = true
+		if len(tc.disconnected) == partitionSize {
 			break
 		}
 	}
@@ -713,9 +711,9 @@ func (tc *testCluster) createPartition() {
 	// that are not, but maintain connections between the nodes
 	// that are in the partition set.
 	for id1, node1 := range tc.nodes {
-		if _, ok := partitionSet[id1]; ok {
+		if _, ok := tc.disconnected[id1]; ok {
 			for id2, node2 := range tc.nodes {
-				if _, ok := partitionSet[id2]; ok {
+				if _, ok := tc.disconnected[id2]; ok {
 					continue
 				}
 				if err := node1.transport.Close(node2.address); err != nil {
@@ -736,10 +734,6 @@ func (tc *testCluster) createPartition() {
 				}
 			}
 		}
-	}
-
-	for id := range partitionSet {
-		tc.disconnected[id] = true
 	}
 }
 

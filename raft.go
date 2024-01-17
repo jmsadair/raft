@@ -943,7 +943,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 
 	// Only leader may send AppendEntries RPCs.
 	// It's also possible that this node was removed from the cluster.
-	if r.state != Leader || r.isMember(id) {
+	if r.state != Leader || !r.isMember(id) {
 		return
 	}
 
@@ -1696,55 +1696,54 @@ func (r *Raft) applyLoop() {
 				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
 			}
 
-			if entry.EntryType == NoOpEntry {
+			switch entry.EntryType {
+			case NoOpEntry:
 				r.lastApplied++
-				continue
-			}
-
-			if entry.EntryType == ConfigurationEntry {
+			case ConfigurationEntry:
 				r.applyConfigurationEntry(entry)
 				respond(r.configurationResponseCh, *r.configuration, nil)
 				r.lastApplied++
-				continue
-			}
+			case OperationEntry:
+				responseCh, ok := r.operationManager.pendingReplicated[entry.Index]
+				if ok {
+					delete(r.operationManager.pendingReplicated, entry.Index)
+				}
 
-			responseCh, ok := r.operationManager.pendingReplicated[entry.Index]
-			if ok {
-				delete(r.operationManager.pendingReplicated, entry.Index)
-			}
+				operation := Operation{
+					LogIndex:      entry.Index,
+					LogTerm:       entry.Term,
+					Bytes:         entry.Data,
+					OperationType: Replicated,
+				}
+				lastApplied := r.lastApplied
 
-			operation := Operation{
-				LogIndex:      entry.Index,
-				LogTerm:       entry.Term,
-				Bytes:         entry.Data,
-				OperationType: Replicated,
-			}
-			lastApplied := r.lastApplied
+				r.mu.Unlock()
+				response := OperationResponse{
+					Operation:           operation,
+					ApplicationResponse: r.fsm.Apply(&operation),
+				}
+				respond(responseCh, response, nil)
+				r.options.logger.Debugf(
+					"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
+					operation.LogIndex,
+					operation.LogTerm,
+					operation.OperationType.String(),
+				)
+				r.mu.Lock()
 
-			r.mu.Unlock()
-			response := OperationResponse{
-				Operation:           operation,
-				ApplicationResponse: r.fsm.Apply(&operation),
-			}
-			respond(responseCh, response, nil)
-			r.options.logger.Debugf(
-				"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
-				operation.LogIndex,
-				operation.LogTerm,
-				operation.OperationType.String(),
-			)
-			r.mu.Lock()
+				// It's possible a snapshot was installed while the lock was released.
+				// It's not safe to increment the last applied index if it has changed.
+				if r.lastApplied != lastApplied {
+					continue
+				}
 
-			// It's possible a snapshot was installed while the lock was released.
-			// It's not safe to increment the last applied index if it has changed.
-			if r.lastApplied != lastApplied {
-				continue
-			}
+				r.lastApplied++
 
-			r.lastApplied++
-
-			if r.fsm.NeedSnapshot(r.log.Size()) {
-				r.takeSnapshot()
+				if r.fsm.NeedSnapshot(r.log.Size()) {
+					r.takeSnapshot()
+				}
+			default:
+				r.options.logger.Fatal("log entry has invalid type")
 			}
 		}
 

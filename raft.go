@@ -234,28 +234,28 @@ func NewRaft(
 	if options.log == nil {
 		log, err := NewLog(dataPath)
 		if err != nil {
-			return nil, fmt.Errorf("could not create log instance: %w", err)
+			return nil, err
 		}
 		raft.log = log
 	}
 	if options.stateStorage == nil {
 		stateStore, err := NewStateStorage(dataPath)
 		if err != nil {
-			return nil, fmt.Errorf("could not create state storage instance: %w", err)
+			return nil, err
 		}
 		raft.stateStorage = stateStore
 	}
 	if options.snapshotStorage == nil {
 		snapshotStore, err := NewSnapshotStorage(dataPath)
 		if err != nil {
-			return nil, fmt.Errorf("could not create snapshbot storage instance: %w", err)
+			return nil, err
 		}
 		raft.snapshotStorage = snapshotStore
 	}
 	if options.transport == nil {
 		transport, err := NewTransport(address)
 		if err != nil {
-			return nil, fmt.Errorf("could not create transport instance: %w", err)
+			return nil, err
 		}
 		raft.transport = transport
 	}
@@ -268,7 +268,7 @@ func NewRaft(
 	raft.electionCond = sync.NewCond(&raft.mu)
 
 	if err := raft.restore(); err != nil {
-		return nil, fmt.Errorf("could not restore node: %w", err)
+		return nil, err
 	}
 
 	return raft, nil
@@ -357,7 +357,7 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 	}
 	if r.log.LastIndex() > 0 {
 		return errors.New(
-			"node already has existing state: Bootstrap should only be called for a clustrer starting for the first time",
+			"node already has existing state: Bootstrap should only be called for a cluster starting for the first time",
 		)
 	}
 
@@ -368,11 +368,11 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 	// Append the configuration to the log.
 	data, err := r.transport.EncodeConfiguration(r.configuration)
 	if err != nil {
-		return fmt.Errorf("could not encode configuration: %w", err)
+		return err
 	}
 	entry := NewLogEntry(index, term, data, ConfigurationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
-		return fmt.Errorf("could not append configuration to log: %w", err)
+		return err
 	}
 
 	r.options.logger.Infof("node bootstrapped: configuration = %s", r.configuration.String())
@@ -447,7 +447,7 @@ func (r *Raft) start(restore bool) error {
 	r.wg.Add(6)
 	go r.readOnlyLoop()
 	go r.applyLoop()
-	go r.preVoteLoop()
+	go r.electionTicker()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
@@ -801,7 +801,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		response.Term = r.currentTerm
 	}
 
-	// Transition to follower state if still in candidate or precandidate state.
+	// Transition to follower state if this node is still in the candidate or precandidate state.
 	if request.Term == r.currentTerm && (r.state == Candidate || r.state == PreCandidate) {
 		r.becomeFollower(request.LeaderID, request.Term)
 	}
@@ -920,7 +920,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 // sendAppendEntriesToPeers sends an AppendEntries RPC to all nodes.
 func (r *Raft) sendAppendEntriesToPeers() {
 	// Handle the single node cluster case.
-	if len(r.configuration.Members) == 1 {
+	if r.isSingleServerCluster() {
 		if r.log.LastIndex() > r.commitIndex {
 			r.commitCond.Broadcast()
 		}
@@ -929,10 +929,9 @@ func (r *Raft) sendAppendEntriesToPeers() {
 
 	numResponses := 1
 	for id, address := range r.configuration.Members {
-		if id == r.id {
-			continue
+		if id != r.id {
+			go r.sendAppendEntries(id, address, &numResponses)
 		}
-		go r.sendAppendEntries(id, address, &numResponses)
 	}
 }
 
@@ -943,16 +942,12 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	defer r.mu.Unlock()
 
 	// Only leader may send AppendEntries RPCs.
-	if r.state != Leader {
+	// It's also possible that this node was removed from the cluster.
+	if r.state != Leader || r.isMember(id) {
 		return
 	}
 
-	// It's possible that this node was removed from the cluster while the lock
-	// was released.
-	follower, ok := r.followers[id]
-	if !ok {
-		return
-	}
+	follower := r.followers[id]
 
 	// Send a snapshot instead if the follower log no longer contains the previous log entry.
 	if follower.nextIndex <= r.lastIncludedIndex {
@@ -973,11 +968,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	}
 
 	entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
-	for index := nextIndex; index < r.log.NextIndex(); index++ {
-		// Make sure that the index is in bounds since the log may have been compacted.
-		if index <= r.lastIncludedIndex {
-			break
-		}
+	for index := nextIndex; index > r.lastIncludedIndex && index < r.log.NextIndex(); index++ {
 		entry, err := r.log.GetEntry(index)
 		if err != nil {
 			r.options.logger.Fatalf("failed getting entry from log: error = %v", err)
@@ -999,7 +990,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	r.mu.Lock()
 
 	// Quit if RPC failed, leadership was lost, or the node was removed from the cluster.
-	if _, ok := r.followers[id]; !ok || err != nil || r.state != Leader {
+	if !r.isMember(id) || err != nil || r.state != Leader {
 		return
 	}
 
@@ -1009,7 +1000,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 		return
 	}
 
-	// Recieved ack from majority of cluster - this node is a legitimate leader.
+	// If the majority of cluster acknowledges the request, this node is a legitimate leader.
 	// Try to apply pending read-only operations.
 	if numResponses != nil {
 		*numResponses += 1
@@ -1021,10 +1012,12 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 
 	if !response.Success {
 		follower.nextIndex = response.Index
+
 		// Send a snapshot to the follower if the log no longer contains the previous entry.
 		if follower.nextIndex <= r.lastIncludedIndex {
 			r.sendInstallSnapshot(id, address)
 		}
+
 		return
 	}
 
@@ -1063,9 +1056,14 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	response.Term = r.currentTerm
 	response.VoteGranted = false
 
-	// Unless this node is a leader that needs to step down, ignore any requests for
-	// a vote if this node has heard from the leader within an election timeout.
-	if r.state != Leader && time.Since(r.lastContact) < r.options.electionTimeout {
+	// This check is necessary to prevent disruptive servers.
+	//
+	// Ignore any requests for a vote if:
+	// 1. This node is a leader and it has recently has successful contact with
+	//    a majority of the cluster (it has a valid lease).
+	// 2. This node is a follower and it has been recently contacted by the leader.
+	if r.operationManager.leaderLease.isValid() ||
+		time.Since(r.lastContact) < r.options.electionTimeout {
 		r.options.logger.Debugf(
 			"RequestVote RPC rejected: reason = recent contact from leader, knownLeader = %s",
 			r.leaderId,
@@ -1083,7 +1081,8 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		return nil
 	}
 
-	// If the request has a more up-to-date term, update current term and become a followers.
+	// If this is not a prevote and the request has a more up-to-date term,
+	// update the current term and become a follower.
 	if !request.Prevote && request.Term > r.currentTerm {
 		r.becomeFollower(request.CandidateID, request.Term)
 		response.Term = r.currentTerm
@@ -1099,6 +1098,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	}
 
 	// Reject any requests with an out-of-date log.
+	//
 	// To determine which log is more up-to-date:
 	// 1. If the logs have last entries with different terms, then the log with the
 	//    greater term is more up-to-date.
@@ -1117,12 +1117,11 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	response.VoteGranted = true
 
-	if request.Prevote {
-		return nil
+	// Only vote if this is a real election.
+	if !request.Prevote {
+		r.votedFor = request.CandidateID
+		r.persistTermAndVote()
 	}
-
-	r.votedFor = request.CandidateID
-	r.persistTermAndVote()
 
 	r.options.logger.Infof(
 		"RequestVote RPC successful: prevote = %t, votedFor = %s, term = %d",
@@ -1134,14 +1133,17 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	return nil
 }
 
-func (r *Raft) preVoteLoop() {
+// electionTicker is a long running loop that will periodically
+// send a signal to the election loop to start an election.
+func (r *Raft) electionTicker() {
 	defer r.wg.Done()
 
 	for {
-		// Sleep for a random amount of time bewteen an election timeout and two election timeouts
+		// Sleep for a random amount of time bewteen one and two election timeouts
 		// to avoid kicking off an election at the same time as other nodes.
 		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
 		time.Sleep(timeout * time.Millisecond)
+
 		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
@@ -1149,15 +1151,12 @@ func (r *Raft) preVoteLoop() {
 		}
 		r.mu.Unlock()
 
-		// Signal to the election loop that an election is necessary.
 		r.electionCond.Broadcast()
 	}
 }
 
-// electionLoop is a long running loop that will kick off election when
-// this node has not been contacted by the leader within an election timeout
-// or when this node just had a successful prevote and transitioned to the
-// candidate state.
+// electionLoop is a long running loop that will attempt to start an
+// election when signaled.
 func (r *Raft) electionLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1169,18 +1168,17 @@ func (r *Raft) electionLoop() {
 	}
 }
 
-// election will kick off an election if this node is a voting member and
-// it is not been contacted by the leader within the election timeout period.
+// election will start an election if this node is a voting member
+// of the cluster and this node has not been contacted by the leader
+// within an election timeout.
 func (r *Raft) election() {
-	// If we have already been elected the leader, or we have been contacted by the leader
-	// since the last election timeout, an election is not needed.
-	if r.state == Leader || r.state == Shutdown ||
+	// There is no need for an election if:
+	// 1. This node is already the leader.
+	// 2. This node has been shutdown.
+	// 3. This node is not a voting member of the cluster.
+	// 4. This node has recently been contacted by the leader.
+	if r.state == Leader || r.state == Shutdown || !r.isVoter(r.id) ||
 		time.Since(r.lastContact) < r.options.electionTimeout {
-		return
-	}
-
-	// If this node is not a voter, an election is not necessary.
-	if !r.configuration.IsVoter[r.id] {
 		return
 	}
 
@@ -1191,21 +1189,19 @@ func (r *Raft) election() {
 	r.sendRequestVoteToPeers()
 }
 
-// sendRequestVoteToPeers sends a RequestVoteRPC to all nodes in the
-// cluster, excluding those that are non-voters.
+// sendRequestVoteToPeers sends a RequestVoteRPC to all nodes in the cluster,
+// excluding those that are non-voters.
 func (r *Raft) sendRequestVoteToPeers() {
-	//  Handle the single node cluster case.
-	if len(r.configuration.Members) == 1 && r.configuration.IsVoter[r.id] {
+	// Handle the single node cluster case.
+	if r.isSingleServerCluster() {
 		r.becomeLeader()
 		return
 	}
 
+	// Send RequestVote RPCs to all voting members of the cluster.
 	votesRecieved := 1
 	for id, address := range r.configuration.Members {
-		if id == r.id {
-			continue
-		}
-		if r.configuration.IsVoter[id] {
+		if id != r.id && r.isVoter(id) {
 			go r.sendRequestVote(id, address, &votesRecieved)
 		}
 	}
@@ -1218,7 +1214,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	defer r.mu.Unlock()
 
 	// Do not send request to any non-voting members.
-	if !r.configuration.IsVoter[id] {
+	if !r.isVoter(id) {
 		return
 	}
 
@@ -1255,15 +1251,16 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 		return
 	}
 
-	// If this is a prevote and a majority of the cluster
-	// indicate that they would vote for this node, become a candidate.
+	// If this is a prevote and a majority of the cluster respond with success to this nodes
+	// vote requests, become a candidate.
 	if r.hasQuorum(*votes) && r.state == PreCandidate {
+		// Signal to the election loop to start an election so that the real election
+		// does not have to wait until the election ticker goes off again.
 		r.becomeCandidate()
 		r.electionCond.Broadcast()
 	}
 
-	// If this an election and a majority of the cluster vote
-	// for this node, become the leader.
+	// If this an election and a majority of the cluster vote for this node, become the leader.
 	if !request.Prevote && r.hasQuorum(*votes) && r.state == Candidate {
 		r.becomeLeader()
 	}
@@ -1810,10 +1807,8 @@ func (r *Raft) readOnlyLoop() {
 }
 
 // becomeCandidate transitions this node to the candidate state.
+// This will increment the term and cast a vote for this node.
 func (r *Raft) becomeCandidate() {
-	if r.state != PreCandidate {
-		panic("must be precandidat before becoming candidate")
-	}
 	r.state = Candidate
 	r.currentTerm++
 	r.votedFor = r.id
@@ -1821,6 +1816,8 @@ func (r *Raft) becomeCandidate() {
 	r.options.logger.Infof("entered the candidate state: term = %d", r.currentTerm)
 }
 
+// becomePreCandidate transitions this node to the precandidate state.
+// This does not increment the term or cast a vote for this node.
 func (r *Raft) becomePreCandidate() {
 	r.state = PreCandidate
 	r.options.logger.Infof("entered the pre-candidate state: term = %d", r.currentTerm)
@@ -1990,4 +1987,23 @@ func (r *Raft) appendConfiguration(configuration *Configuration) {
 	if err := r.log.AppendEntry(entry); err != nil {
 		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
+}
+
+// isVoter returns true if the node with the provided ID
+// is a voting member of the cluster and false otherwise.
+func (r *Raft) isVoter(id string) bool {
+	return r.configuration.IsVoter[id]
+}
+
+// isMember returns true if the node with the provided ID
+// is a member of the cluster and false otherwise.
+func (r *Raft) isMember(id string) bool {
+	_, ok := r.configuration.Members[id]
+	return ok
+}
+
+// isSingleServerCluster returns true if the current configuration only contains
+// this node as a voting member.
+func (r *Raft) isSingleServerCluster() bool {
+	return len(r.configuration.Members) == 1 && r.configuration.IsVoter[r.id]
 }

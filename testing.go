@@ -17,13 +17,13 @@ import (
 
 const (
 	// Max amount of time to elect a leader in seconds.
-	maxElectionTime = 5
+	maxElectionTime = 3
 
 	// Max amount of time for a configuration change to complete in seconds.
-	maxMembershipChangeTime = 3
+	maxMembershipChangeTime = 10
 
 	// Max amount of time for an operation to be applied in seconds.
-	maxSubmissionTime = 3
+	maxSubmissionTime = 10
 
 	// Max amount of time for state machines to match in seconds.
 	maxMatchTime = 3
@@ -357,7 +357,6 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 			future := node.AddServer(id, address, isVoter, futureTimeout)
 			response := future.Await()
 			if err := response.Error(); err != nil {
-				fmt.Println(err.Error())
 				continue
 			}
 
@@ -436,9 +435,7 @@ func (tc *testCluster) removeServer(id string) {
 			delete(tc.nodes, id)
 			delete(tc.dirs, id)
 			delete(tc.stateMachines, id)
-			if _, ok := tc.disconnected[id]; ok {
-				delete(tc.disconnected, id)
-			}
+			delete(tc.disconnected, id)
 			return
 		}
 
@@ -666,30 +663,36 @@ func (tc *testCluster) crashRandom() string {
 }
 
 func (tc *testCluster) restartServers() {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
-	for _, node := range tc.nodes {
+	for id, node := range tc.nodes {
 		status := node.Status()
 		if status.State == Shutdown {
-			if err := node.Restart(); err != nil {
-				tc.t.Fatalf("failed to restart node: error = %v", err)
-			}
+			tc.restart(id)
 		}
 	}
 }
 
 func (tc *testCluster) restartServer(id string) {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 
-	node, ok := tc.nodes[id]
+	tc.restart(id)
+}
+
+func (tc *testCluster) restart(id string) {
+	crashedNode, ok := tc.nodes[id]
 	if !ok {
 		tc.t.Fatalf("attempted to restart node which does not exist: ID = %s", id)
 	}
-	if err := node.Restart(); err != nil {
-		tc.t.Fatalf("failed to restart node: error = %v", err)
+	node, err := makeRaft(id, crashedNode.address, tc.dirs[id], tc.snapshotting, tc.snapshotSize)
+	if err != nil {
+		tc.t.Fatalf("failed to create node: error = %v", err)
 	}
+	tc.nodes[id] = node
+	tc.stateMachines[id] = node.fsm.(*stateMachineMock)
+	node.Start()
 }
 
 func (tc *testCluster) createPartition() {

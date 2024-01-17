@@ -48,6 +48,9 @@ type RequestVoteRequest struct {
 
 	// The term of the candidate's last log entry.
 	LastLogTerm uint64
+
+	// Indicates whether this request is for a prevote.
+	Prevote bool
 }
 
 // RequestVoteResponse is a response to a request for a vote.
@@ -120,6 +123,7 @@ func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequ
 		Term:         request.Term,
 		LastLogIndex: request.LastLogIndex,
 		LastLogTerm:  request.LastLogTerm,
+		Prevote:      request.Prevote,
 	}
 }
 
@@ -196,6 +200,7 @@ func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
 		Term:         request.GetTerm(),
 		LastLogIndex: request.GetLastLogIndex(),
 		LastLogTerm:  request.GetLastLogTerm(),
+		Prevote:      request.GetPrevote(),
 	}
 }
 

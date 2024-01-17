@@ -17,7 +17,7 @@ import (
 
 const (
 	// Max amount of time to elect a leader in seconds.
-	maxElectionTime = 3
+	maxElectionTime = 5
 
 	// Max amount of time for a configuration change to complete in seconds.
 	maxMembershipChangeTime = 10

@@ -533,8 +533,7 @@ func (r *Raft) Configuration() Configuration {
 // If voter is true, the node will be added as a voting member. Otherwise,
 // if voter is false, the node will be added as a non-voting member. It is
 // recommended that a node be added as a non-voter first so that it has
-// a chance to sync with the leader. Once the operation is successful, it can
-// be added as a voting member.
+// a chance to sync with the leader.
 func (r *Raft) AddServer(
 	id string,
 	address string,
@@ -552,14 +551,8 @@ func (r *Raft) AddServer(
 		return configurationFuture
 	}
 
-	// The membership change that adds the provided node is still pending - return a new future for the response.
-	if _, ok := r.configuration.Members[id]; ok && r.commitIndex < r.configuration.Index {
-		r.configurationResponseCh = configurationFuture.responseCh
-		return configurationFuture
-	}
-
-	// The membership change is still pending - a different node cannot be added at this time.
-	if r.commitIndex < r.configuration.Index {
+	// The membership change is still pending - wait until it completes.
+	if r.pendingConfigurationChange() {
 		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
 		return configurationFuture
 	}
@@ -618,22 +611,14 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 		return configurationFuture
 	}
 
-	// The membership change that removes the node is still pending - return a new future for the response.
-	// Note that if the node being removed is the leader, it will remain in the configurtion until applied.
-	if _, ok := r.configuration.Members[id]; (!ok || id == r.id) &&
-		r.commitIndex < r.configuration.Index {
-		r.configurationResponseCh = configurationFuture.responseCh
-		return configurationFuture
-	}
-
-	// The membership change is still pending - a different node cannot be removed at this time.
-	if r.commitIndex < r.configuration.Index {
+	// The membership change is still pending - wait until it completes.
+	if r.pendingConfigurationChange() {
 		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
 		return configurationFuture
 	}
 
 	// The provided node is already removed from the cluster.
-	if _, ok := r.configuration.Members[id]; !ok {
+	if !r.isMember(id) {
 		respond(configurationFuture.responseCh, *r.configuration, nil)
 		return configurationFuture
 	}

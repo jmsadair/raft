@@ -1203,6 +1203,8 @@ func (r *Raft) election() {
 
 	if r.state == Follower {
 		r.becomePreCandidate()
+	} else if r.state == Candidate {
+		r.becomeCandidate()
 	}
 
 	r.sendRequestVoteToPeers()
@@ -1275,7 +1277,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	if r.hasQuorum(*votes) && r.state == PreCandidate {
 		// Signal to the election loop to start an election so that the real election
 		// does not have to wait until the election ticker goes off again.
-		r.becomeCandidate()
+		r.state = Candidate
 		r.electionCond.Broadcast()
 	}
 

@@ -32,20 +32,6 @@ const (
 	futureTimeout = 200 * time.Millisecond
 )
 
-func validateLogEntry(
-	t *testing.T,
-	entry *LogEntry,
-	expectedIndex uint64,
-	expectedTerm uint64,
-	expectedData []byte,
-	expectedType LogEntryType,
-) {
-	require.Equal(t, expectedIndex, entry.Index)
-	require.Equal(t, expectedTerm, entry.Term)
-	require.Equal(t, expectedData, entry.Data)
-	require.Equal(t, expectedType, entry.EntryType)
-}
-
 func checkLogEntry(t *testing.T, expected *LogEntry, actual *LogEntry) {
 	require.Equal(t, expected.Index, actual.Index)
 	require.Equal(t, expected.Term, actual.Term)

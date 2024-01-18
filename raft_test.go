@@ -575,6 +575,7 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 		Index:   2,
 	}
 	configurationData, err := raft.transport.EncodeConfiguration(&snapshotConfiguration)
+	require.NoError(t, err)
 
 	operationData, err := encodeOperations(
 		[]Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}},

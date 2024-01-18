@@ -46,6 +46,13 @@ func validateLogEntry(
 	require.Equal(t, expectedType, entry.EntryType)
 }
 
+func checkLogEntry(t *testing.T, expected *LogEntry, actual *LogEntry) {
+	require.Equal(t, expected.Index, actual.Index)
+	require.Equal(t, expected.Term, actual.Term)
+	require.Equal(t, expected.Data, actual.Data)
+	require.Equal(t, expected.EntryType, actual.EntryType)
+}
+
 func makeOperations(numOperations int) [][]byte {
 	operations := make([][]byte, numOperations)
 	for i := 1; i <= numOperations; i++ {

@@ -16,10 +16,7 @@ func TestLogEncoderDecoder(t *testing.T) {
 	decodedEntry, err := decodeLogEntry(buf)
 	require.NoError(t, err)
 
-	require.Equal(t, entry.Index, decodedEntry.Index)
-	require.Equal(t, entry.Term, decodedEntry.Term)
-	require.Equal(t, entry.Data, decodedEntry.Data)
-	require.Equal(t, entry.EntryType, decodedEntry.EntryType)
+	checkLogEntry(t, entry, &decodedEntry)
 }
 
 func TestAppendEntries(t *testing.T) {
@@ -32,45 +29,37 @@ func TestAppendEntries(t *testing.T) {
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var entry1, entry2 *LogEntry
-	var entry1Index uint64 = 1
-	var entry1Term uint64 = 1
-	entry1Data := []byte("entry1")
-	entry1Type := OperationEntry
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
-
-	var entry2Index uint64 = 2
-	var entry2Term uint64 = 1
-	entry2Data := []byte("entry2")
-	entry2Type := OperationEntry
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
-
+	entry1 := NewLogEntry(1, 1, []byte("1"), OperationEntry)
+	entry2 := NewLogEntry(2, 1, []byte("2"), OperationEntry)
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
 	// Make sure the added entries are correct.
-	entry1, err = log.GetEntry(entry1Index)
+	actualEntry1, err := log.GetEntry(entry1.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
-
-	entry2, err = log.GetEntry(entry2Index)
+	checkLogEntry(t, entry1, actualEntry1)
+	actualEntry2, err := log.GetEntry(entry2.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data, entry2Type)
+	checkLogEntry(t, entry2, actualEntry2)
 
-	require.Equal(t, log.LastTerm(), entry2Term)
-	require.Equal(t, log.LastIndex(), entry2Index)
+	require.Equal(t, entry2.Term, log.LastTerm())
+	require.Equal(t, entry2.Index, log.LastIndex())
+	require.Equal(t, 2, log.Size())
 
 	// Close and reopen to the log to check that it was persisted correctly.
 	require.NoError(t, log.Close())
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 
-	entry1, err = log.GetEntry(entry1Index)
+	actualEntry1, err = log.GetEntry(entry1.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
+	checkLogEntry(t, entry1, actualEntry1)
+	actualEntry2, err = log.GetEntry(entry2.Index)
+	require.NoError(t, err)
+	checkLogEntry(t, entry2, actualEntry2)
 
-	entry2, err = log.GetEntry(entry2Index)
-	require.NoError(t, err)
-	validateLogEntry(t, entry2, entry2Index, entry2Term, entry2Data, entry2Type)
+	require.Equal(t, entry2.Term, log.LastTerm())
+	require.Equal(t, entry2.Index, log.LastIndex())
+	require.Equal(t, 2, log.Size())
 }
 
 func TestTruncate(t *testing.T) {
@@ -83,46 +72,35 @@ func TestTruncate(t *testing.T) {
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var entry1, entry2, entry3 *LogEntry
-	var entry1Index uint64 = 1
-	var entry1Term uint64 = 1
-	entry1Data := []byte("entry1")
-	entry1Type := OperationEntry
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
-
-	var entry2Index uint64 = 2
-	var entry2Term uint64 = 1
-	entry2Data := []byte("entry2")
-	entry2Type := OperationEntry
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
-
-	var entry3Index uint64 = 3
-	var entry3Term uint64 = 2
-	entry3Data := []byte("entry3")
-	entry3Type := OperationEntry
-	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data, entry3Type)
-
+	entry1 := NewLogEntry(1, 1, []byte("1"), OperationEntry)
+	entry2 := NewLogEntry(2, 1, []byte("2"), OperationEntry)
+	entry3 := NewLogEntry(3, 2, []byte("3"), OperationEntry)
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
 	// Truncate the log down to and including the second entry.
-	require.NoError(t, log.Truncate(entry2Index))
+	require.NoError(t, log.Truncate(entry2.Index))
 
 	// Make sure the first entry is still present and correct.
-	entry1, err = log.GetEntry(entry1Index)
+	actualEntry1, err := log.GetEntry(entry1.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
+	checkLogEntry(t, entry1, actualEntry1)
 
-	require.Equal(t, log.LastTerm(), entry1Term)
-	require.Equal(t, log.LastIndex(), entry1Index)
+	require.Equal(t, entry1.Term, log.LastTerm())
+	require.Equal(t, entry1.Index, log.LastIndex())
+	require.Equal(t, 1, log.Size())
 
 	// Close and reopen to the log to check that it was persisted correctly.
 	require.NoError(t, log.Close())
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 
-	entry1, err = log.GetEntry(entry1Index)
+	actualEntry1, err = log.GetEntry(entry1.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry1, entry1Index, entry1Term, entry1Data, entry1Type)
+	checkLogEntry(t, entry1, actualEntry1)
+
+	require.Equal(t, entry1.Term, log.LastTerm())
+	require.Equal(t, entry1.Index, log.LastIndex())
+	require.Equal(t, 1, log.Size())
 }
 
 func TestCompact(t *testing.T) {
@@ -135,63 +113,47 @@ func TestCompact(t *testing.T) {
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some entries to the log.
-	var entry1, entry2, entry3, entry4 *LogEntry
-	var entry1Index uint64 = 1
-	var entry1Term uint64 = 1
-	entry1Data := []byte("entry1")
-	entry1Type := NoOpEntry
-	entry1 = NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
-
-	var entry2Index uint64 = 2
-	var entry2Term uint64 = 2
-	entry2Data := []byte("entry2")
-	entry2Type := OperationEntry
-	entry2 = NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
-
-	var entry3Index uint64 = 3
-	var entry3Term uint64 = 2
-	entry3Data := []byte("entry3")
-	entry3Type := OperationEntry
-	entry3 = NewLogEntry(entry3Index, entry3Term, entry3Data, entry3Type)
-
+	entry1 := NewLogEntry(1, 1, []byte("1"), NoOpEntry)
+	entry2 := NewLogEntry(2, 2, []byte("2"), OperationEntry)
+	entry3 := NewLogEntry(3, 2, []byte("3"), OperationEntry)
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2, entry3}))
 
 	// Compact the log up to and including the second index.
-	require.NoError(t, log.Compact(entry2Index))
+	require.NoError(t, log.Compact(entry2.Index))
 
 	// Make sure the third entry is still present and correct.
-	entry3, err = log.GetEntry(entry3Index)
+	actualEntry3, err := log.GetEntry(entry3.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data, entry3Type)
+	checkLogEntry(t, entry3, actualEntry3)
 
-	require.Equal(t, log.LastTerm(), entry3Term)
-	require.Equal(t, log.LastIndex(), entry3Index)
+	require.Equal(t, entry3.Term, log.LastTerm())
+	require.Equal(t, entry3.Index, log.LastIndex())
+	require.Equal(t, 1, log.Size())
 
 	// Make sure we can still add and retrieve entries from the log.
-	var entry4Index uint64 = 4
-	var entry4Term uint64 = 2
-	entry4Data := []byte("entry4")
-	entry4Type := NoOpEntry
-	entry4 = NewLogEntry(entry4Index, entry4Term, entry4Data, entry4Type)
-
+	entry4 := NewLogEntry(4, 2, []byte("4"), NoOpEntry)
 	require.NoError(t, log.AppendEntry(entry4))
 
-	entry4, err = log.GetEntry(entry4Index)
+	actualEntry4, err := log.GetEntry(entry4.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data, entry4Type)
+	checkLogEntry(t, entry4, actualEntry4)
 
 	// Close and reopen to the log to make sure it was correctly persisted.
 	require.NoError(t, log.Close())
 	require.NoError(t, log.Open())
 	require.NoError(t, log.Replay())
 
-	entry3, err = log.GetEntry(entry3Index)
+	actualEntry3, err = log.GetEntry(entry3.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry3, entry3Index, entry3Term, entry3Data, entry3Type)
+	checkLogEntry(t, entry3, actualEntry3)
 
-	entry4, err = log.GetEntry(entry4Index)
+	actualEntry4, err = log.GetEntry(entry4.Index)
 	require.NoError(t, err)
-	validateLogEntry(t, entry4, entry4Index, entry4Term, entry4Data, entry4Type)
+	checkLogEntry(t, entry4, actualEntry4)
+
+	require.Equal(t, entry4.Term, log.LastTerm())
+	require.Equal(t, entry4.Index, log.LastIndex())
+	require.Equal(t, 2, log.Size())
 }
 
 func TestDiscard(t *testing.T) {
@@ -204,18 +166,8 @@ func TestDiscard(t *testing.T) {
 	defer func() { require.NoError(t, log.Close()) }()
 
 	// Add some log entries to the log.
-	var entry1Index uint64 = 1
-	var entry1Term uint64 = 1
-	entry1Data := []byte("entry1")
-	entry1Type := OperationEntry
-	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
-
-	var entry2Index uint64 = 2
-	var entry2Term uint64 = 4
-	entry2Data := []byte("entry2")
-	entry2Type := OperationEntry
-	entry2 := NewLogEntry(entry2Index, entry2Term, entry2Data, entry2Type)
-
+	entry1 := NewLogEntry(1, 1, []byte("1"), NoOpEntry)
+	entry2 := NewLogEntry(2, 2, []byte("2"), OperationEntry)
 	require.NoError(t, log.AppendEntries([]*LogEntry{entry1, entry2}))
 
 	// Discard the log entries.
@@ -226,6 +178,9 @@ func TestDiscard(t *testing.T) {
 	// Make sure the last index and last term are correct.
 	require.Equal(t, discardIndex, log.LastIndex())
 	require.Equal(t, discardTerm, log.LastTerm())
+
+	// Make sure log is empty.
+	require.Zero(t, log.Size())
 }
 
 func TestContains(t *testing.T) {
@@ -241,13 +196,9 @@ func TestContains(t *testing.T) {
 	require.False(t, log.Contains(0))
 
 	// Add an entry to the log.
-	var entry1Index uint64 = 1
-	var entry1Term uint64 = 1
-	entry1Data := []byte("entry1")
-	entry1Type := OperationEntry
-	entry1 := NewLogEntry(entry1Index, entry1Term, entry1Data, entry1Type)
+	entry1 := NewLogEntry(1, 1, []byte("1"), NoOpEntry)
 	require.NoError(t, log.AppendEntry(entry1))
 
 	// Ensure log contains newly added entry
-	require.True(t, log.Contains(entry1Index))
+	require.True(t, log.Contains(entry1.Index))
 }

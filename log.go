@@ -389,7 +389,7 @@ func (l *persistentLog) NextIndex() uint64 {
 }
 
 func (l *persistentLog) Size() int {
-	return len(l.entries)
+	return len(l.entries) - 1
 }
 
 func (l *persistentLog) rename(tmpFile *os.File) error {

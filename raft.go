@@ -14,40 +14,52 @@ import (
 
 var (
 	// ErrNotLeader is returned when an operation or configuration change is
-	// submitted to a node that is not a leader.
+	// submitted to a node that is not a leader. Operations may only be submitted
+	// to a node that is a leader.
 	ErrNotLeader = errors.New("this node is not the leader")
 
 	// ErrInvalidLease is returned when a lease-based read-only operation is
-	// rejected due to the leader's lease having expired.
+	// rejected due to the leader's lease having expired. The operation likely
+	// needs to be submitted to a different node in the cluster.
 	ErrInvalidLease = errors.New("this node does not have a valid lease")
 
-	// ErrPendingConfiguration is returned when a membership change is requested and their
-	// is a pending membership change that has not yet been committed.
+	// ErrPendingConfiguration is returned when a membership change is requested and there
+	// is a pending membership change that has not yet been committed. The membership change
+	// request may be submitted once the pending membership change is committed.
 	ErrPendingConfiguration = errors.New("only one membership change may be committed at a time")
+
+	// ErrNoCommitThisTerm is returned when a membership change is requested but a log entry has yet
+	// to be committed in the current term. The membership change may be submitted once a log entry
+	// has been committed this term.
+	ErrNoCommitThisTerm = errors.New("a log entry has not been committed in this term")
 )
 
 // The default chunk size for InstallSnapshot RPCs.
 const snapshotChunkSize = 32 * 1024
 
-// State represents the current state of a raft node.
-// A raft node may either be shutdown, the leader, or a followers.
+// State represents the current state of a node.
+// A node may either be shutdown, the leader, or a followers.
 type State uint32
 
 const (
 	// Leader is a state indicating that the node is responsible for replicating and
-	// committing log entries. Typically, only one node in a cluster will be the leader.
-	// However, if there are partitions or other failures, it is possible there is more than
-	// one leader.
+	// committing log entries. The leader will accept operations and membership change
+	// requests.
 	Leader State = iota
 
 	// Follower is a state indicating that a node is responsible for accepting log entries replicated
-	// by the leader. A node in the followers state may not accept operations for replication.
+	// by the leader. A node in the follower state will not accept operations or membership change
+	// requests.
 	Follower
 
-	// PreCandidate is a state indicating this node is holding a prevote.
+	// PreCandidate is a state indicating this node is holding a prevote. If this node is able to
+	// recieve sucessful RequestVote RPC responses from the majority of the cluster, it will enter the
+	// candidate state.
 	PreCandidate
 
-	// Candidate is a state indicating that this node is currently holding an election.
+	// Candidate is a state indicating that this node is currently holding an election. A node will
+	// remain in this state until it is either elected the leader or another node is elected leader
+	// thereby causing this node to step down to the follower state.
 	Candidate
 
 	// Shutdown is a state indicating that the node is currently offline.
@@ -70,7 +82,7 @@ func (s State) String() string {
 	}
 }
 
-// Status is the status of a raft node.
+// Status is the status of a node.
 type Status struct {
 	// The unique identifier of this node.
 	ID string
@@ -87,7 +99,7 @@ type Status struct {
 	// The index of the last log entry applied to the state machine.
 	LastApplied uint64
 
-	// The current state of the raft node: leader, followers, shutdown.
+	// The current state of the node: leader, followers, shutdown.
 	State State
 }
 
@@ -389,7 +401,8 @@ func (r *Raft) Start() error {
 
 // Restart starts a node that has been started and stopped before. The difference
 // between Restart and Start is that Restart restores the state of the node from
-// non-volatile whereas Start does not.
+// non-volatile whereas Start does not. Restart should not be called if the node
+// is being started for the first time.
 func (r *Raft) Restart() error {
 	return r.start(true)
 }
@@ -529,11 +542,12 @@ func (r *Raft) Configuration() Configuration {
 	return r.configuration.Clone()
 }
 
-// AddServer adds a node with the provided ID and address to the cluster.
-// If voter is true, the node will be added as a voting member. Otherwise,
-// if voter is false, the node will be added as a non-voting member. It is
-// recommended that a node be added as a non-voter first so that it has
-// a chance to sync with the leader.
+// AddServer will add a node with the provided ID and address to the cluster
+// and return a future for the resulting configuration. The provided ID must be
+// unique from the existing nodes in the cluster. If the configuration change
+// was not successful, the future will be populated with an error. It may be
+// necessary to resubmit the configuration change to this node or a different
+// node. It is safe to call RemoveServer as many times as needed
 func (r *Raft) AddServer(
 	id string,
 	address string,
@@ -551,6 +565,13 @@ func (r *Raft) AddServer(
 		return configurationFuture
 	}
 
+	// Membership changes may not be submitted until a log entry for this
+	// term is submitted.
+	if r.log.LastTerm() != r.currentTerm {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
+		return configurationFuture
+	}
+
 	// The membership change is still pending - wait until it completes.
 	if r.pendingConfigurationChange() {
 		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
@@ -558,9 +579,7 @@ func (r *Raft) AddServer(
 	}
 
 	// The provided node is already a part of the cluster.
-	if memberAddress, ok := r.configuration.Members[id]; ok &&
-		r.configuration.IsVoter[id] == isVoter &&
-		memberAddress == address {
+	if r.isMember(id) && r.isVoter(id) == isVoter {
 		respond(configurationFuture.responseCh, *r.configuration, nil)
 		return configurationFuture
 	}
@@ -597,8 +616,12 @@ func (r *Raft) AddServer(
 	return configurationFuture
 }
 
-// RemoveServer will remove the node with the provided ID from the cluster.
-// Once the node is removed, it can safely be shutdown.
+// RemoveServer will remove the node with the provided ID from the cluster
+// and returns a future for the resulting configuration. Once removed, the node
+// will remain online as a non-voter and may safely be shutdown. If the configuration
+// change was not successful, the future will be populated with an error. It may be
+// necessary to resubmit the configuration change to this node or a different node. It
+// is safe to call RemoveServer as many times as needed
 func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configuration] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -608,6 +631,13 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 	// Only the leader can make membership changes.
 	if r.state != Leader {
 		respond(configurationFuture.responseCh, Configuration{}, ErrNotLeader)
+		return configurationFuture
+	}
+
+	// Membership changes may not be submitted until a log entry for this
+	// term is submitted.
+	if r.log.LastTerm() != r.currentTerm {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
 		return configurationFuture
 	}
 
@@ -642,10 +672,13 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 	return configurationFuture
 }
 
-// SubmitOperation accepts an operation from a client for replication and returns a future
-// for the response to the operation. Note that submitting an operation for replication does
-// not guarantee replication if there are failures. Once the operation has been applied to
-// the state machine, the future will be populated with the response.
+// SubmitOperation accepts an operation for application to the state machine and returns a
+// future for the response to the operation. Even if the operation is submitted succesfully,
+// is not guaranteed that it will be applied to the state machine if there are failures. Once
+// the operation has been applied to the state machine, the future will be populated with the
+// response. If the operation was unable to be applied to the state machine, the future will
+// be populated with an error. It may be necessary to resubmit the operation to this node
+// or a different node if it was unsuccessful.
 func (r *Raft) SubmitOperation(
 	operation []byte,
 	operationType OperationType,
@@ -1419,9 +1452,7 @@ func (r *Raft) InstallSnapshot(
 	}
 
 	// Update the configuration.
-	configuration := r.decodeConfiguration(request.Configuration)
-	r.nextConfiguration(&configuration)
-	r.committedConfiguration = &configuration
+	r.applyConfiguration(request.Configuration)
 
 	r.options.logger.Infof(
 		"snapshot installation completed successfully: lastIndex = %d, lastTerm = %d",
@@ -1685,7 +1716,7 @@ func (r *Raft) applyLoop() {
 			case NoOpEntry:
 				r.lastApplied++
 			case ConfigurationEntry:
-				r.applyConfigurationEntry(entry)
+				r.applyConfiguration(entry.Data)
 				respond(r.configurationResponseCh, *r.configuration, nil)
 				r.lastApplied++
 			case OperationEntry:
@@ -1739,11 +1770,11 @@ func (r *Raft) applyLoop() {
 }
 
 // applyConfigurationEntry applies a log entry containing a configuration to this node.
-func (r *Raft) applyConfigurationEntry(entry *LogEntry) {
-	if r.committedConfiguration != nil && entry.Index <= r.committedConfiguration.Index {
+func (r *Raft) applyConfiguration(configurationData []byte) {
+	configuration := r.decodeConfiguration(configurationData)
+	if r.committedConfiguration != nil && configuration.Index <= r.committedConfiguration.Index {
 		return
 	}
-	configuration := r.decodeConfiguration(entry.Data)
 	r.nextConfiguration(&configuration)
 	r.committedConfiguration = &configuration
 }
@@ -1753,6 +1784,7 @@ func (r *Raft) readOnlyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
+	defer r.options.logger.Debug("exiting read-only loop")
 
 	for r.state != Shutdown {
 		r.readOnlyCond.Wait()

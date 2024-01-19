@@ -77,6 +77,9 @@ const (
 	// OperationEntry log entries are those that do contain an operation that
 	// will be applied to the state machine.
 	OperationEntry
+
+	// ConfigurationEntry are log entries which contain a cluster configuration.
+	ConfigurationEntry
 )
 
 // LogEntry is a log entry in the log.
@@ -386,7 +389,7 @@ func (l *persistentLog) NextIndex() uint64 {
 }
 
 func (l *persistentLog) Size() int {
-	return len(l.entries)
+	return len(l.entries) - 1
 }
 
 func (l *persistentLog) rename(tmpFile *os.File) error {

@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -13,16 +14,19 @@ func TestNewRaft(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	fsm := newStateMachineMock(false, 0)
-	raft, err := NewRaft("test", map[string]string{"test": "127.0.0.1:8080"}, fsm, tmpDir)
+	id := "test"
+	address := "127.0.0.1:8080"
+	raft, err := NewRaft(id, address, fsm, tmpDir)
 	require.NoError(t, err)
 
 	require.Zero(t, raft.currentTerm)
 	require.Zero(t, raft.lastApplied)
 	require.Zero(t, raft.lastIncludedIndex)
 	require.Zero(t, raft.lastIncludedTerm)
-	require.Equal(t, "", raft.votedFor)
+	require.Empty(t, raft.votedFor)
 	require.Equal(t, Shutdown, raft.state)
-	require.Equal(t, "test", raft.id)
+	require.Equal(t, id, raft.id)
+	require.Equal(t, address, raft.address)
 	require.NotNil(t, raft.operationManager)
 
 	require.Equal(t, defaultHeartbeat, raft.options.heartbeatInterval)
@@ -31,27 +35,20 @@ func TestNewRaft(t *testing.T) {
 	require.NotNil(t, raft.options.logger)
 }
 
-// TestAppendEntriesSuccess checks that raft handles a basic AppendEntries request that should be successful
-// correctly.
+// TestAppendEntriesSuccess checks that raft handles a basic AppendEntries
+// request that should be successful correctly.
 func TestAppendEntriesSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("test", "127.0.0.1:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "leader1"
+	raft.votedFor = "leader"
 	raft.state = Follower
 
 	request := &AppendEntriesRequest{
-		LeaderID:     "leader1",
+		LeaderID:     "leader",
 		Term:         1,
 		LeaderCommit: 1,
 		Entries:      []*LogEntry{NewLogEntry(1, 1, []byte("operation1"), OperationEntry)},
@@ -60,89 +57,96 @@ func TestAppendEntriesSuccess(t *testing.T) {
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.True(t, response.Success)
-	require.Equal(t, uint64(1), response.Term)
-
-	require.Equal(t, uint64(1), raft.commitIndex)
+	require.Equal(t, request.Term, response.Term)
+	require.Equal(t, request.LeaderCommit, raft.commitIndex)
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("operation1"), OperationEntry)
+	checkLogEntry(t, request.Entries[0], entry)
 }
 
 // TestAppendEntriesConflictSuccess checks that raft correctly handles the case where its log entries and
 // the log entries in a request are conflicting (a log entry in the request has a different term than a log
-// entry at the same index in the log).
+// entry at the same index in the log). The log should be truncated and the node should fall back to its
+// committed configuration.
 func TestAppendEntriesConflictSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
+	defer func() { raft.transport.CloseAll() }()
 
 	raft.currentTerm = 2
-	raft.votedFor = "leader1"
+	raft.votedFor = "2"
 	raft.state = Follower
+	raft.committedConfiguration = &Configuration{
+		Members: map[string]string{"1": "127.0.0.0:8080", "2": "127.0.0.1:8080"},
+		IsVoter: map[string]bool{"1": true, "2": true},
+		Index:   1,
+	}
+	raft.configuration = &Configuration{
+		Members: map[string]string{
+			"1": "127.0.0.0:8080",
+			"2": "127.0.0.1:8080",
+			"3": "127.0.0.2:8080",
+		},
+		IsVoter: map[string]bool{"1": true, "2": true, "3": false},
+		Index:   2,
+	}
 
 	request := &AppendEntriesRequest{
-		LeaderID: "leader1",
+		LeaderID: "2",
 		Term:     2,
 		Entries: []*LogEntry{
-			NewLogEntry(1, 1, []byte("operation1"), OperationEntry),
-			NewLogEntry(2, 1, []byte("operation2"), OperationEntry),
+			NewLogEntry(1, 1, []byte("configuration1"), ConfigurationEntry),
+			NewLogEntry(2, 1, []byte("configuration2"), ConfigurationEntry),
+			NewLogEntry(3, 1, []byte("operation1"), OperationEntry),
 		},
 	}
 	response := &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.True(t, response.Success)
-	require.Equal(t, uint64(2), response.Term)
+	require.Equal(t, request.Term, response.Term)
 
 	request.Entries = []*LogEntry{
-		NewLogEntry(1, 1, []byte("operation1"), OperationEntry),
-		NewLogEntry(2, 2, []byte("operation2"), OperationEntry),
+		NewLogEntry(1, 1, []byte("configuration1"), ConfigurationEntry),
+		NewLogEntry(2, 2, []byte("operation1"), OperationEntry),
 	}
 	response = &AppendEntriesResponse{}
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.True(t, response.Success)
-	require.Equal(t, uint64(2), response.Term)
+	require.Equal(t, request.Term, response.Term)
 
 	entry, err := raft.log.GetEntry(1)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 1, 1, []byte("operation1"), OperationEntry)
+	checkLogEntry(t, request.Entries[0], entry)
 
 	entry, err = raft.log.GetEntry(2)
 	require.NoError(t, err)
-	validateLogEntry(t, entry, 2, 2, []byte("operation2"), OperationEntry)
+	checkLogEntry(t, request.Entries[1], entry)
+
+	require.Equal(t, len(request.Entries), raft.log.Size())
+
+	require.Equal(t, *raft.committedConfiguration, *raft.configuration)
 }
 
-// TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
-// follower state when it receives an AppendEntries request with a greater term than its own.
+// TestAppendEntriesLeaderStepDownSuccess checks that a raft instance in the leader
+// state correctly steps down to the follower state when it receives an AppendEntries
+// request with a greater term than its own.
 func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "leader1"
 	raft.state = Leader
+	raft.votedFor = "1"
 
 	request := &AppendEntriesRequest{
-		LeaderID: "leader2",
+		LeaderID: "2",
 		Term:     3,
 		Entries:  []*LogEntry{},
 	}
@@ -150,33 +154,26 @@ func TestAppendEntriesLeaderStepDownSuccess(t *testing.T) {
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.True(t, response.Success)
-	require.Equal(t, uint64(3), response.Term)
+	require.Equal(t, request.Term, response.Term)
 
-	require.Equal(t, uint64(3), raft.currentTerm)
+	require.Equal(t, request.Term, raft.currentTerm)
 	require.Equal(t, Follower, raft.state)
-	require.Equal(t, "", raft.votedFor)
+	require.Empty(t, raft.votedFor)
 }
 
-// TestAppendEntriesOutOfDateTermFailure checks that an AppendEntries request received that has a term less than
-// the term of server that received it is rejected.
+// TestAppendEntriesOutOfDateTermFailure checks that an AppendEntries request
+// received that has a term less than the term of server that received it is rejected.
 func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.state = Follower
 	raft.currentTerm = 2
 
 	request := &AppendEntriesRequest{
-		LeaderID: "test-leader",
+		LeaderID: "2",
 		Term:     1,
 		Entries:  []*LogEntry{},
 	}
@@ -184,22 +181,16 @@ func TestAppendEntriesOutOfDateTermFailure(t *testing.T) {
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.False(t, response.Success)
-	require.Equal(t, uint64(2), response.Term)
+	require.Equal(t, response.Term, raft.currentTerm)
 }
 
-// TestAppendEntriesPrevLogIndexFailure checks that an AppendEntries request is rejected when the log does not contain
-// an entry at the previous log index whose term match the previous log term.
+// TestAppendEntriesPrevLogIndexFailure checks that an AppendEntries request is rejected
+// when the log does not contain an entry at the previous log index whose term match the
+// previous log term.
 func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.state = Follower
@@ -211,7 +202,7 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 	)
 
 	request := &AppendEntriesRequest{
-		LeaderID:     "leader",
+		LeaderID:     "2",
 		Term:         1,
 		Entries:      []*LogEntry{},
 		PrevLogTerm:  2,
@@ -221,26 +212,19 @@ func TestAppendEntriesPrevLogIndexFailure(t *testing.T) {
 
 	require.NoError(t, raft.AppendEntries(request, response))
 	require.False(t, response.Success)
-	require.Equal(t, uint64(1), response.Term)
+	require.Equal(t, request.Term, response.Term)
 }
 
-// TestAppendEntriesShutdownFailure checks that an error is returned when an AppendEntries request is received
-// by a server in the shutdown state.
+// TestAppendEntriesShutdownFailure checks that an error is returned when an AppendEntries
+// request is received by a server in the shutdown state.
 func TestAppendEntriesShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	request := &AppendEntriesRequest{
-		LeaderID: "leader1",
+		LeaderID: "2",
 		Term:     1,
 		Entries:  []*LogEntry{},
 	}
@@ -250,91 +234,102 @@ func TestAppendEntriesShutdownFailure(t *testing.T) {
 	require.False(t, response.Success)
 }
 
-// TestRequestVoteSuccess checks that raft handles a RequestVote request that should be successful correctly.
+// TestRequestVoteSuccess checks that raft handles a RequestVote request that
+// should be successful correctly.
 func TestRequestVoteSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
 	raft.state = Follower
 
 	request := &RequestVoteRequest{
-		CandidateID: "candidate1",
+		CandidateID: "2",
 		Term:        1,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
 	require.NoError(t, raft.RequestVote(request, response))
 	require.True(t, response.VoteGranted)
-	require.Equal(t, uint64(1), response.Term)
+	require.Equal(t, request.Term, response.Term)
 
-	require.Equal(t, "candidate1", raft.votedFor)
+	require.Equal(t, request.CandidateID, raft.votedFor)
 }
 
-// TestRequestVoteLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
-// follower state when it receives an AppendEntries request with a greater term than its own.
+// TestPrevoteNoVote checks that a RequestVote request that is for
+// a prevote does not cause the receiving node to increment its term
+// or cast its vote, even if the request is successful.
+func TestPrevoteNoVote(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "2"
+	raft.state = Follower
+
+	request := &RequestVoteRequest{
+		CandidateID: "3",
+		Term:        2,
+		Prevote:     true,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.True(t, response.VoteGranted)
+	require.Equal(t, raft.currentTerm, response.Term)
+	require.Equal(t, "2", raft.votedFor)
+	require.EqualValues(t, 1, raft.currentTerm)
+}
+
+// TestRequestVoteLeaderStepDownSuccess checks that a raft instance in the
+// leader state correctly steps down to the follower state when it receives
+// an AppendEntries request with a greater term than its own.
 func TestRequestVoteLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
 	raft.state = Leader
 
 	request := &RequestVoteRequest{
-		CandidateID: "candidate1",
+		CandidateID: "2",
 		Term:        2,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
 	require.NoError(t, raft.RequestVote(request, response))
 	require.True(t, response.VoteGranted)
-	require.Equal(t, uint64(2), response.Term)
+	require.Equal(t, request.Term, response.Term)
 
-	require.Equal(t, uint64(2), raft.currentTerm)
+	require.Equal(t, request.Term, raft.currentTerm)
 	require.Equal(t, Follower, raft.state)
-	require.Equal(t, "candidate1", raft.votedFor)
+	require.Equal(t, request.CandidateID, raft.votedFor)
 }
 
-// TestRequestVoteAlreadyVotedSuccess checks that a raft instance that receives a RequestVote request from a server
-// that it already voted for grants it vote again.
+// TestRequestVoteAlreadyVotedSuccess checks that a raft instance that receives
+// a RequestVote request from a server that it already voted for grants it vote again.
 func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "candidate1"
+	raft.votedFor = "2"
 	raft.state = Leader
 
 	request := &RequestVoteRequest{
-		CandidateID: "candidate1",
+		CandidateID: "2",
 		Term:        1,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
@@ -342,85 +337,92 @@ func TestRequestVoteAlreadyVotedSuccess(t *testing.T) {
 	require.True(t, response.VoteGranted)
 }
 
-// TestRequestVoteAlreadyVotedFailure checks that a raft instance that receives a RequestVote request from a different
-// server after it already voted for another server refuses to grant its vote.
+// TestRequestVoteAlreadyVotedFailure checks that a raft instance that receives a
+// RequestVote request from a different server after it already voted for another
+// server refuses to grant its vote.
 func TestRequestVoteAlreadyVotedFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 1
-	raft.votedFor = "candidate1"
+	raft.votedFor = "2"
 	raft.state = Follower
 
 	request := &RequestVoteRequest{
-		CandidateID: "candidate2",
+		CandidateID: "3",
 		Term:        1,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
 	require.NoError(t, raft.RequestVote(request, response))
 	require.False(t, response.VoteGranted)
-
-	require.Equal(t, "candidate1", raft.votedFor)
+	require.Equal(t, "2", raft.votedFor)
 }
 
-// TestRequestVoteOutOfDateTermFailure checks that a RequestVote request received that has a term less than
-// the term of server that received it is rejected.
+// TestRequestVoteLeaderContactFailure checks that a node that recieves a
+// RequestVote request that has recently been contacted by the leader rejects
+// the request.
+func TestRequestVoteLeaderContactFailuire(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
+	require.NoError(t, err)
+
+	raft.currentTerm = 1
+	raft.votedFor = "2"
+	raft.state = Follower
+	raft.lastContact = time.Now()
+
+	request := &RequestVoteRequest{
+		CandidateID: "3",
+		Term:        1,
+		Prevote:     false,
+	}
+	response := &RequestVoteResponse{}
+
+	require.NoError(t, raft.RequestVote(request, response))
+	require.False(t, response.VoteGranted)
+	require.Equal(t, "2", raft.votedFor)
+}
+
+// TestRequestVoteOutOfDateTermFailure checks that a RequestVote request
+// received that has a term less than the term of server that received
+// it is rejected.
 func TestRequestVoteOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
-	raft.votedFor = "candidate1"
+	raft.votedFor = "2"
 	raft.state = Follower
 
 	request := &RequestVoteRequest{
-		CandidateID: "candidate2",
+		CandidateID: "3",
 		Term:        1,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
 	require.NoError(t, raft.RequestVote(request, response))
 	require.False(t, response.VoteGranted)
-
-	require.Equal(t, "candidate1", raft.votedFor)
+	require.Equal(t, "2", raft.votedFor)
 }
 
-// TestRequestVoteOutOfDateLogFailure checks that a RequestVote request received from a server with an out-of-date
-// log is rejected.
+// TestRequestVoteOutOfDateLogFailure checks that a RequestVote request received
+// from a server with an out-of-date log is rejected.
 func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.1:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
-	raft.votedFor = "candidate1"
+	raft.votedFor = "2"
 	raft.state = Follower
 	require.NoError(
 		t,
@@ -430,37 +432,31 @@ func TestRequestVoteOutOfDateLogFailure(t *testing.T) {
 	)
 
 	request := &RequestVoteRequest{
-		CandidateID:  "candidate2",
+		CandidateID:  "3",
 		Term:         2,
 		LastLogIndex: 2,
 		LastLogTerm:  1,
+		Prevote:      false,
 	}
 	response := &RequestVoteResponse{}
 
 	require.NoError(t, raft.RequestVote(request, response))
 	require.False(t, response.VoteGranted)
-
-	require.Equal(t, "candidate1", raft.votedFor)
+	require.Equal(t, "2", raft.votedFor)
 }
 
-// TestRequestVoteShutdownFailure checks that a RequestVote request received by a server in the shutdown state
-// is rejected and an error is returned.
+// TestRequestVoteShutdownFailure checks that a RequestVote request received
+// by a server in the shutdown state is rejected and an error is returned.
 func TestRequestVoteShutdownFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("test", "127.0.0.1:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	request := &RequestVoteRequest{
 		CandidateID: "candidate",
 		Term:        1,
+		Prevote:     false,
 	}
 	response := &RequestVoteResponse{}
 
@@ -468,158 +464,172 @@ func TestRequestVoteShutdownFailure(t *testing.T) {
 	require.False(t, response.VoteGranted)
 }
 
-// TestInstallSnapshotSuccess checks that raft handles a basic InstallSnapshot request that should be successful
-// correctly.
+// TestInstallSnapshotSuccess checks that raft handles a basic InstallSnapshot
+// request that should be successful correctly.
 func TestInstallSnapshotSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
+	defer func() { raft.transport.CloseAll() }()
 
 	raft.currentTerm = 1
-	raft.votedFor = "leader1"
+	raft.followers = make(map[string]*follower)
 	raft.state = Follower
+	raft.configuration = &Configuration{
+		Members: map[string]string{"1": "127.0.0.0:8080", "2": "127.0.0.1:8080"},
+		IsVoter: map[string]bool{"1": true, "2": true},
+		Index:   1,
+	}
 
-	data, err := encodeOperations(
-		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
+	snapshotConfiguration := Configuration{
+		Members: map[string]string{
+			"1": "127.0.0.0:8080",
+			"2": "127.0.0.1:8080",
+			"3": "127.0.0.2:8080",
+		},
+		IsVoter: map[string]bool{"1": true, "2": true, "3": false},
+		Index:   2,
+	}
+	configurationData, err := raft.transport.EncodeConfiguration(&snapshotConfiguration)
+	require.NoError(t, err)
+
+	operationData, err := encodeOperations(
+		[]Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}},
 	)
 	require.NoError(t, err)
 
-	chunk1 := data[:len(data)/2]
+	chunk1 := operationData[:len(operationData)/2]
 	request1 := &InstallSnapshotRequest{
-		LeaderID:          "leader1",
+		LeaderID:          "2",
 		Term:              1,
-		LastIncludedIndex: 1,
+		LastIncludedIndex: 3,
 		LastIncludedTerm:  1,
 		Bytes:             chunk1,
+		Configuration:     configurationData,
 		Offset:            0,
 		Done:              false,
 	}
-
 	response := &InstallSnapshotResponse{}
 
 	require.NoError(t, raft.InstallSnapshot(request1, response))
-	require.Equal(t, uint64(1), response.Term)
-	require.Equal(t, uint64(0), raft.commitIndex)
-	require.Equal(t, uint64(0), raft.lastApplied)
-	require.Equal(t, uint64(0), raft.lastIncludedIndex)
-	require.Equal(t, uint64(0), raft.lastIncludedTerm)
+	require.Equal(t, request1.Term, response.Term)
+	require.Zero(t, raft.commitIndex)
+	require.Zero(t, raft.lastApplied)
+	require.Zero(t, raft.lastIncludedIndex)
+	require.Zero(t, raft.lastIncludedTerm)
 
-	chunk2 := data[len(data)/2:]
+	chunk2 := operationData[len(operationData)/2:]
 	request2 := &InstallSnapshotRequest{
-		LeaderID:          "leader1",
+		LeaderID:          "2",
 		Term:              1,
-		LastIncludedIndex: 1,
+		LastIncludedIndex: 2,
 		LastIncludedTerm:  1,
 		Bytes:             chunk2,
+		Configuration:     configurationData,
 		Offset:            int64(len(chunk1)),
 		Done:              true,
 	}
 
 	require.NoError(t, raft.InstallSnapshot(request2, response))
-	require.Equal(t, uint64(1), response.Term)
-	require.Equal(t, uint64(1), raft.commitIndex)
-	require.Equal(t, uint64(1), raft.lastApplied)
-	require.Equal(t, uint64(1), raft.lastIncludedIndex)
-	require.Equal(t, uint64(1), raft.lastIncludedTerm)
+	require.Equal(t, request2.Term, response.Term)
+	require.Equal(t, request2.LastIncludedIndex, raft.commitIndex)
+	require.Equal(t, request2.LastIncludedIndex, raft.lastApplied)
+	require.Equal(t, request2.LastIncludedIndex, raft.lastIncludedIndex)
+	require.Equal(t, request2.LastIncludedTerm, raft.lastIncludedTerm)
+	require.Equal(t, snapshotConfiguration, *raft.configuration)
+	require.Equal(t, snapshotConfiguration, *raft.committedConfiguration)
 
 	fsm := raft.fsm.(*stateMachineMock)
-	writer := &bytes.Buffer{}
+	writer := new(bytes.Buffer)
 	require.NoError(t, fsm.Snapshot(writer))
-	require.Equal(t, data, writer.Bytes())
+	require.Equal(t, operationData, writer.Bytes())
 }
 
-// TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader state correctly steps down to the
-// follower state when it receives an InstallSnapshot request with a greater term than its own.
+// TestInstallSnapshotLeaderStepDownSuccess checks that a raft instance in the leader
+// state correctly steps down to the follower state when it receives an InstallSnapshot
+// request with a greater term than its own.
 func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
+	defer func() { raft.transport.CloseAll() }()
 
 	raft.currentTerm = 1
 	raft.state = Leader
+	raft.followers = make(map[string]*follower)
+	raft.configuration = &Configuration{
+		Members: map[string]string{"1": "127.0.0.0:8080", "2": "127.0.0.1:8080"},
+		IsVoter: map[string]bool{"1": true, "2": true},
+		Index:   1,
+	}
 
-	data, err := encodeOperations(
-		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
+	snapshotConfiguration := Configuration{
+		Members: map[string]string{
+			"1": "127.0.0.0:8080",
+			"2": "127.0.0.1:8080",
+			"3": "127.0.0.2:8080",
+		},
+		IsVoter: map[string]bool{"1": true, "2": true, "3": false},
+		Index:   2,
+	}
+	configurationData, err := raft.transport.EncodeConfiguration(&snapshotConfiguration)
+	require.NoError(t, err)
+
+	operationData, err := encodeOperations(
+		[]Operation{{Bytes: []byte("operation1"), LogIndex: 3, LogTerm: 1}},
 	)
 	require.NoError(t, err)
 
 	request := &InstallSnapshotRequest{
-		LeaderID:          "leader1",
+		LeaderID:          "2",
 		Term:              2,
-		LastIncludedIndex: 1,
+		LastIncludedIndex: 3,
 		LastIncludedTerm:  1,
-		Bytes:             data,
+		Bytes:             operationData,
+		Configuration:     configurationData,
 		Offset:            int64(0),
 		Done:              true,
 	}
-
 	response := &InstallSnapshotResponse{}
 
 	require.NoError(t, raft.InstallSnapshot(request, response))
-	require.Equal(t, uint64(2), response.Term)
-
+	require.Equal(t, request.Term, response.Term)
 	require.Equal(t, Follower, raft.state)
-	require.Equal(t, uint64(2), raft.currentTerm)
+	require.Equal(t, request.Term, raft.currentTerm)
+	require.Equal(t, snapshotConfiguration, *raft.configuration)
+	require.Equal(t, snapshotConfiguration, *raft.committedConfiguration)
 }
 
-// TestInstallSnapshotOutOfDateTermFailure checks that a InstallSnapshot request received that has a term less than
-// the term of server that received it is rejected.
+// TestInstallSnapshotOutOfDateTermFailure checks that a InstallSnapshot request
+// received that has a term less tham the term of server that received it is rejected.
 func TestInstallSnapshotOutOfDateTermFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	raft, err := makeRaft(
-		"test-raft",
-		tmpDir,
-		map[string]string{"test": "127.0.0.1:8080"},
-		true,
-		false,
-		0,
-	)
+	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
 
 	raft.currentTerm = 2
-	raft.votedFor = "leader1"
+	raft.votedFor = "2"
 	raft.state = Follower
 
-	data, err := encodeOperations(
-		[]Operation{{Bytes: []byte("operation1"), LogIndex: 1, LogTerm: 1}},
-	)
-	require.NoError(t, err)
-
 	request := &InstallSnapshotRequest{
-		LeaderID:          "leader1",
+		LeaderID:          "3",
 		Term:              1,
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
-		Bytes:             data,
+		Bytes:             []byte{},
+		Configuration:     []byte{},
 		Offset:            int64(0),
 		Done:              true,
 	}
-
 	response := &InstallSnapshotResponse{}
 
 	require.NoError(t, raft.InstallSnapshot(request, response))
-	require.Equal(t, uint64(2), response.Term)
-
-	// Make sure that the snapshot was actually not installed.
-	require.Equal(t, uint64(0), raft.commitIndex)
-	require.Equal(t, uint64(0), raft.lastApplied)
-	require.Equal(t, uint64(0), raft.lastIncludedIndex)
-	require.Equal(t, uint64(0), raft.lastIncludedTerm)
+	require.Equal(t, raft.currentTerm, response.Term)
+	require.Zero(t, raft.commitIndex)
+	require.Zero(t, raft.lastApplied)
+	require.Zero(t, raft.lastIncludedIndex)
+	require.Zero(t, raft.lastIncludedTerm)
 }

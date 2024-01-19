@@ -24,6 +24,9 @@ type SnapshotMetadata struct {
 
 	// The last log term included in the snapshot.
 	LastIncludedTerm uint64 `json:"last_included_term"`
+
+	// The most up-to-date configuration in the snapshot.
+	Configuration []byte `json:"configuration"`
 }
 
 func encodeMetadata(w io.Writer, metadata *SnapshotMetadata) error {
@@ -68,7 +71,11 @@ type SnapshotFile interface {
 type SnapshotStorage interface {
 	// NewSnapshotFile creates a new snapshot file. It is the caller's responsibility to
 	// close the file or discard it when they are done with it.
-	NewSnapshotFile(lastIncludedIndex, lastIncludedTerm uint64) (SnapshotFile, error)
+	NewSnapshotFile(
+		lastIncludedIndex uint64,
+		lastIncludedTerm uint64,
+		configuration []byte,
+	) (SnapshotFile, error)
 
 	// SnapshotFile returns the most recent snapshot file. It is the
 	// caller's responsibility to close the file when they are done with it.
@@ -163,7 +170,7 @@ func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 }
 
 func (p *persistentSnapshotStorage) NewSnapshotFile(
-	lastIncludedIndex, lastIncludedTerm uint64,
+	lastIncludedIndex uint64, lastIncludedTerm uint64, configuration []byte,
 ) (SnapshotFile, error) {
 	// The temporary directory that will contain the snapshot and its metadata.
 	// This directory will be renamed once the snapshot has been safely written to disk.
@@ -186,6 +193,7 @@ func (p *persistentSnapshotStorage) NewSnapshotFile(
 	metadata := SnapshotMetadata{
 		LastIncludedIndex: lastIncludedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
+		Configuration:     configuration,
 	}
 	if err := encodeMetadata(metadataFile, &metadata); err != nil {
 		return nil, fmt.Errorf("could not encode snapshot metadata: %w", err)

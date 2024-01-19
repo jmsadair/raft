@@ -10,7 +10,6 @@ import (
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/proto"
 )
 
 const shutdownGracePeriod = 300 * time.Millisecond
@@ -57,13 +56,16 @@ type Transport interface {
 	// Close tears down a connection with the provided address if there is one.
 	Close(address string) error
 
+	// CloseAll tears down all connections.
+	CloseAll()
+
 	// EncodeConfiguration accepts a configuration and encodes it such that it can be
 	// decoded by DecodeConfiguration.
-	EncodeConfiguration(configuration map[string]string) ([]byte, error)
+	EncodeConfiguration(configuration *Configuration) ([]byte, error)
 
 	// DecodeConfiguration accepts a byte representation of a configuration and decodes
 	// it into a configuration.
-	DecodeConfiguration(data []byte) (map[string]string, error)
+	DecodeConfiguration(data []byte) (Configuration, error)
 
 	// Address returns the local network address.
 	Address() string
@@ -102,7 +104,7 @@ type transport struct {
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not resove tcp address: %w", err)
 	}
 
 	transport := &transport{
@@ -116,11 +118,11 @@ func NewTransport(address string) (Transport, error) {
 
 func (t *transport) Run() error {
 	listener, err := net.Listen(t.address.Network(), t.address.String())
+	if err != nil {
+		return fmt.Errorf("could not create listener: %w", err)
+	}
 	t.server = grpc.NewServer()
 	pb.RegisterRaftServer(t.server, t)
-	if err != nil {
-		return err
-	}
 	go t.server.Serve(listener)
 	return nil
 }
@@ -233,17 +235,20 @@ func (t *transport) RegsiterInstallSnapshotHandler(
 	t.installSnapshotHandler = handler
 }
 
-func (t *transport) EncodeConfiguration(configuration map[string]string) ([]byte, error) {
-	pbConfiguration := &pb.Configuration{Peers: configuration}
-	return proto.Marshal(pbConfiguration)
+func (t *transport) EncodeConfiguration(configuration *Configuration) ([]byte, error) {
+	data, err := encodeConfiguration(configuration)
+	if err != nil {
+		return nil, fmt.Errorf("could not encode configuration: %w", err)
+	}
+	return data, nil
 }
 
-func (t *transport) DecodeConfiguration(data []byte) (map[string]string, error) {
-	pbConfiguration := &pb.Configuration{}
-	if err := proto.Unmarshal(data, pbConfiguration); err != nil {
-		return nil, err
+func (t *transport) DecodeConfiguration(data []byte) (Configuration, error) {
+	configuration, err := decodeConfiguration(data)
+	if err != nil {
+		return Configuration{}, fmt.Errorf("could not decode configuration: %w", err)
 	}
-	return pbConfiguration.GetPeers(), nil
+	return configuration, nil
 }
 
 func (t *transport) Address() string {
@@ -264,9 +269,8 @@ func (t *transport) Connect(address string) error {
 	if err != nil {
 		return fmt.Errorf("could not estabslish connection: %w", err)
 	}
-	client := pb.NewRaftClient(conn)
 	t.connections[address] = conn
-	t.clients[address] = client
+	t.clients[address] = pb.NewRaftClient(conn)
 
 	return nil
 }
@@ -280,12 +284,23 @@ func (t *transport) Close(address string) error {
 		return nil
 	}
 	if err := conn.Close(); err != nil {
-		return err
+		return fmt.Errorf("could not close connection: %w", err)
 	}
 	delete(t.connections, address)
 	delete(t.clients, address)
 
 	return nil
+}
+
+func (t *transport) CloseAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for address, conn := range t.connections {
+		conn.Close()
+		delete(t.connections, address)
+		delete(t.clients, address)
+	}
 }
 
 // AppendEntries handles the AppendEntries gRPC request.

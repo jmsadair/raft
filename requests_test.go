@@ -103,6 +103,7 @@ func TestMakeProtoInstallSnapshotRequest(t *testing.T) {
 		Term:              2,
 		LastIncludedIndex: 3,
 		LastIncludedTerm:  4,
+		Configuration:     []byte("configuration"),
 		Bytes:             []byte("test"),
 		Offset:            1,
 		Done:              false,
@@ -114,6 +115,7 @@ func TestMakeProtoInstallSnapshotRequest(t *testing.T) {
 	require.Equal(t, req.Term, protoReq.GetTerm())
 	require.Equal(t, req.LastIncludedIndex, protoReq.GetLastIncludedIndex())
 	require.Equal(t, req.LastIncludedTerm, protoReq.GetLastIncludedTerm())
+	require.Equal(t, req.Configuration, protoReq.GetConfiguration())
 	require.Equal(t, req.Bytes, protoReq.GetData())
 	require.Equal(t, req.Offset, protoReq.GetOffset())
 	require.Equal(t, req.Done, protoReq.GetDone())
@@ -123,12 +125,14 @@ func TestMakeProtoInstallSnapshotRequest(t *testing.T) {
 // InstallSnapshotResponse.
 func TestMakeInstallSnapshotResponse(t *testing.T) {
 	protoResponse := &pb.InstallSnapshotResponse{
-		Term: 1,
+		Term:         1,
+		BytesWritten: 10,
 	}
 
 	response := makeInstallSnapshotResponse(protoResponse)
 
 	require.Equal(t, protoResponse.GetTerm(), response.Term)
+	require.Equal(t, protoResponse.GetBytesWritten(), response.BytesWritten)
 }
 
 // TestMakeEntries checks that an array of protobuf log entries is correctly converted to an array
@@ -227,6 +231,7 @@ func TestMakeInstallSnapshotRequest(t *testing.T) {
 		Term:              2,
 		LastIncludedIndex: 3,
 		LastIncludedTerm:  4,
+		Configuration:     []byte("configuration"),
 		Data:              []byte("test"),
 		Offset:            4,
 		Done:              true,
@@ -238,6 +243,7 @@ func TestMakeInstallSnapshotRequest(t *testing.T) {
 	require.Equal(t, protoReq.GetTerm(), req.Term)
 	require.Equal(t, protoReq.GetLastIncludedIndex(), req.LastIncludedIndex)
 	require.Equal(t, protoReq.GetLastIncludedTerm(), req.LastIncludedTerm)
+	require.Equal(t, protoReq.GetConfiguration(), req.Configuration)
 	require.Equal(t, protoReq.GetData(), req.Bytes)
 	require.Equal(t, protoReq.GetOffset(), req.Offset)
 	require.Equal(t, protoReq.GetDone(), req.Done)
@@ -247,10 +253,12 @@ func TestMakeInstallSnapshotRequest(t *testing.T) {
 // protobuf InstallSnapshotResponse.
 func TestMakeProtoInstallSnapshotResponse(t *testing.T) {
 	response := InstallSnapshotResponse{
-		Term: 1,
+		Term:         1,
+		BytesWritten: 10,
 	}
 
 	protoResponse := makeProtoInstallSnapshotResponse(response)
 
 	require.Equal(t, response.Term, protoResponse.GetTerm())
+	require.Equal(t, response.BytesWritten, protoResponse.GetBytesWritten())
 }

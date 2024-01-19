@@ -1216,16 +1216,17 @@ func (r *Raft) sendRequestVoteToPeers() {
 
 	// Send RequestVote RPCs to all voting members of the cluster.
 	votesRecieved := 1
+	isPrevote := r.state == PreCandidate
 	for id, address := range r.configuration.Members {
 		if id != r.id && r.isVoter(id) {
-			go r.sendRequestVote(id, address, &votesRecieved)
+			go r.sendRequestVote(id, address, &votesRecieved, isPrevote)
 		}
 	}
 }
 
 // sendRequestVote sends a RequestVote RPC to the node with the provided
 // ID and address if it is a voting member.
-func (r *Raft) sendRequestVote(id string, address string, votes *int) {
+func (r *Raft) sendRequestVote(id string, address string, votes *int, prevote bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1240,11 +1241,11 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 		Term:         r.currentTerm,
 		LastLogIndex: r.log.LastIndex(),
 		LastLogTerm:  r.log.LastTerm(),
-		Prevote:      r.state == PreCandidate,
+		Prevote:      prevote,
 	}
 
 	// Use the term that would be used in the election if this is a prevote.
-	if request.Prevote {
+	if prevote {
 		request.Term++
 	}
 
@@ -1257,7 +1258,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	}
 
 	// Ensure this response is not stale. It is possible that this node has started another election.
-	if !request.Prevote && r.currentTerm != request.Term {
+	if r.currentTerm > request.Term {
 		return
 	}
 
@@ -1272,7 +1273,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 		return
 	}
 
-	// If this is a prevote and a majority of the cluster respond with success to this nodes
+	// If this is a prevote and a majority of the cluster respond with success to this node's
 	// vote requests, become a candidate.
 	if r.hasQuorum(*votes) && r.state == PreCandidate {
 		// Signal to the election loop to start an election so that the real election
@@ -1282,7 +1283,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	}
 
 	// If this an election and a majority of the cluster vote for this node, become the leader.
-	if !request.Prevote && r.hasQuorum(*votes) && r.state == Candidate {
+	if !prevote && r.hasQuorum(*votes) && r.state == Candidate {
 		r.becomeLeader()
 	}
 }

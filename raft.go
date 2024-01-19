@@ -53,7 +53,7 @@ const (
 	Follower
 
 	// PreCandidate is a state indicating this node is holding a prevote. If this node is able to
-	// recieve sucessful RequestVote RPC responses from the majority of the cluster, it will enter the
+	// receive successful RequestVote RPC responses from the majority of the cluster, it will enter the
 	// candidate state.
 	PreCandidate
 
@@ -124,12 +124,12 @@ type Raft struct {
 	address string
 
 	// The ID that this raft node believes is the leader. Used to redirect clients.
-	leaderId string
+	leaderID string
 
 	// The configuration options for this raft node.
 	options options
 
-	// The network transport for sending and recieving RPCs.
+	// The network transport for sending and receiving RPCs.
 	transport Transport
 
 	// The latest configuration of the cluster.
@@ -142,7 +142,7 @@ type Raft struct {
 	// A channel used to respond to membership change requests.
 	configurationResponseCh chan Result[Configuration]
 
-	// Maps ID to the the state of the other nodes in the cluster.
+	// Maps ID to the state of the other nodes in the cluster.
 	// Maintained by the leader.
 	followers map[string]*follower
 
@@ -175,7 +175,7 @@ type Raft struct {
 	// to the state machine.
 	readOnlyCond *sync.Cond
 
-	// Notifies election loop that node may enter candidate state.
+	// Notifies election loop to start an election.
 	electionCond *sync.Cond
 
 	// The current state of this raft node: leader, followers, or shutdown.
@@ -547,7 +547,7 @@ func (r *Raft) Configuration() Configuration {
 // unique from the existing nodes in the cluster. If the configuration change
 // was not successful, the future will be populated with an error. It may be
 // necessary to resubmit the configuration change to this node or a different
-// node. It is safe to call RemoveServer as many times as needed
+// node. It is safe to call AddServer as many times as needed
 func (r *Raft) AddServer(
 	id string,
 	address string,
@@ -673,7 +673,7 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 }
 
 // SubmitOperation accepts an operation for application to the state machine and returns a
-// future for the response to the operation. Even if the operation is submitted succesfully,
+// future for the response to the operation. Even if the operation is submitted successfully,
 // is not guaranteed that it will be applied to the state machine if there are failures. Once
 // the operation has been applied to the state machine, the future will be populated with the
 // response. If the operation was unable to be applied to the state machine, the future will
@@ -784,7 +784,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	}
 
 	r.options.logger.Debugf(
-		"AppendEntries RPC recieved: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
+		"AppendEntries RPC received: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
 		request.LeaderID,
 		request.LeaderCommit,
 		request.Term,
@@ -810,7 +810,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	r.lastContact = time.Now()
 
 	// Update the ID of the node that this node recognizes as the leader.
-	r.leaderId = request.LeaderID
+	r.leaderID = request.LeaderID
 
 	// If the request has a more up-to-date term, update current term and
 	// become a followers.
@@ -914,7 +914,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 		// Fall back to the committed configuration if the current one is
 		// truncated. This is necessary since a partitioned leader may have
-		// recieved a membership change request.
+		// received a membership change request.
 		if entry.Index <= r.configuration.Index {
 			r.nextConfiguration(r.committedConfiguration)
 		}
@@ -1084,7 +1084,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		time.Since(r.lastContact) < r.options.electionTimeout {
 		r.options.logger.Debugf(
 			"RequestVote RPC rejected: reason = recent contact from leader, knownLeader = %s",
-			r.leaderId,
+			r.leaderID,
 		)
 		return nil
 	}
@@ -1158,7 +1158,7 @@ func (r *Raft) electionTicker() {
 	defer r.wg.Done()
 
 	for {
-		// Sleep for a random amount of time bewteen one and two election timeouts
+		// Sleep for a random amount of time between one and two election timeouts
 		// to avoid kicking off an election at the same time as other nodes.
 		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
 		time.Sleep(timeout * time.Millisecond)
@@ -1191,19 +1191,14 @@ func (r *Raft) electionLoop() {
 // of the cluster and this node has not been contacted by the leader
 // within an election timeout.
 func (r *Raft) election() {
-	// There is no need for an election if:
-	// 1. This node is already the leader.
-	// 2. This node has been shutdown.
-	// 3. This node is not a voting member of the cluster.
-	// 4. This node has recently been contacted by the leader.
 	if r.state == Leader || r.state == Shutdown || !r.isVoter(r.id) ||
 		time.Since(r.lastContact) < r.options.electionTimeout {
 		return
 	}
-
 	if r.state == Follower {
 		r.becomePreCandidate()
-	} else if r.state == Candidate {
+	}
+	if r.state == Candidate {
 		r.becomeCandidate()
 	}
 
@@ -1234,8 +1229,9 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Do not send request to any non-voting members.
-	if !r.isVoter(id) {
+	// Do not send requests to non-voting members and only send
+	// requests if this node is a voting member of the cluster.
+	if !r.isVoter(id) || r.isVoter(r.id) {
 		return
 	}
 
@@ -1256,8 +1252,12 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	response, err := r.transport.SendRequestVote(address, request)
 	r.mu.Lock()
 
+	if err != nil || r.state == Shutdown {
+		return
+	}
+
 	// Ensure this response is not stale. It is possible that this node has started another election.
-	if err != nil || (!request.Prevote && r.currentTerm != request.Term) {
+	if !request.Prevote && r.currentTerm != request.Term {
 		return
 	}
 
@@ -1287,7 +1287,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 	}
 }
 
-// InstallSnapshot handles snaopshot installation requests from the leader. It takes a request to
+// InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
 // install a snapshot and fills the response with the result of the installation.
 func (r *Raft) InstallSnapshot(
 	request *InstallSnapshotRequest,
@@ -1335,7 +1335,7 @@ func (r *Raft) InstallSnapshot(
 
 	r.lastContact = time.Now()
 
-	// The recieved snapshot does not contain anything new.
+	// The received snapshot does not contain anything new.
 	if r.lastIncludedIndex >= request.LastIncludedIndex ||
 		r.lastApplied >= request.LastIncludedIndex {
 		return nil
@@ -1627,8 +1627,6 @@ func (r *Raft) heartbeatLoop() {
 	// once every heartbeat interval.
 	for {
 		time.Sleep(r.options.heartbeatInterval)
-
-		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
 			return
@@ -1716,16 +1714,12 @@ func (r *Raft) applyLoop() {
 
 			switch entry.EntryType {
 			case NoOpEntry:
-				r.lastApplied++
 			case ConfigurationEntry:
 				r.applyConfiguration(entry.Data)
 				respond(r.configurationResponseCh, *r.configuration, nil)
-				r.lastApplied++
 			case OperationEntry:
-				responseCh, ok := r.operationManager.pendingReplicated[entry.Index]
-				if ok {
-					delete(r.operationManager.pendingReplicated, entry.Index)
-				}
+				responseCh := r.operationManager.pendingReplicated[entry.Index]
+				delete(r.operationManager.pendingReplicated, entry.Index)
 
 				operation := Operation{
 					LogIndex:      entry.Index,
@@ -1754,14 +1748,13 @@ func (r *Raft) applyLoop() {
 				if r.lastApplied != lastApplied {
 					continue
 				}
-
-				r.lastApplied++
-
-				if r.fsm.NeedSnapshot(r.log.Size()) {
-					r.takeSnapshot()
-				}
 			default:
 				r.options.logger.Fatal("log entry has invalid type")
+			}
+
+			r.lastApplied++
+			if r.fsm.NeedSnapshot(r.log.Size()) {
+				r.takeSnapshot()
 			}
 		}
 
@@ -1866,13 +1859,13 @@ func (r *Raft) becomeLeader() {
 func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.state = Follower
 	r.currentTerm = term
-	r.leaderId = leaderID
+	r.leaderID = leaderID
 	r.votedFor = ""
 	r.persistTermAndVote()
 	r.resetSnapshotFiles()
 
 	// Cancel any pending operations.
-	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)
+	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 
 	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
@@ -1928,7 +1921,7 @@ func (r *Raft) persistTermAndVote() {
 
 // nextConfiguration transitions this node from its current configuration to
 // to the provided configuration. Any unused connections will be torn down
-// and any new connections will be estabslished. If this node is not a member
+// and any new connections will be established. If this node is not a member
 // of the next configuration, it will transition to a configuration consisting
 // of only itself with non-voter status.
 func (r *Raft) nextConfiguration(next *Configuration) {

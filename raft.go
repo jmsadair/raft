@@ -1627,6 +1627,7 @@ func (r *Raft) heartbeatLoop() {
 	// once every heartbeat interval.
 	for {
 		time.Sleep(r.options.heartbeatInterval)
+		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
 			return

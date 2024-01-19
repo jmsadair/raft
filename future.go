@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
+// ErrTimeout is returned when a future timed out waiting for a result.
 var ErrTimeout = errors.New(
-	"a timeout occured while waiting for the result - try submitting the operation again",
+	"a timeout occurred while waiting for the result - try submitting the operation again",
 )
 
 // Response is the concrete result produced by a node after processing a client submitted operation.
@@ -60,7 +61,7 @@ type Result[T Response] interface {
 	// returned by Success is only valid if Error returns nil.
 	Success() T
 
-	// Error returns any error that occured during the
+	// Error returns any error that occurred during the
 	// operation that was to produce the response.
 	Error() error
 }
@@ -70,7 +71,7 @@ type result[T Response] struct {
 	// The actual result of an operation.
 	success T
 
-	// Any error that occured during the processing of the result.
+	// Any error that occurred during the processing of the result.
 	err error
 }
 

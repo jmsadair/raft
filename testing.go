@@ -242,6 +242,9 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	}
 }
 
+// This starts the test cluster and should always be called before any operations
+// are submitted or any failures are inflicted. This is not concurrent safe and should
+// only be called once.
 func (tc *testCluster) startCluster() {
 	for _, node := range tc.nodes {
 		if err := node.Bootstrap(tc.configuration.Members); err != nil {
@@ -253,6 +256,8 @@ func (tc *testCluster) startCluster() {
 	}
 }
 
+// This stops the test cluster. This is not concurrent safe and should only
+// be called once.
 func (tc *testCluster) stopCluster() {
 	for _, node := range tc.nodes {
 		node.Stop()
@@ -359,7 +364,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 			actualIsVoter := configuration.IsVoter[id]
 			if !ok {
 				tc.t.Fatalf(
-					"membership change returned success, but node is missing from configurationL ID = %s",
+					"membership change returned success, but node is missing from configuration: ID = %s",
 					id,
 				)
 			}
@@ -470,7 +475,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperatio
 			}
 		}
 
-		// Check that we have atleast the expected number of matches and that
+		// Check that we have at least the expected number of matches and that
 		// the applied operations are correct.
 		if matches >= expectedMatches {
 			// Check that applied log indices are monotonically increasing on all

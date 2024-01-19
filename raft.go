@@ -1423,11 +1423,18 @@ func (r *Raft) InstallSnapshot(
 		return nil
 	}
 
-	// Restore the state machine with the snapshot.
 	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
 	}
+
+	// Increment the wait group to ensure that, if Shutdown is called,
+	// the log is discarded before it is closed.
+	r.wg.Add(1)
+	defer r.wg.Done()
+
+	// Restore the state machine with the snapshot.
+	// This could take a while so it's probably best that the lock is released.
 	r.mu.Unlock()
 	r.options.logger.Warnf(
 		"restoring state machine with snapshot: lastIndex = %d, lastTerm = %d",
@@ -1441,6 +1448,7 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	r.mu.Lock()
+
 	r.lastApplied = request.LastIncludedIndex
 	r.commitIndex = request.LastIncludedIndex
 

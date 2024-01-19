@@ -1,150 +1,283 @@
 package raft
 
 import (
-	"bufio"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
-
-	"github.com/jmsadair/raft/internal/errors"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"time"
 )
 
-var errSnapshotStoreNotOpen = errors.New("snapshot storage is not open")
+const (
+	metadataBase    = "metadata.json"
+	snapshotBase    = "snapshot.bin"
+	snapshotDirBase = "snapshots"
+)
 
-// Snapshot represents a snapshot of the replicated state machine.
-type Snapshot struct {
-	// Last index included in the snapshot
-	LastIncludedIndex uint64
+// SnapshotMetadata contains all metadata associated with a snapshot.
+type SnapshotMetadata struct {
+	// The last log index included in the snapshot.
+	LastIncludedIndex uint64 `json:"last_included_index"`
 
-	// Last term included in the snapshot.
-	LastIncludedTerm uint64
+	// The last log term included in the snapshot.
+	LastIncludedTerm uint64 `json:"last_included_term"`
 
-	// State of the state machine.
-	Data []byte
+	// The most up-to-date configuration in the snapshot.
+	Configuration []byte `json:"configuration"`
 }
 
-// NewSnapshot creates a new Snapshot instance with the provided state data
-// from the replicated state machine.
-func NewSnapshot(lastIncludedIndex uint64, lastIncludedTerm uint64, data []byte) *Snapshot {
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy[:], data)
-	return &Snapshot{
-		LastIncludedIndex: lastIncludedIndex,
-		LastIncludedTerm:  lastIncludedTerm,
-		Data:              dataCopy,
+func encodeMetadata(w io.Writer, metadata *SnapshotMetadata) error {
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("could not marshal metadata: %w", err)
 	}
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("could not write metadata: %w", err)
+	}
+	return nil
 }
 
-// SnapshotStorage represents the component of Raft this manages persistently
-// storing snapshots of the state machine.
+func decodeMetadata(r io.Reader) (SnapshotMetadata, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return SnapshotMetadata{}, fmt.Errorf("could not read metadata: %w", err)
+	}
+	metadata := SnapshotMetadata{}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return metadata, fmt.Errorf("could not unmarshal metadata: %w", err)
+	}
+	return metadata, nil
+}
+
+// SnapshotFile represents a component for reading and writing
+// snapshots.
+type SnapshotFile interface {
+	io.ReadWriteSeeker
+	io.Closer
+
+	// Metadata returns the metadata associated with the snapshot file.
+	Metadata() SnapshotMetadata
+
+	// Discard deletes the snapshot and its metadata if it has not yet been
+	// saved.
+	Discard() error
+}
+
+// SnapshotStorage represents the component of Raft that manages snapshots created
+// by the state machine.
 type SnapshotStorage interface {
-	PersistentStorage
+	// NewSnapshotFile creates a new snapshot file. It is the caller's responsibility to
+	// close the file or discard it when they are done with it.
+	NewSnapshotFile(
+		lastIncludedIndex uint64,
+		lastIncludedTerm uint64,
+		configuration []byte,
+	) (SnapshotFile, error)
 
-	// LastSnapshot gets the most recently saved snapshot if it exists.
-	// If the snapshot does not exist, it will be nil. An error is returned
-	// if the snapshot storage is not open.
-	LastSnapshot() (*Snapshot, error)
+	// SnapshotFile returns the most recent snapshot file. It is the
+	// caller's responsibility to close the file when they are done with it.
+	SnapshotFile() (SnapshotFile, error)
+}
 
-	// SaveSnapshot persists the provided snapshot.
-	SaveSnapshot(snapshot *Snapshot) error
+// snapshotFile implements the SnapshotFile interface.
+type snapshotFile struct {
+	// The actual directory that will contain the snapshot and its metadata
+	// once the snapshot has safely been written to disk.
+	dir string
+
+	// The temporary directory that contains the snapshot and its metadata
+	// while it is being written.
+	tmpDir string
+
+	// The snapshot file.
+	file *os.File
+
+	// The metadata associated with the snapshot.
+	metadata SnapshotMetadata
+}
+
+func (s *snapshotFile) Write(p []byte) (n int, err error) {
+	return s.file.Write(p)
+}
+
+func (s *snapshotFile) Read(p []byte) (n int, err error) {
+	return s.file.Read(p)
+}
+
+func (s *snapshotFile) Seek(offset int64, whence int) (int64, error) {
+	return s.file.Seek(offset, whence)
+}
+
+func (s *snapshotFile) Close() error {
+	if s.file == nil {
+		return nil
+	}
+
+	// Ensure any written data is on disk.
+	if err := s.file.Sync(); err != nil {
+		return fmt.Errorf("could not sync file: %w", err)
+	}
+	if err := s.file.Close(); err != nil {
+		return fmt.Errorf("could not close file: %w", err)
+	}
+
+	defer func() {
+		s.file = nil
+	}()
+
+	// Perform an atomic rename of the temporary directory
+	// containing the snapshot and its metadata to its
+	// permanent name since it is safely on disk now.
+	if filepath.Dir(s.file.Name()) == s.tmpDir {
+		return os.Rename(s.tmpDir, s.dir)
+	}
+
+	return nil
+}
+
+func (s *snapshotFile) Discard() error {
+	if s.file == nil || filepath.Dir(s.file.Name()) != s.tmpDir {
+		return nil
+	}
+	if err := s.file.Close(); err != nil {
+		return fmt.Errorf("could not close file: %w", err)
+	}
+	s.file = nil
+	return os.RemoveAll(s.tmpDir)
+}
+
+func (s *snapshotFile) Metadata() SnapshotMetadata {
+	return s.metadata
 }
 
 // persistentSnapshotStorage is an implementation of the SnapshotStorage interface. This
 // implementation is not concurrent safe.
 type persistentSnapshotStorage struct {
-	// The most recently persisted snapshot if there is one
-	// and nil otherwise.
-	snapshot *Snapshot
-
-	// The path to where snapshots are persisted.
-	path string
-
-	// The file that the snapshots are persisted to. This value is nil if the storage
-	// has not been opened.
-	file *os.File
+	// The directory where snapshots are persisted.
+	snapshotDir string
 }
 
-// NewSnapshotStorage creates a new instance of SnapshotStorage at the
-// provided path.
-func NewSnapshotStorage(path string) SnapshotStorage {
-	return &persistentSnapshotStorage{path: path}
-}
-
-func (p *persistentSnapshotStorage) Open() error {
-	if p.file != nil {
-		return nil
+// NewSnapshotStorage creates a new snapshot storage at the provided path.
+func NewSnapshotStorage(path string) (SnapshotStorage, error) {
+	snapshotPath := filepath.Join(path, snapshotDirBase)
+	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("could not create snapshot directory for snapshot storage: %w", err)
 	}
+	return &persistentSnapshotStorage{snapshotDir: snapshotPath}, nil
+}
 
-	file, err := os.OpenFile(p.path, os.O_RDWR|os.O_CREATE, 0o666)
+func (p *persistentSnapshotStorage) NewSnapshotFile(
+	lastIncludedIndex uint64, lastIncludedTerm uint64, configuration []byte,
+) (SnapshotFile, error) {
+	// The temporary directory that will contain the snapshot and its metadata.
+	// This directory will be renamed once the snapshot has been safely written to disk.
+	tmpDir, err := os.MkdirTemp(p.snapshotDir, "tmp-")
 	if err != nil {
-		return errors.WrapError(err, "failed to open snapshot storage")
+		return nil, fmt.Errorf("could not  directory for snapshot: %w", err)
 	}
 
-	p.file = file
+	// Create the file the snapshot data will be written to.
+	dataFile, err := os.Create(filepath.Join(tmpDir, snapshotBase))
+	if err != nil {
+		return nil, fmt.Errorf("could not create file for snapshot data: %w", err)
+	}
 
-	return nil
+	// Create metadata file and write the metadata to it.
+	metadataFile, err := os.Create(filepath.Join(tmpDir, metadataBase))
+	if err != nil {
+		return nil, fmt.Errorf("could not create file for snapshot metadata: %w", err)
+	}
+	metadata := SnapshotMetadata{
+		LastIncludedIndex: lastIncludedIndex,
+		LastIncludedTerm:  lastIncludedTerm,
+		Configuration:     configuration,
+	}
+	if err := encodeMetadata(metadataFile, &metadata); err != nil {
+		return nil, fmt.Errorf("could not encode snapshot metadata: %w", err)
+	}
+	if err := metadataFile.Sync(); err != nil {
+		return nil, fmt.Errorf("could not sync snapshot metadata file: %w", err)
+	}
+	if err := metadataFile.Close(); err != nil {
+		return nil, fmt.Errorf("could not close snapshot metadata file: %w", err)
+	}
+
+	return &snapshotFile{
+		dir:      filepath.Join(p.snapshotDir, buildDirectoryBase()),
+		tmpDir:   tmpDir,
+		file:     dataFile,
+		metadata: metadata,
+	}, nil
 }
 
-func (p *persistentSnapshotStorage) Replay() error {
-	if p.file == nil {
-		return errSnapshotStoreNotOpen
+func (p *persistentSnapshotStorage) SnapshotFile() (SnapshotFile, error) {
+	// Retrieve the most recent snapshot if there is one.
+	dirNames, err := p.directories()
+	if err != nil {
+		return nil, err
+	}
+	if len(dirNames) == 0 {
+		return nil, nil
+	}
+	dirName := dirNames[len(dirNames)-1]
+
+	// Make the file containing the snapshot data prepared for reading.
+	dataFile, err := os.Open(filepath.Join(dirName, snapshotBase))
+	if err != nil {
+		return nil, fmt.Errorf("could not open snapshot data file: %w", err)
 	}
 
-	reader := bufio.NewReader(p.file)
+	// Read the metadata from the metadata file.
+	metadataFile, err := os.Open(filepath.Join(dirName, metadataBase))
+	if err != nil {
+		return nil, fmt.Errorf("could not open snapshot metadata file: %w", err)
+	}
+	metadata, err := decodeMetadata(metadataFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not decode snapshot metadata: %w", err)
+	}
 
-	for {
-		var snapshot Snapshot
-		var err error
-		snapshot, err = decodeSnapshot(reader)
-		if err == io.EOF {
-			break
+	return &snapshotFile{
+		file:     dataFile,
+		metadata: metadata,
+	}, nil
+}
+
+func (p *persistentSnapshotStorage) directories() ([]string, error) {
+	entries, err := os.ReadDir(p.snapshotDir)
+	if err != nil {
+		return nil, fmt.Errorf("could not read snapshot directory entries: %w", err)
+	}
+
+	// Filter out any entries that are not snapshot entries.
+	dirNames := make([]string, 0, len(entries))
+	pattern, err := regexp.Compile(`snapshot-(\d+)$`)
+	if err != nil {
+		return nil, fmt.Errorf("could not compile snapshot directory regexp: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && pattern.MatchString(entry.Name()) {
+			dirNames = append(dirNames, filepath.Join(p.snapshotDir, entry.Name()))
 		}
-		if err != nil {
-			return errors.WrapError(err, "failed while replaying snapshot storage")
-		}
-		p.snapshot = &snapshot
 	}
 
-	return nil
+	// Sort the entries by their timestamp.
+	sort.Slice(dirNames, func(i, j int) bool {
+		var timestamp1 int64
+		var timestamp2 int64
+		pattern := "snapshot-%d"
+		fmt.Sscanf(dirNames[i], pattern, &timestamp1)
+		fmt.Sscanf(dirNames[j], pattern, &timestamp2)
+		return timestamp1 < timestamp2
+	})
+
+	return dirNames, nil
 }
 
-func (p *persistentSnapshotStorage) Close() error {
-	if p.file == nil {
-		return nil
-	}
-
-	if err := p.file.Close(); err != nil {
-		return errors.WrapError(err, "failed to close snapshot storage")
-	}
-	p.snapshot = nil
-	p.file = nil
-
-	return nil
-}
-
-func (p *persistentSnapshotStorage) LastSnapshot() (*Snapshot, error) {
-	if p.file == nil {
-		return nil, errSnapshotStoreNotOpen
-	}
-	return p.snapshot, nil
-}
-
-func (p *persistentSnapshotStorage) SaveSnapshot(snapshot *Snapshot) error {
-	if p.file == nil {
-		return errSnapshotStoreNotOpen
-	}
-
-	writer := bufio.NewWriter(p.file)
-	if err := encodeSnapshot(writer, snapshot); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-	if err := writer.Flush(); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-	if err := p.file.Sync(); err != nil {
-		return errors.WrapError(err, "failed to save snapshot")
-	}
-
-	p.snapshot = snapshot
-
-	return nil
+func buildDirectoryBase() string {
+	now := time.Now().UnixNano()
+	return fmt.Sprintf("snapshot-%v", now)
 }

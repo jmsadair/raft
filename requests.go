@@ -48,6 +48,9 @@ type RequestVoteRequest struct {
 
 	// The term of the candidate's last log entry.
 	LastLogTerm uint64
+
+	// Indicates whether this request is for a prevote.
+	Prevote bool
 }
 
 // RequestVoteResponse is a response to a request for a vote.
@@ -74,14 +77,28 @@ type InstallSnapshotRequest struct {
 	// The term associated with the last included index.
 	LastIncludedTerm uint64
 
-	// The state of the state machine in Bytes.
+	// The last configuration included in the snapshot.
+	Configuration []byte
+
+	// A chunk of the snapshot.
 	Bytes []byte
+
+	// The offset in the snapshot file.
+	Offset int64
+
+	// Indicates whether this is the last chunk of the snapshot.
+	Done bool
 }
 
 // InstallSnapshotResponse is a response to a snapshot installation.
 type InstallSnapshotResponse struct {
 	// The term of the server that received the request.
 	Term uint64
+
+	// The number of bytes written by the reciever. If the
+	// request is successful, this should be the number of bytes
+	// in the request.
+	BytesWritten int64
 }
 
 // makeProtoEntries converts an array of LogEntry instances to an array of protobuf LogEntry instances.
@@ -106,6 +123,7 @@ func makeProtoRequestVoteRequest(request RequestVoteRequest) *pb.RequestVoteRequ
 		Term:         request.Term,
 		LastLogIndex: request.LastLogIndex,
 		LastLogTerm:  request.LastLogTerm,
+		Prevote:      request.Prevote,
 	}
 }
 
@@ -145,14 +163,18 @@ func makeProtoInstallSnapshotRequest(request InstallSnapshotRequest) *pb.Install
 		Term:              request.Term,
 		LastIncludedIndex: request.LastIncludedIndex,
 		LastIncludedTerm:  request.LastIncludedTerm,
+		Configuration:     request.Configuration,
 		Data:              request.Bytes,
+		Offset:            request.Offset,
+		Done:              request.Done,
 	}
 }
 
 // makeInstallSnapshotResponse converts an protobuf InstallSnapshotResponse instance to a InstallSnapshotResponse instance.
 func makeInstallSnapshotResponse(response *pb.InstallSnapshotResponse) InstallSnapshotResponse {
 	return InstallSnapshotResponse{
-		Term: response.GetTerm(),
+		Term:         response.GetTerm(),
+		BytesWritten: response.GetBytesWritten(),
 	}
 }
 
@@ -178,6 +200,7 @@ func makeRequestVoteRequest(request *pb.RequestVoteRequest) RequestVoteRequest {
 		Term:         request.GetTerm(),
 		LastLogIndex: request.GetLastLogIndex(),
 		LastLogTerm:  request.GetLastLogTerm(),
+		Prevote:      request.GetPrevote(),
 	}
 }
 
@@ -217,7 +240,10 @@ func makeInstallSnapshotRequest(request *pb.InstallSnapshotRequest) InstallSnaps
 		Term:              request.GetTerm(),
 		LastIncludedIndex: request.GetLastIncludedIndex(),
 		LastIncludedTerm:  request.GetLastIncludedTerm(),
+		Configuration:     request.GetConfiguration(),
 		Bytes:             request.GetData(),
+		Offset:            request.GetOffset(),
+		Done:              request.GetDone(),
 	}
 }
 
@@ -226,6 +252,7 @@ func makeProtoInstallSnapshotResponse(
 	response InstallSnapshotResponse,
 ) *pb.InstallSnapshotResponse {
 	return &pb.InstallSnapshotResponse{
-		Term: response.Term,
+		Term:         response.Term,
+		BytesWritten: response.BytesWritten,
 	}
 }

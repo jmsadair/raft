@@ -1,77 +1,68 @@
 package raft
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
-	"net"
+	"io"
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/errors"
 	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
 )
 
-var errShutdown = errors.New("server is shutdown")
+var (
+	// ErrNotLeader is returned when an operation or configuration change is
+	// submitted to a node that is not a leader. Operations may only be submitted
+	// to a node that is a leader.
+	ErrNotLeader = errors.New("this node is not the leader")
 
-// NotLeaderError is an error returned when an operation is submitted to a
-// server, and it is not the leader. Only the leader may submit operations.
-type NotLeaderError struct {
-	// The ID of the server the operation was submitted to.
-	ServerID string
+	// ErrInvalidLease is returned when a lease-based read-only operation is
+	// rejected due to the leader's lease having expired. The operation likely
+	// needs to be submitted to a different node in the cluster.
+	ErrInvalidLease = errors.New("this node does not have a valid lease")
 
-	// The ID of the server that this server recognizes as the leader. Note that this may not always be accurate.
-	KnownLeader string
-}
+	// ErrPendingConfiguration is returned when a membership change is requested and there
+	// is a pending membership change that has not yet been committed. The membership change
+	// request may be submitted once the pending membership change is committed.
+	ErrPendingConfiguration = errors.New("only one membership change may be committed at a time")
 
-// Error formats and returns an error message indicating that the server with
-// the ID e.ServerID is not the leader, and the known leader is e.KnownLeader.
-func (e NotLeaderError) Error() string {
-	return fmt.Sprintf("server %s is not the leader: knownLeader = %s", e.ServerID, e.KnownLeader)
-}
+	// ErrNoCommitThisTerm is returned when a membership change is requested but a log entry has yet
+	// to be committed in the current term. The membership change may be submitted once a log entry
+	// has been committed this term.
+	ErrNoCommitThisTerm = errors.New("a log entry has not been committed in this term")
+)
 
-// InvalidLeaseError is returned when a lease-based read-only operation is
-// submitted but the lease expires or the server loses leadership before
-// it can be applied to the state machine.
-type InvalidLeaseError struct {
-	// The ID of the server that the operation was submitted to.
-	ServerID string
-}
+// The default chunk size for InstallSnapshot RPCs.
+const snapshotChunkSize = 32 * 1024
 
-// Error formats and returns an error message indicating that the server with
-// the ID e.ServerID does not have a valid lease.
-func (e InvalidLeaseError) Error() string {
-	return fmt.Sprintf("server %s does not have a valid lease", e.ServerID)
-}
-
-// InvalidOperationTypeError is returned when an operation type is submitted that is
-// not supported.
-type InvalidOperationTypeError struct {
-	// The operation type that is invalid.
-	OperationType OperationType
-}
-
-// Error formats and returns an error message indicating that operation type
-// e.OperationType is not valid.
-func (e InvalidOperationTypeError) Error() string {
-	return fmt.Sprintf("operation type '%s' is not a supported operation type", e.OperationType)
-}
-
-// State represents the current state of a raft node.
-// A raft node may either be shutdown, the leader, or a follower.
+// State represents the current state of a node.
+// A node may either be shutdown, the leader, or a followers.
 type State uint32
 
 const (
-	// Leader is a state indicating that the raft node is responsible for replicating and
-	// committing log entries. Typically, only one raft node in a cluster will be the leader.
-	// However, if there are partitions or other failures, it is possible there is more than
-	// one leader.
+	// Leader is a state indicating that the node is responsible for replicating and
+	// committing log entries. The leader will accept operations and membership change
+	// requests.
 	Leader State = iota
 
-	// Follower is a state indicating that a raft node  is responsible for accepting log entries replicated
-	// by the leader. A node in the follower state may not accept operations for replication.
+	// Follower is a state indicating that a node is responsible for accepting log entries replicated
+	// by the leader. A node in the follower state will not accept operations or membership change
+	// requests.
 	Follower
 
-	// Shutdown is a state indicating that the raft node is currently offline.
+	// PreCandidate is a state indicating this node is holding a prevote. If this node is able to
+	// receive successful RequestVote RPC responses from the majority of the cluster, it will enter the
+	// candidate state.
+	PreCandidate
+
+	// Candidate is a state indicating that this node is currently holding an election. A node will
+	// remain in this state until it is either elected the leader or another node is elected leader
+	// thereby causing this node to step down to the follower state.
+	Candidate
+
+	// Shutdown is a state indicating that the node is currently offline.
 	Shutdown
 )
 
@@ -82,6 +73,8 @@ func (s State) String() string {
 		return "leader"
 	case Follower:
 		return "follower"
+	case Candidate:
+		return "candidate"
 	case Shutdown:
 		return "shutdown"
 	default:
@@ -89,13 +82,13 @@ func (s State) String() string {
 	}
 }
 
-// Status is the status of a raft node.
+// Status is the status of a node.
 type Status struct {
-	// The ID of the raft node.
+	// The unique identifier of this node.
 	ID string
 
-	// The address of the raft node.
-	Address net.Addr
+	// The address of the node.
+	Address string
 
 	// The current term.
 	Term uint64
@@ -106,74 +99,55 @@ type Status struct {
 	// The index of the last log entry applied to the state machine.
 	LastApplied uint64
 
-	// The current state of the raft node: leader, follower, shutdown.
+	// The current state of the node: leader, followers, shutdown.
 	State State
 }
 
-// Protocol represents an abstraction of the raft consensus protocol.
-// The raft protocol is a distributed consensus algorithm designed for fault-tolerant systems.
-// It provides functions to start and stop the protocol, submit operations, check the status and manage snapshots.
-type Protocol interface {
-	// Start initializes the consensus protocol and prepares it to receive client operations.
-	// Returns an error if the initialization fails.
-	Start() error
+// follower contains all state associated with followers.
+type follower struct {
+	// The next log index that should be sent to this node.
+	nextIndex uint64
 
-	// Stop shuts down the consensus protocol.
-	Stop() error
+	// The highest log index known to be replicated on this node.
+	matchIndex uint64
 
-	// SubmitOperation takes a byte array representing an operation and adds it to the
-	// protocol's log. It returns an OperationResponseFuture with the provided timeout,
-	// representing a future response to applying the operation to the state machine.
-	SubmitOperation(
-		operation []byte,
-		operationType OperationType,
-		timeout time.Duration,
-	) *OperationResponseFuture
-
-	// Status returns the current status of the protocol. The returned status includes information
-	// like the current term, whether the protocol is a leader, follower or candidate, and more.
-	Status() Status
-
-	// RequestVote handles vote requests from other nodes during elections. It takes a vote request
-	// and fills the response with the result of the vote. It returns an error if the vote request
-	// fails to be processed.
-	RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error
-
-	// AppendEntries handles log replication requests from the leader. It takes a request to append
-	// entries and fills the response with the result of the append operation. It returns an error
-	// if the append operation fails.
-	AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error
-
-	// InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
-	// install a snapshot and fills the response with the result of the installation. It returns an
-	// error if the snapshot installation process fails.
-	InstallSnapshot(request *InstallSnapshotRequest, response *InstallSnapshotResponse) error
+	// The snapshot file to read when sending a snapshot to this node.
+	snapshot SnapshotFile
 }
 
-// Raft implements the Protocol interface. This implementation of Raft should be utilized as the internal
-// logic for an actual server, as it solely encapsulates the core functionality of Raft and cannot operate
-// as a standalone server.
+// Raft implements the raft consensus protocol.
 type Raft struct {
-	// The ID of this raft node.
+	// The ID of this node.
 	id string
 
+	// The address of this node.
+	address string
+
 	// The ID that this raft node believes is the leader. Used to redirect clients.
-	leaderId string
+	leaderID string
 
 	// The configuration options for this raft node.
 	options options
 
-	// The peers of this raft node.
-	peers map[string]Peer
+	// The network transport for sending and receiving RPCs.
+	transport Transport
+
+	// The latest configuration of the cluster.
+	// This may or may not be committed.
+	configuration *Configuration
+
+	// The most recently committed configuration of the cluster.
+	committedConfiguration *Configuration
+
+	// A channel used to respond to membership change requests.
+	configurationResponseCh chan Result[Configuration]
+
+	// Maps ID to the state of the other nodes in the cluster.
+	// Maintained by the leader.
+	followers map[string]*follower
 
 	// Manages both read-only and replicated operations.
 	operationManager *operationManager
-
-	// This contains the next log index to send to each server.
-	nextIndex map[string]uint64
-
-	// This contains the highest log entry known to be replicated on each sever.
-	matchIndex map[string]uint64
 
 	// This stores and retrieves persisted log entries.
 	log Log
@@ -183,6 +157,9 @@ type Raft struct {
 
 	// This stores and retrieves persisted snapshots.
 	snapshotStorage SnapshotStorage
+
+	// A writer for a snapshot file if one is being installed.
+	snapshot SnapshotFile
 
 	// The state machine provided by the client that operations will be applied to.
 	fsm StateMachine
@@ -198,7 +175,10 @@ type Raft struct {
 	// to the state machine.
 	readOnlyCond *sync.Cond
 
-	// The current state of this raft node: leader, follower, or shutdown.
+	// Notifies election loop to start an election.
+	electionCond *sync.Cond
+
+	// The current state of this raft node: leader, followers, or shutdown.
 	state State
 
 	// Index of the last log entry that was committed.
@@ -227,31 +207,30 @@ type Raft struct {
 	mu sync.Mutex
 }
 
-// NewRaft creates a new instance of Raft that is configured with the provided options. If the log,
-// state storage, or snapshot storage contain any persisted state, it will be read into memory and
-// Raft will be initialized with that state.
+// NewRaft creates a new instance of Raft with the provided ID and address.
+// The datapath is the top level directory where state for this node will be persisted.
 func NewRaft(
 	id string,
-	peers map[string]Peer,
-	log Log,
-	stateStorage StateStorage,
-	snapshotStorage SnapshotStorage,
+	address string,
 	fsm StateMachine,
+	dataPath string,
 	opts ...Option,
 ) (*Raft, error) {
 	// Apply provided options.
 	var options options
 	for _, opt := range opts {
 		if err := opt(&options); err != nil {
-			return nil, errors.WrapError(err, "failed to apply raft option")
+			return nil, err
 		}
 	}
+
+	raft := &Raft{id: id, address: address, state: Shutdown, fsm: fsm}
 
 	// Set default values if option not provided.
 	if options.logger == nil {
 		defaultLogger, err := logger.NewLogger()
 		if err != nil {
-			return nil, errors.WrapError(err, "failed to create default raft logger")
+			return nil, err
 		}
 		options.logger = defaultLogger
 	}
@@ -264,95 +243,173 @@ func NewRaft(
 	if options.leaseDuration == 0 {
 		options.leaseDuration = defaultLeaseDuration
 	}
-
-	// Open the state storage to recover persisted state.
-	if err := stateStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open state storage")
+	if options.log == nil {
+		log, err := NewLog(dataPath)
+		if err != nil {
+			return nil, err
+		}
+		raft.log = log
+	}
+	if options.stateStorage == nil {
+		stateStore, err := NewStateStorage(dataPath)
+		if err != nil {
+			return nil, err
+		}
+		raft.stateStorage = stateStore
+	}
+	if options.snapshotStorage == nil {
+		snapshotStore, err := NewSnapshotStorage(dataPath)
+		if err != nil {
+			return nil, err
+		}
+		raft.snapshotStorage = snapshotStore
+	}
+	if options.transport == nil {
+		transport, err := NewTransport(address)
+		if err != nil {
+			return nil, err
+		}
+		raft.transport = transport
 	}
 
-	// Replay the persisted state into memory.
-	if err := stateStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to replay state storage")
-	}
-
-	// Restore the current term and vote if they have been persisted.
-	currentTerm, votedFor, err := stateStorage.State()
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to retrieve state from state storage")
-	}
-
-	// Open the log for new operations.
-	if err := log.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open log")
-	}
-
-	// Replay the persisted state of the log into memory.
-	if err := log.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to replay log")
-	}
-
-	// Open the snapshot stateStorage for new operations.
-	if err := snapshotStorage.Open(); err != nil {
-		return nil, errors.WrapError(err, "failed to open snapshot storage")
-	}
-
-	// Replay the persisted snapshots into memory.
-	if err := snapshotStorage.Replay(); err != nil {
-		return nil, errors.WrapError(err, "failed to replay snapshot storage")
-	}
-
-	nextIndex := make(map[string]uint64)
-	matchIndex := make(map[string]uint64)
-	for _, peer := range peers {
-		nextIndex[peer.ID()] = 0
-		matchIndex[peer.ID()] = 0
-	}
-
-	raft := &Raft{
-		id:               id,
-		options:          options,
-		peers:            peers,
-		operationManager: newOperationManager(options.leaseDuration),
-		nextIndex:        nextIndex,
-		matchIndex:       matchIndex,
-		log:              log,
-		stateStorage:     stateStorage,
-		snapshotStorage:  snapshotStorage,
-		fsm:              fsm,
-		currentTerm:      currentTerm,
-		votedFor:         votedFor,
-		state:            Shutdown,
-		commitIndex:      0,
-		lastApplied:      0,
-	}
-
+	raft.options = options
+	raft.operationManager = newOperationManager(options.leaseDuration)
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
+	raft.electionCond = sync.NewCond(&raft.mu)
 
-	// Restore the state machine from the most recent snapshot if there was one.
-	snapshot, err := snapshotStorage.LastSnapshot()
-	if err != nil {
-		return nil, errors.WrapError(err, "failed to retrieve last snapshot from snapshot storage")
-	}
-	if snapshot != nil {
-		raft.lastIncludedIndex = snapshot.LastIncludedIndex
-		raft.lastIncludedTerm = snapshot.LastIncludedTerm
-		raft.commitIndex = snapshot.LastIncludedIndex
-		raft.lastApplied = snapshot.LastIncludedIndex
-
-		if err := raft.fsm.Restore(snapshot); err != nil {
-			return nil, errors.WrapError(err, "failed to restore state machine")
-		}
+	if err := raft.restore(); err != nil {
+		return nil, err
 	}
 
 	return raft, nil
 }
 
-// Start starts the Raft instance if it is not already started. Once started,
-// the Raft instance transitions to the follower state and is ready to start
-// sending and receiving RPCs.
+// restore will recover any persisted state and initialize the node with it.
+func (r *Raft) restore() error {
+	if err := r.log.Open(); err != nil {
+		return fmt.Errorf("could not open log: %w", err)
+	}
+	if err := r.log.Replay(); err != nil {
+		return fmt.Errorf("could not replay log: %w", err)
+	}
+
+	// Restore the current term and vote.
+	currentTerm, votedFor, err := r.stateStorage.State()
+	if err != nil {
+		return fmt.Errorf("could not recover state from storage: %w", err)
+	}
+	r.currentTerm = currentTerm
+	r.votedFor = votedFor
+
+	// Restore the state machine from the most recent snapshot.
+	file, err := r.snapshotStorage.SnapshotFile()
+	if err != nil {
+		return fmt.Errorf("could not get snapshot file: %w", err)
+	}
+	if file != nil {
+		metadata := file.Metadata()
+		r.lastIncludedIndex = metadata.LastIncludedIndex
+		r.lastIncludedTerm = metadata.LastIncludedTerm
+		r.commitIndex = metadata.LastIncludedIndex
+		r.lastApplied = metadata.LastIncludedIndex
+		if err := r.fsm.Restore(file); err != nil {
+			return fmt.Errorf("could not restore state machine with snapshot: %w", err)
+		}
+		configuration, err := r.transport.DecodeConfiguration(metadata.Configuration)
+		if err != nil {
+			return fmt.Errorf("could not decode snapshot configuration: %w", err)
+		}
+		r.configuration = &configuration
+		r.committedConfiguration = &configuration
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("could not close snapshot file: %w", err)
+		}
+	}
+
+	// Use the most recent configuration from the log.
+	for index := r.lastIncludedIndex + 1; index <= r.log.LastIndex(); index++ {
+		entry, err := r.log.GetEntry(index)
+		if err != nil {
+			return fmt.Errorf("could not get entry from log: %w", err)
+		}
+		if entry.EntryType != ConfigurationEntry {
+			continue
+		}
+		configuration, err := r.transport.DecodeConfiguration(entry.Data)
+		if err != nil {
+			return fmt.Errorf("could not decode log entry configuration: %w", err)
+		}
+		if r.configuration != nil {
+			committedConfiguration := r.configuration.Clone()
+			r.committedConfiguration = &committedConfiguration
+		}
+		r.configuration = &configuration
+	}
+
+	return nil
+}
+
+// Bootstrap initializes this node with a cluster configuration.
+// The configuration must contain the ID and address of all nodes
+// in the cluster including this one and all nodes must agree on
+// this configuration. This should only be called when starting a
+// cluster for the first time and there is no existing configuration.
+// All nodes in the configuration will have voter status.
+func (r *Raft) Bootstrap(configuration map[string]string) error {
+	if address, ok := configuration[r.id]; !ok || r.address != address {
+		return errors.New("configuration must contain this node")
+	}
+	if r.configuration != nil {
+		return fmt.Errorf(
+			"node already has an existing configuration: Bootstrap should only be called for a cluster starting for the first time: configuration = %s",
+			r.configuration.String(),
+		)
+	}
+	if r.log.LastIndex() > 0 {
+		return errors.New(
+			"node already has existing state: Bootstrap should only be called for a cluster starting for the first time",
+		)
+	}
+
+	index := uint64(1)
+	term := uint64(1)
+	r.configuration = NewConfiguration(index, configuration)
+
+	// Append the configuration to the log.
+	data, err := r.transport.EncodeConfiguration(r.configuration)
+	if err != nil {
+		return err
+	}
+	entry := NewLogEntry(index, term, data, ConfigurationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		return err
+	}
+
+	r.options.logger.Infof("node bootstrapped: configuration = %s", r.configuration.String())
+
+	return nil
+}
+
+// Start starts the node. If the node does not have an existing configuration,
+// a configuration will be created that only includes this node as a non-voter.
+// If the node has been started before, Restart should be called instead.
 func (r *Raft) Start() error {
+	return r.start(false)
+}
+
+// Restart starts a node that has been started and stopped before. The difference
+// between Restart and Start is that Restart restores the state of the node from
+// non-volatile whereas Start does not. Restart should not be called if the node
+// is being started for the first time.
+func (r *Raft) Restart() error {
+	return r.start(true)
+}
+
+// start will start this node if it is not already started. If restore is true,
+// then any persisted state will be restored.
+func (r *Raft) start(restore bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -360,25 +417,62 @@ func (r *Raft) Start() error {
 		return nil
 	}
 
-	r.lastContact = time.Now()
-	r.state = Follower
-
-	for _, peer := range r.peers {
-		if err := peer.Connect(); err != nil {
-			r.options.logger.Errorf("error connecting to peer: %s", err.Error())
+	if restore {
+		if err := r.restore(); err != nil {
+			return fmt.Errorf("could not restore state: %w", err)
 		}
 	}
 
-	r.wg.Add(5)
+	if r.configuration == nil {
+		r.configuration = &Configuration{}
+		r.options.logger.Infof("node has no configuration, will start as non-voter")
+	}
+
+	// Register the functions for handling RPCs.
+	r.transport.RegisterAppendEntriesHandler(r.AppendEntries)
+	r.transport.RegisterRequestVoteHandler(r.RequestVote)
+	r.transport.RegsiterInstallSnapshotHandler(r.InstallSnapshot)
+
+	// Initialize the follower state.
+	r.followers = make(map[string]*follower)
+	for id := range r.configuration.Members {
+		r.followers[id] = new(follower)
+	}
+
+	// Connect to the other nodes in the cluster.
+	for id, address := range r.configuration.Members {
+		if id == r.id {
+			continue
+		}
+		if err := r.transport.Connect(address); err != nil {
+			r.options.logger.Errorf(
+				"failed to connect to node: id = %s, address = %s, error = %v",
+				id,
+				address,
+				err,
+			)
+		}
+	}
+
+	r.lastContact = time.Now()
+	r.state = Follower
+
+	r.wg.Add(6)
 	go r.readOnlyLoop()
 	go r.applyLoop()
+	go r.electionTicker()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
 
+	// Start serving incoming RPCs.
+	if err := r.transport.Run(); err != nil {
+		return fmt.Errorf("could not run transport: %w", err)
+	}
+
 	r.options.logger.Infof(
-		"server %s started: electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
-		r.id,
+		"node started: address = %s electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
+		r.address,
 		r.options.electionTimeout,
 		r.options.heartbeatInterval,
 		r.options.leaseDuration,
@@ -387,85 +481,49 @@ func (r *Raft) Start() error {
 	return nil
 }
 
-// Stop stops the Raft instance if is not already stopped.
-func (r *Raft) Stop() error {
+// Stop stops the raft consensus protocol if is not already stopped.
+func (r *Raft) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return nil
+		return
 	}
 
 	r.state = Shutdown
 	r.applyCond.Broadcast()
 	r.commitCond.Broadcast()
 	r.readOnlyCond.Broadcast()
+	r.electionCond.Broadcast()
 
 	r.mu.Unlock()
 	r.wg.Wait()
 	r.mu.Lock()
 
-	for _, peer := range r.peers {
-		if err := peer.Disconnect(); err != nil {
-			r.options.logger.Errorf(
-				"server %s failed to disconnect from peer: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-	}
+	// Close any connections to other nodes in the cluster and stop accepting RPCs.
+	r.transport.CloseAll()
+	r.transport.Shutdown()
 
 	if err := r.log.Close(); err != nil {
-		r.options.logger.Errorf("server %s failed to close log: %s", r.id, err.Error())
+		r.options.logger.Errorf("failed to close log: %v", err)
 	}
 
-	if err := r.stateStorage.Close(); err != nil {
-		r.options.logger.Errorf("server %s failed to close state storage: %s", r.id, err.Error())
-	}
+	// Close or discard of any snapshot files.
+	r.resetSnapshotFiles()
 
-	if err := r.snapshotStorage.Close(); err != nil {
-		r.options.logger.Errorf(
-			"server %s failed to close snapshot storage: %s",
-			r.id,
-			err.Error(),
-		)
-	}
-
-	r.options.logger.Infof("server %s stopped", r.id)
-
-	return nil
+	r.options.logger.Info("node stopped")
 }
 
-// SubmitOperation accepts an operation from a client for replication andcreturns a future
-// for the response to the operation. Note that submitting an operation for replication does
-// not guarantee replication if there are failures. Once the operation has been applied to
-// the state machine, the future will be populated with the response.
-func (r *Raft) SubmitOperation(
-	operation []byte,
-	operationType OperationType,
-	timeout time.Duration,
-) *OperationResponseFuture {
-	switch operationType {
-	case Replicated:
-		return r.submitReplicatedOperation(operation, timeout)
-	case LeaseBasedReadOnly, LinearizableReadOnly:
-		return r.submitReadOnlyOperation(operation, operationType, timeout)
-	default:
-		future := NewOperationResponseFuture(operation, timeout)
-		future.responseCh <- OperationResponse{Err: InvalidOperationTypeError{OperationType: operationType}}
-		return future
-	}
-}
-
-// Status returns the status of the Raft instance. The status includes
-// the ID, address, term, commit index, last applied index, and state.
+// Status returns the status of this node. The status includes
+// the ID, address, term, commit index, last applied index, and
+// state of this node.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	return Status{
 		ID:          r.id,
-		Address:     r.peers[r.id].Address(),
+		Address:     r.transport.Address(),
 		Term:        r.currentTerm,
 		CommitIndex: r.commitIndex,
 		LastApplied: r.lastApplied,
@@ -473,85 +531,260 @@ func (r *Raft) Status() Status {
 	}
 }
 
-// RequestVote is invoked by the candidate server to gather a vote from this server.
-func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
+// Configuration returns the most current configuration of this node.
+// This configuration may or may not have been committed yet.
+func (r *Raft) Configuration() Configuration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.configuration == nil {
+		return Configuration{}
+	}
+	return r.configuration.Clone()
+}
+
+// AddServer will add a node with the provided ID and address to the cluster
+// and return a future for the resulting configuration. The provided ID must be
+// unique from the existing nodes in the cluster. If the configuration change
+// was not successful, the future will be populated with an error. It may be
+// necessary to resubmit the configuration change to this node or a different
+// node. It is safe to call AddServer as many times as needed
+func (r *Raft) AddServer(
+	id string,
+	address string,
+	isVoter bool,
+	timeout time.Duration,
+) Future[Configuration] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.state == Shutdown {
-		return errShutdown
+	configurationFuture := newFuture[Configuration](timeout)
+
+	// Only the leader can make membership changes.
+	if r.state != Leader {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNotLeader)
+		return configurationFuture
+	}
+
+	// Membership changes may not be submitted until a log entry for this
+	// term is submitted.
+	if r.log.LastTerm() != r.currentTerm {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
+		return configurationFuture
+	}
+
+	// The membership change is still pending - wait until it completes.
+	if r.pendingConfigurationChange() {
+		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
+		return configurationFuture
+	}
+
+	// The provided node is already a part of the cluster.
+	if r.isMember(id) && r.isVoter(id) == isVoter {
+		respond(configurationFuture.responseCh, *r.configuration, nil)
+		return configurationFuture
+	}
+
+	// Create the configuration that includes the new node as a non-voter.
+	configuration := r.configuration.Clone()
+	configuration.Members[id] = address
+	configuration.IsVoter[id] = isVoter
+
+	// Add the configuration to the log.
+	r.appendConfiguration(&configuration)
+
+	r.configuration = &configuration
+	r.followers[id] = &follower{nextIndex: 1}
+	if err := r.transport.Connect(address); err != nil {
+		r.options.logger.Errorf(
+			"failed to connect to node: id = %s, address = %s, error = %v",
+			id,
+			address,
+			err,
+		)
+	}
+
+	r.sendAppendEntriesToPeers()
+
+	r.options.logger.Debugf(
+		"request to add node submitted: id = %s, address = %s, voter = %t, logIndex = %d",
+		id,
+		address,
+		isVoter,
+		configuration.Index,
+	)
+
+	return configurationFuture
+}
+
+// RemoveServer will remove the node with the provided ID from the cluster
+// and returns a future for the resulting configuration. Once removed, the node
+// will remain online as a non-voter and may safely be shutdown. If the configuration
+// change was not successful, the future will be populated with an error. It may be
+// necessary to resubmit the configuration change to this node or a different node. It
+// is safe to call RemoveServer as many times as needed
+func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configuration] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	configurationFuture := newFuture[Configuration](timeout)
+
+	// Only the leader can make membership changes.
+	if r.state != Leader {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNotLeader)
+		return configurationFuture
+	}
+
+	// Membership changes may not be submitted until a log entry for this
+	// term is submitted.
+	if r.log.LastTerm() != r.currentTerm {
+		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
+		return configurationFuture
+	}
+
+	// The membership change is still pending - wait until it completes.
+	if r.pendingConfigurationChange() {
+		respond(configurationFuture.responseCh, Configuration{}, ErrPendingConfiguration)
+		return configurationFuture
+	}
+
+	// The provided node is already removed from the cluster.
+	if !r.isMember(id) {
+		respond(configurationFuture.responseCh, *r.configuration, nil)
+		return configurationFuture
+	}
+
+	// Create the configuration without the node.
+	configuration := r.configuration.Clone()
+	delete(configuration.Members, id)
+	delete(configuration.IsVoter, id)
+
+	// Add the configuration to the log.
+	r.appendConfiguration(&configuration)
+
+	r.sendAppendEntriesToPeers()
+
+	r.options.logger.Debugf(
+		"request to remove node submitted: id = %s, logIndex = %d",
+		id,
+		configuration.Index,
+	)
+
+	return configurationFuture
+}
+
+// SubmitOperation accepts an operation for application to the state machine and returns a
+// future for the response to the operation. Even if the operation is submitted successfully,
+// is not guaranteed that it will be applied to the state machine if there are failures. Once
+// the operation has been applied to the state machine, the future will be populated with the
+// response. If the operation was unable to be applied to the state machine, the future will
+// be populated with an error. It may be necessary to resubmit the operation to this node
+// or a different node if it was unsuccessful.
+func (r *Raft) SubmitOperation(
+	operation []byte,
+	operationType OperationType,
+	timeout time.Duration,
+) Future[OperationResponse] {
+	switch operationType {
+	case Replicated:
+		return r.submitReplicatedOperation(operation, timeout)
+	case LeaseBasedReadOnly, LinearizableReadOnly:
+		return r.submitReadOnlyOperation(operation, operationType, timeout)
+	default:
+		operationFuture := newFuture[OperationResponse](timeout)
+		respond(
+			operationFuture.responseCh,
+			OperationResponse{},
+			errors.New("operation type is not valid"),
+		)
+		return operationFuture
+	}
+}
+
+// submitReplicatedOperation submits a replicated operation to be applied to the state machine.
+func (r *Raft) submitReplicatedOperation(
+	operationBytes []byte,
+	timeout time.Duration,
+) Future[OperationResponse] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	operationFuture := newFuture[OperationResponse](timeout)
+
+	if r.state != Leader {
+		respond(operationFuture.responseCh, OperationResponse{}, ErrNotLeader)
+		return operationFuture
+	}
+
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, OperationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+	}
+
+	r.operationManager.pendingReplicated[entry.Index] = operationFuture.responseCh
+
+	r.sendAppendEntriesToPeers()
+
+	r.options.logger.Debugf(
+		"operation submitted: logIndex = %d, logTerm = %d, type = %s",
+		entry.Index,
+		entry.Term,
+		Replicated.String(),
+	)
+
+	return operationFuture
+}
+
+// submitReadOnlyOperation submits a read-only operation to be applied to the state machine.
+func (r *Raft) submitReadOnlyOperation(
+	operationBytes []byte,
+	readOnlyType OperationType,
+	timeout time.Duration,
+) Future[OperationResponse] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	operationFuture := newFuture[OperationResponse](timeout)
+
+	if r.state != Leader {
+		respond(operationFuture.responseCh, OperationResponse{}, ErrNotLeader)
+		return operationFuture
+	}
+
+	operation := &Operation{
+		Bytes:         operationBytes,
+		OperationType: LeaseBasedReadOnly,
+		readIndex:     r.commitIndex,
+	}
+	r.operationManager.pendingReadOnly[operation] = operationFuture.responseCh
+	if readOnlyType == LeaseBasedReadOnly && operation.readIndex <= r.lastApplied {
+		r.readOnlyCond.Broadcast()
+	}
+	if readOnlyType == LinearizableReadOnly && r.operationManager.shouldVerifyQuorum {
+		r.sendAppendEntriesToPeers()
+		r.operationManager.shouldVerifyQuorum = false
 	}
 
 	r.options.logger.Debugf(
-		"server %s received RequestVote RPC: candidateID = %s, term = %d, lastLogIndex = %d, lastLogTerm = %d",
-		r.id,
-		request.CandidateID,
-		request.Term,
-		request.LastLogIndex,
-		request.LastLogTerm,
+		"operation submitted: readIndex = %d, type = %s",
+		operation.readIndex,
+		operation.OperationType.String(),
 	)
 
-	response.Term = r.currentTerm
-	response.VoteGranted = false
-
-	// Reject the request if the term is out-of-date.
-	if request.Term < r.currentTerm {
-		r.options.logger.Debugf(
-			"server %s rejecting RequestVote RPC: out of date term: %d > %d",
-			r.id,
-			r.currentTerm,
-			request.Term,
-		)
-		return nil
-	}
-
-	// If the request has a more up-to-date term, update current term and become a follower.
-	if request.Term > r.currentTerm {
-		r.becomeFollower(request.CandidateID, request.Term)
-		response.Term = r.currentTerm
-	}
-
-	// Reject the request if this server has already voted.
-	if r.votedFor != "" && r.votedFor != request.CandidateID {
-		r.options.logger.Debugf(
-			"server %s rejecting RequestVote RPC: already voted: votedFor = %s",
-			r.id,
-			r.votedFor,
-		)
-		return nil
-	}
-
-	// Reject any requests with an out-of-date log.
-	// To determine which log is more up-to-date:
-	// 1. If the logs have last entries with different terms, then the log with the
-	//    greater term is more up-to-date.
-	// 2. If the logs end with the same term, the longer log is more up-to-date.
-	if request.LastLogTerm < r.log.LastTerm() ||
-		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
-		return nil
-	}
-
-	r.lastContact = time.Now()
-	response.VoteGranted = true
-
-	r.votedFor = request.CandidateID
-	r.persistTermAndVote()
-
-	return nil
+	return operationFuture
 }
 
-// AppendEntries is invoked by the leader to replicate log entries.
+// AppendEntries handles log replication requests from the leader. It takes a request to append
+// entries and fills the response with the result of the append operation.
 func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
-		return errShutdown
+		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
 	r.options.logger.Debugf(
-		"server %s received AppendEntries RPC: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
-		r.id,
+		"AppendEntries RPC received: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
 		request.LeaderID,
 		request.LeaderCommit,
 		request.Term,
@@ -565,8 +798,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// Reject any requests with an out-of-date term.
 	if request.Term < r.currentTerm {
 		r.options.logger.Debugf(
-			"server %s rejecting AppendEntries RPC: out of date term: %d > %d",
-			r.id,
+			"AppendEntries RPC rejected: reason = out of date term, localTerm = %d, remoteTerm = %d",
 			r.currentTerm,
 			request.Term,
 		)
@@ -577,22 +809,27 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// if the request is rejected due to having a non-matching previous log entry.
 	r.lastContact = time.Now()
 
-	// Update the ID of the server that this server recognizes as the leader.
-	r.leaderId = request.LeaderID
+	// Update the ID of the node that this node recognizes as the leader.
+	r.leaderID = request.LeaderID
 
 	// If the request has a more up-to-date term, update current term and
-	// become a follower.
+	// become a followers.
 	if request.Term > r.currentTerm {
 		r.becomeFollower(request.LeaderID, request.Term)
 		response.Term = r.currentTerm
 	}
 
+	// Transition to follower state if this node is still in the candidate or precandidate state.
+	if request.Term == r.currentTerm && (r.state == Candidate || r.state == PreCandidate) {
+		r.becomeFollower(request.LeaderID, request.Term)
+	}
+
 	// Reject the request if the log has been compacted and no longer contains the previous log entry.
 	if r.lastIncludedIndex > request.PrevLogIndex {
 		r.options.logger.Debugf(
-			"server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
-			r.id,
+			"AppendEntries RPC rejected: reason = log no longer contains previous entry, logIndex = %d, lastIncludedIndex = %d",
 			request.PrevLogIndex,
+			r.lastIncludedIndex,
 		)
 		response.Index = r.lastIncludedIndex + 1
 		return nil
@@ -601,9 +838,9 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// Reject the request if the log is too short to contain the previous log entry.
 	if r.log.NextIndex() <= request.PrevLogIndex {
 		r.options.logger.Debugf(
-			"server %s rejecting AppendEntries RPC: server does not have previous log entry: index = %d",
-			r.id,
+			"AppendEntries RPC rejected: reason = log does not contain previous entry, logIndex = %d, lastLogIndex = %d",
 			request.PrevLogIndex,
+			r.log.LastIndex(),
 		)
 		response.Index = r.log.NextIndex()
 		return nil
@@ -613,8 +850,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// not match the last included term.
 	if r.lastIncludedIndex == request.PrevLogIndex && r.lastIncludedTerm != request.PrevLogTerm {
 		r.options.logger.Debugf(
-			"server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
-			r.id,
+			"AppendEntries RPC rejected: reason = previous log entry has conflicting term, logIndex = %d, localTerm = %d, remoteTerm = %d",
 			request.PrevLogIndex,
 			r.lastIncludedTerm,
 			request.PrevLogTerm,
@@ -623,18 +859,16 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		return nil
 
 	}
-
 	if r.lastIncludedIndex < request.PrevLogIndex {
 		prevLogEntry, err := r.log.GetEntry(request.PrevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf("server %s failed to get entry from log: %s", r.id, err.Error())
+			r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
 		}
 
 		// Reject the request if the log has the previous log entry, but its term does not match.
 		if prevLogEntry.Term != request.PrevLogTerm {
 			r.options.logger.Debugf(
-				"server %s rejecting AppendEntries RPC: previous log entry has different term: index = %d, localTerm = %d, remoteTerm = %d",
-				r.id,
+				"AppendEntries RPC rejected: reason = previous log entry has conflicting term, index = %d, localTerm = %d, remoteTerm = %d",
 				request.PrevLogIndex,
 				prevLogEntry.Term,
 				request.PrevLogTerm,
@@ -645,11 +879,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			for ; index > r.lastIncludedIndex; index-- {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
-					r.options.logger.Fatalf(
-						"server %s failed to get entry from log: %s",
-						r.id,
-						err.Error(),
-					)
+					r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
 				}
 				if entry.Term != prevLogEntry.Term {
 					break
@@ -669,15 +899,24 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			break
 		}
 
-		existing, _ := r.log.GetEntry(entry.Index)
+		existing, err := r.log.GetEntry(entry.Index)
+		if err != nil {
+			r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+		}
 		if !existing.IsConflict(entry) {
 			continue
 		}
 
-		r.options.logger.Warnf("server %s truncating log: index = %d", r.id, entry.Index)
-
+		r.options.logger.Warnf("truncating log: index = %d", entry.Index)
 		if err := r.log.Truncate(entry.Index); err != nil {
-			r.options.logger.Fatalf("server %s failed truncating log: %s", err.Error())
+			r.options.logger.Fatalf("failed to truncate log: %v", err)
+		}
+
+		// Fall back to the committed configuration if the current one is
+		// truncated. This is necessary since a partitioned leader may have
+		// received a membership change request.
+		if entry.Index <= r.configuration.Index {
+			r.nextConfiguration(r.committedConfiguration)
 		}
 
 		toAppend = request.Entries[i:]
@@ -685,7 +924,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	}
 
 	if err := r.log.AppendEntries(toAppend); err != nil {
-		r.options.logger.Fatalf("server %s failed to append entries to log: %s", r.id, err.Error())
+		r.options.logger.Fatalf("failed to append entries to log: %v", err)
 	}
 
 	if request.LeaderCommit > r.commitIndex {
@@ -696,218 +935,62 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	return nil
 }
 
-// InstallSnapshot is invoked by the leader to send a snapshot to a follower.
-func (r *Raft) InstallSnapshot(
-	request *InstallSnapshotRequest,
-	response *InstallSnapshotResponse,
-) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.state == Shutdown {
-		return errShutdown
-	}
-
-	r.options.logger.Debugf(
-		"server %s received InstallSnapshot request: leaderID = %s, term = %d, lastIncludedIndex = %d, lastIncludedTerm = %d",
-		r.id,
-		request.LeaderID,
-		request.Term,
-		request.LastIncludedIndex,
-		request.LastIncludedTerm,
-	)
-
-	response.Term = r.currentTerm
-
-	// Reject the request if the term is out-of-date.
-	if r.currentTerm > request.Term {
-		r.options.logger.Debugf(
-			"server %s rejecting InstallSnapshot request: out of date term: %d > %d",
-			r.id,
-			r.currentTerm,
-			request.Term,
-		)
-		return nil
-	}
-
-	// If the request has a more up-to-date term, update current term and become a follower.
-	if r.currentTerm < request.Term {
-		r.becomeFollower(request.LeaderID, request.Term)
-		response.Term = request.Term
-	}
-
-	r.lastContact = time.Now()
-
-	// The snapshot does not contain any new information.
-	if r.lastIncludedIndex >= request.LastIncludedIndex ||
-		r.commitIndex >= request.LastIncludedIndex {
-		return nil
-	}
-
-	var entry *LogEntry
-	if r.log.Contains(request.LastIncludedIndex) {
-		entry, _ = r.log.GetEntry(request.LastIncludedIndex)
-	}
-
-	snapshot := NewSnapshot(request.LastIncludedIndex, request.LastIncludedTerm, request.Bytes)
-	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
-		r.options.logger.Fatalf("server %s failed to save snapshot: %s", r.id, err.Error())
-	}
-
-	r.commitIndex = request.LastIncludedIndex
-	r.lastApplied = request.LastIncludedIndex
-	r.lastIncludedIndex = request.LastIncludedIndex
-	r.lastIncludedTerm = request.LastIncludedTerm
-
-	// If the log either does not have an entry at the last included index or the log has an
-	// entry at the last included index but its term does not match the last included term, then
-	// discard the log and reset the state machine with the data from the snapshot.
-	if entry == nil || entry.Term != request.LastIncludedTerm {
-		if err := r.log.DiscardEntries(r.lastIncludedIndex, r.lastIncludedTerm); err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed to discard log entries: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-		if err := r.fsm.Restore(snapshot); err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed to reset state machine with snapshot: %s",
-				r.id,
-				err.Error(),
-			)
-		}
-		return nil
-	}
-
-	// Otherwise, if the log has an entry at last included index with a term that matches the last included
-	// term, then compact the log up to and including that entry.
-	if err := r.log.Compact(request.LastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed to compact log: %s", r.id, err.Error())
-	}
-
-	return nil
-}
-
-func (r *Raft) submitReplicatedOperation(
-	operationBytes []byte,
-	timeout time.Duration,
-) *OperationResponseFuture {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	future := NewOperationResponseFuture(operationBytes, timeout)
-
-	if r.state != Leader {
-		future.responseCh <- OperationResponse{Err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}}
-		return future
-	}
-
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, OperationEntry)
-	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatalf("server %s failed to append entry to log: %s", err.Error())
-	}
-
-	r.operationManager.pendingReplicated[entry.Index] = future.responseCh
-
-	r.sendAppendEntriesToPeers()
-
-	r.options.logger.Debugf("server %s submitted operation: logEntry = %v", r.id, entry)
-
-	return future
-}
-
-func (r *Raft) submitReadOnlyOperation(
-	operationBytes []byte,
-	readOnlyType OperationType,
-	timeout time.Duration,
-) *OperationResponseFuture {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	future := NewOperationResponseFuture(operationBytes, timeout)
-
-	if r.state != Leader {
-		future.responseCh <- OperationResponse{Err: NotLeaderError{ServerID: r.id, KnownLeader: r.leaderId}}
-		return future
-	}
-
-	operation := &Operation{
-		Bytes:         operationBytes,
-		OperationType: LeaseBasedReadOnly,
-		readIndex:     r.commitIndex,
-		responseCh:    future.responseCh,
-	}
-	r.operationManager.pendingReadOnly[operation] = true
-	if readOnlyType == LeaseBasedReadOnly && operation.readIndex <= r.lastApplied {
-		r.readOnlyCond.Broadcast()
-	}
-	if readOnlyType == LinearizableReadOnly && r.operationManager.shouldVerifyQuorum {
-		r.sendAppendEntriesToPeers()
-		r.operationManager.shouldVerifyQuorum = false
-	}
-
-	return future
-}
-
+// sendAppendEntriesToPeers sends an AppendEntries RPC to all nodes.
 func (r *Raft) sendAppendEntriesToPeers() {
+	// Handle the single node cluster case.
+	if r.isSingleServerCluster() {
+		if r.log.LastIndex() > r.commitIndex {
+			r.commitCond.Broadcast()
+		}
+		r.tryApplyReadOnlyOperations()
+	}
+
 	numResponses := 1
-	for _, peer := range r.peers {
-		go r.sendAppendEntries(peer, &numResponses)
+	for id, address := range r.configuration.Members {
+		if id != r.id {
+			go r.sendAppendEntries(id, address, &numResponses)
+		}
 	}
 }
 
-func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
+// sendAppendEntries sends an AppendEntries RPC to a node with the provided ID
+// and address.
+func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.state != Leader {
+	// Only leader may send AppendEntries RPCs.
+	// It's also possible that this node was removed from the cluster.
+	if r.state != Leader || !r.isMember(id) {
 		return
 	}
 
-	// Handle the single server case.
-	if peer.ID() == r.id {
-		if len(r.peers) == 1 {
-			if r.log.LastIndex() > r.commitIndex {
-				r.commitCond.Broadcast()
-			}
-			r.tryApplyReadOnlyOperations()
-		}
+	follower := r.followers[id]
+
+	// Send a snapshot instead if the follower log no longer contains the previous log entry.
+	if follower.nextIndex <= r.lastIncludedIndex {
+		r.sendInstallSnapshot(id, address)
 		return
 	}
 
-	nextIndex := r.nextIndex[peer.ID()]
+	nextIndex := follower.nextIndex
 	prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
 	prevLogTerm := r.lastIncludedTerm
 
 	if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
 		prevEntry, err := r.log.GetEntry(prevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed getting entry from log: %s",
-				r.id,
-				err.Error(),
-			)
+			r.options.logger.Fatalf("failed getting entry from log: error = %v", err)
 		}
 		prevLogTerm = prevEntry.Term
 	}
 
 	entries := make([]*LogEntry, 0, r.log.NextIndex()-nextIndex)
-	for index := nextIndex; index < r.log.NextIndex(); index++ {
-		// Make sure that the index is in bounds since the log may have been compacted.
-		if index <= r.lastIncludedIndex {
-			break
-		}
-
+	for index := nextIndex; index > r.lastIncludedIndex && index < r.log.NextIndex(); index++ {
 		entry, err := r.log.GetEntry(index)
 		if err != nil {
-			r.options.logger.Fatalf(
-				"server %s failed getting entry from log: %s",
-				r.id,
-				err.Error(),
-			)
+			r.options.logger.Fatalf("failed getting entry from log: error = %v", err)
 		}
-
 		entries = append(entries, entry)
 	}
 
@@ -921,21 +1004,22 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	r.mu.Unlock()
-	response, err := peer.AppendEntries(request)
+	response, err := r.transport.SendAppendEntries(address, request)
 	r.mu.Lock()
 
-	if err != nil || r.state != Leader {
+	// Quit if RPC failed, leadership was lost, or the node was removed from the cluster.
+	if !r.isMember(id) || err != nil || r.state != Leader {
 		return
 	}
 
-	// Become a follower if a peer has a more up-to-date term.
+	// Become a follower if a follower has a more up-to-date term.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
-	// Renew the lease if the majority of peers have responded.
-	// Update any pending read-only operations to indicate that the quorum was just verified.
+	// If the majority of cluster acknowledges the request, this node is a legitimate leader.
+	// Try to apply pending read-only operations.
 	if numResponses != nil {
 		*numResponses += 1
 		if r.hasQuorum(*numResponses) {
@@ -945,48 +1029,210 @@ func (r *Raft) sendAppendEntries(peer Peer, numResponses *int) {
 	}
 
 	if !response.Success {
-		// The log has been compacted and no longer contains the entries the peer needs.
-		// Send the peer a snapshot to catch them up.
-		if response.Index <= r.lastIncludedIndex {
-			go r.sendInstallSnapshot(peer)
-			return
+		follower.nextIndex = response.Index
+
+		// Send a snapshot to the follower if the log no longer contains the previous entry.
+		if follower.nextIndex <= r.lastIncludedIndex {
+			r.sendInstallSnapshot(id, address)
 		}
-		r.nextIndex[peer.ID()] = response.Index
+
 		return
 	}
 
-	// Update the next and match index of the peer.
-	if request.PrevLogIndex+uint64(len(entries)) > r.matchIndex[peer.ID()] {
-		r.nextIndex[peer.ID()] = util.Max(
-			r.nextIndex[peer.ID()],
+	// Update the next and match index of the followers.
+	if request.PrevLogIndex+uint64(len(entries)) > follower.matchIndex {
+		follower.nextIndex = util.Max(
+			follower.nextIndex,
 			request.PrevLogIndex+uint64(len(entries))+1,
 		)
-		r.matchIndex[peer.ID()] = request.PrevLogIndex + uint64(len(entries))
-		if r.matchIndex[peer.ID()] > r.commitIndex {
+		follower.matchIndex = request.PrevLogIndex + uint64(len(entries))
+		if follower.matchIndex > r.commitIndex {
 			r.commitCond.Broadcast()
 		}
 	}
 }
 
-func (r *Raft) sendRequestVoteToPeers(votes *int) {
-	for _, peer := range r.peers {
-		go r.sendRequestVote(peer, votes)
-	}
-}
-
-func (r *Raft) sendRequestVote(peer Peer, votes *int) {
+// RequestVote handles vote requests from other nodes during elections. It takes a vote request
+// and fills the response with the result of the vote.
+func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// The candidate will vote for itself.
-	if peer.ID() == r.id {
-		*votes++
+	if r.state == Shutdown {
+		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
+	}
 
-		// Handle the single server case.
-		if r.hasQuorum(*votes) {
-			r.becomeLeader()
+	r.options.logger.Debugf(
+		"RequestVote RPC received: candidateID = %s, prevote = %t, term = %d, lastLogIndex = %d, lastLogTerm = %d",
+		request.CandidateID,
+		request.Prevote,
+		request.Term,
+		request.LastLogIndex,
+		request.LastLogTerm,
+	)
+
+	response.Term = r.currentTerm
+	response.VoteGranted = false
+
+	// This check is necessary to prevent disruptive servers.
+	//
+	// Ignore any requests for a vote if:
+	// 1. This node is a leader and it has recently has successful contact with
+	//    a majority of the cluster (it has a valid lease).
+	// 2. This node is a follower and it has been recently contacted by the leader.
+	if r.operationManager.leaderLease.isValid() ||
+		time.Since(r.lastContact) < r.options.electionTimeout {
+		r.options.logger.Debugf(
+			"RequestVote RPC rejected: reason = recent contact from leader, knownLeader = %s",
+			r.leaderID,
+		)
+		return nil
+	}
+
+	// Reject the request if the term is out-of-date.
+	if request.Term < r.currentTerm {
+		r.options.logger.Debugf(
+			"RequestVote RPC rejected: reason = out of date term, localTerm =  %d, remoteTerm = %d",
+			r.currentTerm,
+			request.Term,
+		)
+		return nil
+	}
+
+	// If this is not a prevote and the request has a more up-to-date term,
+	// update the current term and become a follower.
+	if !request.Prevote && request.Term > r.currentTerm {
+		r.becomeFollower(request.CandidateID, request.Term)
+		response.Term = r.currentTerm
+	}
+
+	// Reject the request if this node has already voted.
+	if !request.Prevote && r.votedFor != "" && r.votedFor != request.CandidateID {
+		r.options.logger.Debugf(
+			"RequestVote RPC rejected: reason = already voted, votedFor = %s",
+			r.votedFor,
+		)
+		return nil
+	}
+
+	// Reject any requests with an out-of-date log.
+	//
+	// To determine which log is more up-to-date:
+	// 1. If the logs have last entries with different terms, then the log with the
+	//    greater term is more up-to-date.
+	// 2. If the logs end with the same term, the longer log is more up-to-date.
+	if request.LastLogTerm < r.log.LastTerm() ||
+		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
+		r.options.logger.Debugf(
+			"RequestVote RPC rejected: reason = out-of-date log, localLastLogIndex = %d, localLastLogTerm = %d, remoteLastLogIndex = %d, remoteLastLogTerm = %d",
+			r.log.LastIndex(),
+			r.log.LastTerm(),
+			request.LastLogIndex,
+			request.LastLogTerm,
+		)
+		return nil
+	}
+
+	response.VoteGranted = true
+
+	// Only vote if this is a real election.
+	if !request.Prevote {
+		r.lastContact = time.Now()
+		r.votedFor = request.CandidateID
+		r.persistTermAndVote()
+	}
+
+	r.options.logger.Infof(
+		"RequestVote RPC successful: prevote = %t, votedFor = %s, term = %d",
+		request.Prevote,
+		request.CandidateID,
+		r.currentTerm,
+	)
+
+	return nil
+}
+
+// electionTicker is a long running loop that will periodically
+// send a signal to the election loop to start an election.
+func (r *Raft) electionTicker() {
+	defer r.wg.Done()
+
+	for {
+		// Sleep for a random amount of time between one and two election timeouts
+		// to avoid kicking off an election at the same time as other nodes.
+		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
+		time.Sleep(timeout * time.Millisecond)
+
+		r.mu.Lock()
+		if r.state == Shutdown {
+			r.mu.Unlock()
+			return
 		}
+		r.mu.Unlock()
 
+		r.electionCond.Broadcast()
+	}
+}
+
+// electionLoop is a long running loop that will attempt to start an
+// election when signaled.
+func (r *Raft) electionLoop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer r.wg.Done()
+
+	for r.state != Shutdown {
+		r.electionCond.Wait()
+		r.election()
+	}
+}
+
+// election will start an election if this node is a voting member
+// of the cluster and this node has not been contacted by the leader
+// within an election timeout.
+func (r *Raft) election() {
+	if r.state == Leader || r.state == Shutdown || !r.isVoter(r.id) ||
+		time.Since(r.lastContact) < r.options.electionTimeout {
+		return
+	}
+	if r.state == Follower {
+		r.becomePreCandidate()
+	}
+	if r.state == Candidate {
+		r.becomeCandidate()
+	}
+
+	r.sendRequestVoteToPeers()
+}
+
+// sendRequestVoteToPeers sends a RequestVoteRPC to all nodes in the cluster,
+// excluding those that are non-voters.
+func (r *Raft) sendRequestVoteToPeers() {
+	// Handle the single node cluster case.
+	if r.isSingleServerCluster() {
+		r.becomeLeader()
+		return
+	}
+
+	// Send RequestVote RPCs to all voting members of the cluster.
+	votesRecieved := 1
+	isPrevote := r.state == PreCandidate
+	for id, address := range r.configuration.Members {
+		if id != r.id && r.isVoter(id) {
+			go r.sendRequestVote(id, address, &votesRecieved, isPrevote)
+		}
+	}
+}
+
+// sendRequestVote sends a RequestVote RPC to the node with the provided
+// ID and address if it is a voting member.
+func (r *Raft) sendRequestVote(id string, address string, votes *int, prevote bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Do not send requests to non-voting members and only send
+	// requests if this node is a voting member of the cluster.
+	if !r.isVoter(id) || !r.isVoter(r.id) {
 		return
 	}
 
@@ -995,15 +1241,24 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 		Term:         r.currentTerm,
 		LastLogIndex: r.log.LastIndex(),
 		LastLogTerm:  r.log.LastTerm(),
+		Prevote:      prevote,
+	}
+
+	// Use the term that would be used in the election if this is a prevote.
+	if prevote {
+		request.Term++
 	}
 
 	r.mu.Unlock()
-	response, err := peer.RequestVote(request)
+	response, err := r.transport.SendRequestVote(address, request)
 	r.mu.Lock()
 
-	// Ensure this response is not stale. It is possible that this
-	// server has started another election.
-	if err != nil || r.currentTerm != request.Term {
+	if err != nil || r.state == Shutdown {
+		return
+	}
+
+	// Ensure this response is not stale. It is possible that this node has started another election.
+	if r.currentTerm > request.Term {
 		return
 	}
 
@@ -1012,101 +1267,367 @@ func (r *Raft) sendRequestVote(peer Peer, votes *int) {
 		*votes++
 	}
 
-	// Become a follower if a peer has a more up-to-date term.
-	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+	// Become a follower if a recipient has a more up-to-date term.
+	if response.Term > request.Term {
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
-	// If we have received votes from the majority of peers, become a leader.
-	if r.hasQuorum(*votes) && r.state == Follower {
+	// If this is a prevote and a majority of the cluster respond with success to this node's
+	// vote requests, become a candidate.
+	if r.hasQuorum(*votes) && r.state == PreCandidate {
+		// Signal to the election loop to start an election so that the real election
+		// does not have to wait until the election ticker goes off again.
+		r.state = Candidate
+		r.electionCond.Broadcast()
+	}
+
+	// If this an election and a majority of the cluster vote for this node, become the leader.
+	if !prevote && r.hasQuorum(*votes) && r.state == Candidate {
 		r.becomeLeader()
 	}
 }
 
-func (r *Raft) takeSnapshot(lastIncludedIndex, lastIncludedTerm uint64) {
-	if lastIncludedIndex >= r.log.LastIndex() {
-		return
-	}
-
-	snapshotBytes, err := r.fsm.Snapshot()
-	if err != nil {
-		r.options.logger.Fatalf(
-			"server %s failed while taking snapshot of state machine: %s",
-			r.id,
-			err.Error(),
-		)
-	}
-
-	r.lastIncludedIndex = lastIncludedIndex
-	r.lastIncludedTerm = lastIncludedTerm
-	snapshot := NewSnapshot(r.lastIncludedIndex, r.lastIncludedTerm, snapshotBytes)
-
-	if err := r.snapshotStorage.SaveSnapshot(snapshot); err != nil {
-		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
-	}
-
-	r.options.logger.Warnf("server %s compacting log: index = %d", r.id, r.lastIncludedIndex)
-
-	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("server %s failed while taking snapshot: %s", r.id, err.Error())
-	}
-
-	r.options.logger.Infof("server %s took snapshot: lastIncludedIndex = %d, lastIncludedTerm = %d",
-		r.id, r.lastIncludedIndex, r.lastIncludedTerm)
-}
-
-func (r *Raft) sendInstallSnapshot(peer Peer) {
+// InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
+// install a snapshot and fills the response with the result of the installation.
+func (r *Raft) InstallSnapshot(
+	request *InstallSnapshotRequest,
+	response *InstallSnapshotResponse,
+) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Only leaders may send snapshots.
+	if r.state == Shutdown {
+		return fmt.Errorf("could not execute InstallSnapshot RPC: %s is shutdown", r.id)
+	}
+
+	r.options.logger.Debugf(
+		"InstallSnapshot RPC received: leaderID = %s, term = %d, lastIndex = %d, lastTerm = %d, offset = %d, done = %v",
+		request.LeaderID,
+		request.Term,
+		request.LastIncludedIndex,
+		request.LastIncludedTerm,
+		request.Offset,
+		request.Done,
+	)
+
+	response.Term = r.currentTerm
+
+	// Reject the request if the term is out-of-date.
+	if r.currentTerm > request.Term {
+		r.options.logger.Debugf(
+			"InstallSnapshot RPC rejected: reason = out of date term, localTerm = %d, remoteTerm = %d",
+			r.currentTerm,
+			request.Term,
+		)
+		return nil
+	}
+
+	// If the request has a more up-to-date term, update current term and become a follower.
+	if r.currentTerm < request.Term {
+		r.becomeFollower(request.LeaderID, request.Term)
+		response.Term = request.Term
+	}
+
+	// Transition to follower state if still in candidate or precandidate state.
+	if request.Term == r.currentTerm && (r.state == Candidate || r.state == PreCandidate) {
+		r.becomeFollower(request.LeaderID, request.Term)
+	}
+
+	r.lastContact = time.Now()
+
+	// The received snapshot does not contain anything new.
+	if r.lastIncludedIndex >= request.LastIncludedIndex ||
+		r.lastApplied >= request.LastIncludedIndex {
+		return nil
+	}
+
+	// Discard an incomplete snapshot if this request has a greater last index.
+	if r.snapshot != nil {
+		metadata := r.snapshot.Metadata()
+		if metadata.LastIncludedIndex < request.LastIncludedIndex {
+			if err := r.snapshot.Discard(); err != nil {
+				r.options.logger.Fatalf("failed to discard snapshot: error = %v", err)
+			}
+			r.snapshot = nil
+		}
+	}
+
+	// Create a new snapshot file if one has not already been created.
+	if r.snapshot == nil {
+		snapshot, err := r.snapshotStorage.NewSnapshotFile(
+			request.LastIncludedIndex,
+			request.LastIncludedTerm,
+			request.Configuration,
+		)
+		if err != nil {
+			r.options.logger.Fatalf("failed to create snapshot file: error = %v", err)
+		}
+		r.snapshot = snapshot
+	}
+
+	// Ensure the offset in the request is the expected offset.
+	offset, err := r.snapshot.Seek(0, io.SeekCurrent)
+	response.BytesWritten = offset
+	if err != nil {
+		r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
+	}
+	if request.Offset != offset {
+		r.options.logger.Warnf(
+			"InstallSnapshot RPC contains incorrect offset: expectedOffset = %d, receivedOffset = %d",
+			offset,
+			request.Offset,
+		)
+		return nil
+	}
+
+	// Write the snapshot chunk to the file.
+	reader := bytes.NewReader(request.Bytes)
+	n, err := io.Copy(r.snapshot, reader)
+	if err != nil {
+		r.options.logger.Fatalf("failed to write snapshot file: error = %v", err)
+	}
+	response.BytesWritten += n
+
+	if !request.Done {
+		return nil
+	}
+
+	if err := r.snapshot.Close(); err != nil {
+		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+	}
+
+	r.snapshot = nil
+	r.lastIncludedIndex = request.LastIncludedIndex
+	r.lastIncludedTerm = request.LastIncludedTerm
+
+	// If an existing log entry has the same index and term as the last index
+	// and last term, discard the log through the last index and reply.
+	if entry, _ := r.log.GetEntry(request.LastIncludedIndex); entry != nil &&
+		entry.Term == request.LastIncludedTerm {
+		// Wait for all operations up to last included index have been applied before compacting the log.
+		// This is necessary since compacting the log may remove log entries that have yet to be applied.
+		for r.lastApplied < request.LastIncludedIndex {
+			r.applyCond.Wait()
+		}
+
+		// It's possible that a snapshot was taken and the log was compacted while the lock was released.
+		if r.lastIncludedIndex > request.LastIncludedIndex {
+			return nil
+		}
+
+		r.options.logger.Warnf("compacting log: logIndex = %d", request.LastIncludedIndex)
+		if err := r.log.Compact(request.LastIncludedIndex); err != nil {
+			r.options.logger.Fatalf("failed to compact log: error = %v", err)
+		}
+		return nil
+	}
+
+	// Restore the state machine with the snapshot.
+	snapshot, err := r.snapshotStorage.SnapshotFile()
+	if err != nil {
+		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
+	}
+	r.mu.Unlock()
+	r.options.logger.Warnf(
+		"restoring state machine with snapshot: lastIndex = %d, lastTerm = %d",
+		request.LastIncludedIndex,
+		request.LastIncludedTerm,
+	)
+	if err := r.fsm.Restore(snapshot); err != nil {
+		r.options.logger.Fatalf("failed to restore state machine with snapshot: error = %v", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+	}
+	r.mu.Lock()
+	r.lastApplied = request.LastIncludedIndex
+	r.commitIndex = request.LastIncludedIndex
+
+	// Discard the entire log.
+	r.options.logger.Warnf(
+		"discarding log: lastIndex = %d, lastTerm = %d",
+		request.LastIncludedIndex,
+		request.LastIncludedTerm,
+	)
+	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
+		r.options.logger.Fatalf("failed to discard log entries: error = %v", err)
+	}
+
+	// Update the configuration.
+	r.applyConfiguration(request.Configuration)
+
+	r.options.logger.Infof(
+		"snapshot installation completed successfully: lastIndex = %d, lastTerm = %d",
+		request.LastIncludedIndex,
+		request.LastIncludedTerm,
+	)
+
+	return nil
+}
+
+// takeSnapshot takes a snapshot of the state machine. A snapshot will
+// only be taken if there is new state since the previous snapshot and there
+// is not a pending configuration change.
+func (r *Raft) takeSnapshot() {
+	// There is nothing new to snapshot.
+	if r.lastApplied <= r.lastIncludedIndex {
+		return
+	}
+
+	// Put off snapshots if there is an outstanding configuration change.
+	if r.committedConfiguration == nil || r.committedConfiguration.Index > r.lastApplied {
+		return
+	}
+
+	lastAppliedEntry, err := r.log.GetEntry(r.lastApplied)
+	if err != nil {
+		r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+	}
+
+	r.options.logger.Infof(
+		"starting to take snapshot: lastIndex = %d, lastTerm = %d",
+		lastAppliedEntry.Index,
+		lastAppliedEntry.Term,
+	)
+
+	// Create a new snapshot file.
+	configurationData := r.encodeConfiguration(r.committedConfiguration)
+	snapshot, err := r.snapshotStorage.NewSnapshotFile(
+		lastAppliedEntry.Index,
+		lastAppliedEntry.Term,
+		configurationData,
+	)
+	if err != nil {
+		r.options.logger.Fatalf("failed to create snapshot file: error = %v", err)
+	}
+
+	// Take a snapshot of the state machine.
+	// It's best that the lock is not held here since this might take a while.
+	r.mu.Unlock()
+	if err := r.fsm.Snapshot(snapshot); err != nil {
+		r.options.logger.Fatalf("failed to take snapshot of state machine: error = %v", err)
+	}
+	if err := snapshot.Close(); err != nil {
+		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+	}
+	r.mu.Lock()
+
+	// It's possible a snapshot was installed and the log was compacted while the lock was released.
+	if lastAppliedEntry.Index <= r.lastIncludedIndex {
+		return
+	}
+
+	// Compact the log.
+	r.lastIncludedIndex = lastAppliedEntry.Index
+	r.lastIncludedTerm = lastAppliedEntry.Term
+	r.options.logger.Warnf("compacting log: logIndex = %d", r.lastIncludedIndex)
+	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
+		r.options.logger.Fatalf("failed to compact log: error = %v", err)
+	}
+	r.resetSnapshotFiles()
+
+	r.options.logger.Infof(
+		"snapshot taken successfully: lastIndex = %d, lastTerm = %d",
+		r.lastIncludedIndex,
+		r.lastIncludedTerm,
+	)
+}
+
+// sendInstallSnapshot sends a snapshot to the node with the provided ID and address.
+func (r *Raft) sendInstallSnapshot(id, address string) {
+	// Only the leader may send snapshots.
 	if r.state != Leader {
 		return
 	}
 
-	snapshot, err := r.snapshotStorage.LastSnapshot()
-	if err != nil {
-		r.options.logger.Fatalf("server %s failed to send snapshot: err = %s", r.id, err.Error())
-	}
-	if snapshot == nil {
+	if r.lastIncludedIndex == 0 {
+		r.options.logger.Warn("cannot send snapshot to follower because one has not been taken")
 		return
+	}
+
+	follower := r.followers[id]
+
+	// Retrieve the most recent snapshot file to send to the follower if one is not already open.
+	if follower.snapshot == nil {
+		snapshot, err := r.snapshotStorage.SnapshotFile()
+		if err != nil {
+			r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
+		}
+		follower.snapshot = snapshot
+	}
+
+	metadata := follower.snapshot.Metadata()
+	offset, err := follower.snapshot.Seek(0, io.SeekCurrent)
+	if err != nil {
+		r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 	}
 
 	request := InstallSnapshotRequest{
 		LeaderID:          r.id,
 		Term:              r.currentTerm,
-		LastIncludedIndex: snapshot.LastIncludedIndex,
-		LastIncludedTerm:  snapshot.LastIncludedTerm,
-		Bytes:             snapshot.Data,
+		LastIncludedIndex: metadata.LastIncludedIndex,
+		LastIncludedTerm:  metadata.LastIncludedTerm,
+		Configuration:     metadata.Configuration,
+		Offset:            offset,
 	}
+
+	// Read a chunk of the snapshot from the file.
+	var buf bytes.Buffer
+	n, err := io.Copy(&buf, follower.snapshot)
+	if err != nil {
+		if err := follower.snapshot.Close(); err != nil {
+			r.options.logger.Errorf("failed to close snapshot file: error = %v", err)
+		}
+		r.options.logger.Fatalf("failed to read snapshot file: error = %v", err)
+	}
+	request.Bytes = buf.Bytes()
+	request.Done = n < snapshotChunkSize
 
 	r.mu.Unlock()
-	response, err := peer.InstallSnapshot(request)
+	response, err := r.transport.SendInstallSnapshot(address, request)
 	r.mu.Lock()
 
-	if err != nil {
+	if follower.snapshot == nil || err != nil {
 		return
 	}
 
-	// If the peer has a more up-to-date term, transition to the follower state.
+	// If the follower has a more up-to-date term, transition to the follower state.
 	if response.Term > r.currentTerm {
-		r.becomeFollower(peer.ID(), response.Term)
+		r.becomeFollower(id, response.Term)
 		return
 	}
 
-	r.nextIndex[peer.ID()] = request.LastIncludedIndex + 1
-	r.matchIndex[peer.ID()] = request.LastIncludedIndex
+	// The follower is either missing part of the snapshot or already has this part.
+	// Reset to the follower's offset.
+	if response.BytesWritten != offset {
+		if _, err := follower.snapshot.Seek(response.BytesWritten, io.SeekStart); err != nil {
+			r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
+		}
+		return
+	}
+
+	if !request.Done {
+		return
+	}
+
+	if err := follower.snapshot.Close(); err != nil {
+		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+	}
+	follower.snapshot = nil
+	follower.matchIndex = request.LastIncludedIndex
+	follower.nextIndex = request.LastIncludedIndex + 1
 }
 
+// heartbeatLoop is a long running loop that periodically sends heartbeats to
+// followers if this node is the leader.
 func (r *Raft) heartbeatLoop() {
 	defer r.wg.Done()
 
-	// If this server is the leader, broadcast heartbeat messages to peers
+	// If this node is the leader, broadcast heartbeat messages to followers
 	// once every heartbeat interval.
 	for {
 		time.Sleep(r.options.heartbeatInterval)
-
 		r.mu.Lock()
 		if r.state == Shutdown {
 			r.mu.Unlock()
@@ -1121,42 +1642,8 @@ func (r *Raft) heartbeatLoop() {
 	}
 }
 
-func (r *Raft) electionLoop() {
-	defer r.wg.Done()
-
-	for {
-		// A random timeout between the specified election timeout (by default 200 ms) and twice the
-		// election timeout is chosen to sleep for in order to prevent multiple servers from becoming
-		// candidates at the same time.
-		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
-		time.Sleep(timeout * time.Millisecond)
-
-		r.mu.Lock()
-		if r.state == Shutdown {
-			r.mu.Unlock()
-			return
-		}
-		r.mu.Unlock()
-
-		r.election()
-	}
-}
-
-func (r *Raft) election() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// If we have already been elected the leaser, or we have been contacted by the leader
-	// since the last election timeout, an election is not needed.
-	if r.state != Follower || time.Since(r.lastContact) < r.options.electionTimeout {
-		return
-	}
-
-	var votesReceived int
-	r.becomeCandidate()
-	r.sendRequestVoteToPeers(&votesReceived)
-}
-
+// commitLoop is a long running loop that verifies quorum has been achieved
+// for log entries and updates the commit index of the leader.
 func (r *Raft) commitLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1173,28 +1660,25 @@ func (r *Raft) commitLoop() {
 		committed := false
 
 		for index := r.commitIndex + 1; index <= r.log.LastIndex(); index++ {
-			// It is NOT safe for the leader to commit an entry with a term
+			// It is not safe for the leader to commit an entry with a term
 			// different from the current term. It is possible for a log entry
-			// to be agreed upon by the majority of servers in the cluster, but
+			// to be agreed upon by the majority of node in the cluster, but
 			// be overwritten by a future leader.
 			if entry, err := r.log.GetEntry(index); err != nil {
-				r.options.logger.Fatalf(
-					"server %s failed getting entry from log: %s",
-					r.id,
-					err.Error(),
-				)
+				r.options.logger.Fatalf("failed to get  entry from log: error = %v", err)
 			} else if entry.Term != r.currentTerm {
 				continue
 			}
 
-			// Check whether the majority of servers in the cluster agree on the entry.
+			// Check whether the majority of nodes in the cluster agree on the entry.
 			// If they do, it is safe to commit.
 			matches := 1
-			for id, matchIndex := range r.matchIndex {
-				if id == r.id {
+			for id, follower := range r.followers {
+				// Ignore this node and any nodes which are not voting members.
+				if id == r.id || !r.configuration.IsVoter[id] {
 					continue
 				}
-				if matchIndex >= index {
+				if follower.matchIndex >= index {
 					matches++
 				}
 			}
@@ -1212,6 +1696,8 @@ func (r *Raft) commitLoop() {
 	}
 }
 
+// applyLoop is a long running loop that applies replicated operations to the state machine
+// and takes snapshots when necessary.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1222,53 +1708,55 @@ func (r *Raft) applyLoop() {
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed.
-		for index := r.lastApplied + 1; index <= r.commitIndex; index++ {
-			entry, err := r.log.GetEntry(index)
+		for r.lastApplied < r.commitIndex {
+			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
-				r.options.logger.Fatalf(
-					"server %s failed getting entry from log: %s",
-					r.id,
-					err.Error(),
-				)
-			}
-			if entry.EntryType == NoOpEntry {
-				r.lastApplied++
-				continue
+				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
 			}
 
-			responseCh, ok := r.operationManager.pendingReplicated[entry.Index]
-			if ok {
+			switch entry.EntryType {
+			case NoOpEntry:
+			case ConfigurationEntry:
+				r.applyConfiguration(entry.Data)
+				respond(r.configurationResponseCh, *r.configuration, nil)
+			case OperationEntry:
+				responseCh := r.operationManager.pendingReplicated[entry.Index]
 				delete(r.operationManager.pendingReplicated, entry.Index)
-			}
 
-			operation := Operation{
-				LogIndex:      entry.Index,
-				LogTerm:       entry.Term,
-				Bytes:         entry.Data,
-				OperationType: Replicated,
-				responseCh:    responseCh,
-			}
-			response := OperationResponse{Operation: operation}
+				operation := Operation{
+					LogIndex:      entry.Index,
+					LogTerm:       entry.Term,
+					Bytes:         entry.Data,
+					OperationType: Replicated,
+				}
+				lastApplied := r.lastApplied
 
-			r.mu.Unlock()
-			response.Response = r.fsm.Apply(&operation)
-			r.sendResponseWithoutBlocking(operation.responseCh, response)
-			r.options.logger.Debugf(
-				"server %s applied operation: index = %d, term = %d",
-				r.id,
-				operation.LogIndex,
-				operation.LogTerm,
-			)
-			r.mu.Lock()
+				r.mu.Unlock()
+				response := OperationResponse{
+					Operation:           operation,
+					ApplicationResponse: r.fsm.Apply(&operation),
+				}
+				respond(responseCh, response, nil)
+				r.options.logger.Debugf(
+					"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
+					operation.LogIndex,
+					operation.LogTerm,
+					operation.OperationType.String(),
+				)
+				r.mu.Lock()
+
+				// It's possible a snapshot was installed while the lock was released.
+				// It's not safe to increment the last applied index if it has changed.
+				if r.lastApplied != lastApplied {
+					continue
+				}
+			default:
+				r.options.logger.Fatal("log entry has invalid type")
+			}
 
 			r.lastApplied++
-
-			logSizeInBytes, err := r.log.SizeInBytes()
-			if err != nil {
-				r.options.logger.Fatalf("failed to get log size: %s", err.Error())
-			}
-			if r.fsm.NeedSnapshot(logSizeInBytes) {
-				r.takeSnapshot(operation.LogIndex, operation.LogTerm)
+			if r.fsm.NeedSnapshot(r.log.Size()) {
+				r.takeSnapshot()
 			}
 		}
 
@@ -1278,6 +1766,17 @@ func (r *Raft) applyLoop() {
 	}
 }
 
+// applyConfigurationEntry applies a log entry containing a configuration to this node.
+func (r *Raft) applyConfiguration(configurationData []byte) {
+	configuration := r.decodeConfiguration(configurationData)
+	if r.committedConfiguration != nil && configuration.Index <= r.committedConfiguration.Index {
+		return
+	}
+	r.nextConfiguration(&configuration)
+	r.committedConfiguration = &configuration
+}
+
+// readOnlyLoop is a long running loop that applies read-only operations to the state machine.
 func (r *Raft) readOnlyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1293,26 +1792,23 @@ func (r *Raft) readOnlyLoop() {
 		}
 
 		appliableOperations := r.operationManager.appliableReadOnlyOperations(r.lastApplied)
-		for _, operation := range appliableOperations {
-			response := OperationResponse{Operation: *operation}
-
+		for operation, responseCh := range appliableOperations {
 			if operation.OperationType == LeaseBasedReadOnly &&
 				!r.operationManager.leaderLease.isValid() {
-				response.Err = InvalidLeaseError{ServerID: r.id}
-				r.sendResponseWithoutBlocking(operation.responseCh, response)
+				respond(responseCh, OperationResponse{}, ErrInvalidLease)
 				continue
 			}
 
 			r.mu.Unlock()
-			response.Response = r.fsm.Apply(operation)
-			r.sendResponseWithoutBlocking(
-				operation.responseCh,
-				OperationResponse{Response: response},
-			)
+			response := OperationResponse{
+				Operation:           *operation,
+				ApplicationResponse: r.fsm.Apply(operation),
+			}
+			respond(responseCh, response, nil)
 			r.options.logger.Debugf(
-				"server %s applied read-only operation: readIndex = %d",
-				r.id,
+				"applied operation to state machine: readIndex = %d, type = %s",
 				operation.readIndex,
+				operation.OperationType.String(),
 			)
 			r.mu.Lock()
 
@@ -1323,55 +1819,61 @@ func (r *Raft) readOnlyLoop() {
 	}
 }
 
+// becomeCandidate transitions this node to the candidate state.
+// This will increment the term and cast a vote for this node.
 func (r *Raft) becomeCandidate() {
+	r.state = Candidate
 	r.currentTerm++
 	r.votedFor = r.id
 	r.persistTermAndVote()
-	r.options.logger.Infof(
-		"server %s has entered the candidate state: term = %d",
-		r.id,
-		r.currentTerm,
-	)
+	r.options.logger.Infof("entered the candidate state: term = %d", r.currentTerm)
 }
 
+// becomePreCandidate transitions this node to the precandidate state.
+// This does not increment the term or cast a vote for this node.
+func (r *Raft) becomePreCandidate() {
+	r.state = PreCandidate
+	r.options.logger.Infof("entered the pre-candidate state: term = %d", r.currentTerm)
+}
+
+// becomeLeader transitions this node to the leader state.
 func (r *Raft) becomeLeader() {
 	r.state = Leader
-
-	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, make([]byte, 0), NoOpEntry)
-	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatal("server %s failed to append entry to log: err = %s", r.id, err)
-	}
-
-	for _, peer := range r.peers {
-		r.nextIndex[peer.ID()] = r.log.LastIndex() + 1
-		r.matchIndex[peer.ID()] = 0
-	}
-
 	r.operationManager = newOperationManager(r.options.leaseDuration)
+	for _, follower := range r.followers {
+		follower.nextIndex = r.log.LastIndex() + 1
+		follower.matchIndex = 0
+	}
+	r.resetSnapshotFiles()
 
+	// Append a new log entry for this term.
+	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, []byte{}, NoOpEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatal("failed to append entry to log: error = %v", err)
+	}
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Infof("server %s has entered the leader state: term = %d", r.id, r.currentTerm)
+	r.options.logger.Infof("entered the leader state: term = %d", r.currentTerm)
 }
 
+// becomeFollower transitions this node to the follower state.
 func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.state = Follower
 	r.currentTerm = term
-	r.leaderId = leaderID
+	r.leaderID = leaderID
 	r.votedFor = ""
 	r.persistTermAndVote()
-
-	r.options.logger.Infof(
-		"server %s has entered the follower state: term = %d",
-		r.id,
-		r.currentTerm,
-	)
+	r.resetSnapshotFiles()
 
 	// Cancel any pending operations.
-	r.operationManager.notifyLostLeaderShip(r.id, r.leaderId)
+	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
+
+	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 }
 
+// tryApplyReadOnlyOperations renews the lease and notifies the read-only
+// loop that it may be possible to apply some read-only operations.
 func (r *Raft) tryApplyReadOnlyOperations() {
 	r.operationManager.markAsVerified()
 	r.operationManager.leaderLease.renew()
@@ -1379,40 +1881,149 @@ func (r *Raft) tryApplyReadOnlyOperations() {
 	r.readOnlyCond.Broadcast()
 }
 
-func (r *Raft) hasQuorum(count int) bool {
-	return count > len(r.peers)/2
+// resetSnapshotFiles closes or discards any open snapshot files on this node.
+// If the file is being written, it is discarded. If it is being read, it is closed.
+func (r *Raft) resetSnapshotFiles() {
+	for _, follower := range r.followers {
+		if follower.snapshot != nil {
+			if err := follower.snapshot.Close(); err != nil {
+				r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+			}
+			follower.snapshot = nil
+		}
+	}
+	if r.snapshot != nil {
+		if err := r.snapshot.Discard(); err != nil {
+			r.options.logger.Fatalf("failed to discard snapshot file: error = %v", err)
+		}
+		r.snapshot = nil
+	}
 }
 
+// hasQuorum returns true if the provided count makes constitutes
+// quorum for the cluster and false otherwise. Non-voting members
+// of the cluster are not considered for quorum.
+func (r *Raft) hasQuorum(count int) bool {
+	voters := 0
+	for _, isVoter := range r.configuration.IsVoter {
+		if isVoter {
+			voters++
+		}
+	}
+	return count > voters/2
+}
+
+// persistTermAndVote writes the term and vote for this node to non-volatile storage.
 func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
-		r.options.logger.Fatalf("server %s failed persisting term and vote: %s", r.id, err.Error())
+		r.options.logger.Fatalf("failed to persist term and vote: error = %v", err)
 	}
 }
 
-func (r *Raft) disconnectPeer(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.peers[id].Disconnect(); err != nil {
-		return errors.WrapError(err, "server failed to disconnect peer: %s", err.Error())
+// nextConfiguration transitions this node from its current configuration to
+// to the provided configuration. Any unused connections will be torn down
+// and any new connections will be established. If this node is not a member
+// of the next configuration, it will transition to a configuration consisting
+// of only itself with non-voter status.
+func (r *Raft) nextConfiguration(next *Configuration) {
+	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
+
+	// Step down if this node is being removed.
+	if r.configuration.Members[r.id] != next.Members[r.id] {
+		r.resetSnapshotFiles()
+		r.state = Follower
 	}
-	return nil
+
+	// Close any connections with removed nodes.
+	for id, address := range r.configuration.Members {
+		if _, ok := next.Members[id]; !ok {
+			delete(r.followers, id)
+			if id == r.id {
+				continue
+			}
+			if err := r.transport.Close(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to close connection to node: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+		}
+	}
+
+	// Establish connection with any new nodes.
+	for id, address := range next.Members {
+		if _, ok := r.configuration.Members[id]; !ok {
+			r.followers[id] = new(follower)
+			if id == r.id {
+				continue
+			}
+			if err := r.transport.Connect(address); err != nil {
+				r.options.logger.Errorf(
+					"failed to connect to peer: id = %s, address = %s, error = %v",
+					id,
+					address,
+					err,
+				)
+			}
+		}
+	}
+
+	r.configuration = next
 }
 
-func (r *Raft) connectPeer(id string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.peers[id].Connect(); err != nil {
-		return errors.WrapError(err, "server failed to connect peer: %s", err.Error())
+// encodeConfiguration encodes the provided configuration.
+func (r *Raft) encodeConfiguration(configuration *Configuration) []byte {
+	data, err := r.transport.EncodeConfiguration(configuration)
+	if err != nil {
+		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
 	}
-	return nil
+	return data
 }
 
-func (r *Raft) sendResponseWithoutBlocking(
-	responseCh chan OperationResponse,
-	response OperationResponse,
-) {
-	select {
-	case responseCh <- response:
-	default:
+// decodeConfiguration decodes the provided bytes into a configuration.
+func (r *Raft) decodeConfiguration(data []byte) Configuration {
+	configuration, err := r.transport.DecodeConfiguration(data)
+	if err != nil {
+		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
 	}
+	return configuration
+}
+
+// appendConfiguration sets the log index associated with the
+// configuration and appends it to the log.
+func (r *Raft) appendConfiguration(configuration *Configuration) {
+	configuration.Index = r.log.NextIndex()
+	data := r.encodeConfiguration(configuration)
+	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
+	if err := r.log.AppendEntry(entry); err != nil {
+		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+	}
+}
+
+// isVoter returns true if the node with the provided ID
+// is a voting member of the cluster and false otherwise.
+func (r *Raft) isVoter(id string) bool {
+	return r.configuration.IsVoter[id]
+}
+
+// isMember returns true if the node with the provided ID
+// is a member of the cluster and false otherwise.
+func (r *Raft) isMember(id string) bool {
+	_, ok := r.configuration.Members[id]
+	return ok
+}
+
+// isSingleServerCluster returns true if the current configuration only contains
+// this node as a voting member.
+func (r *Raft) isSingleServerCluster() bool {
+	return len(r.configuration.Members) == 1 && r.configuration.IsVoter[r.id]
+}
+
+// pendingConfigurationChange returns true if the current configuration
+// has not been committed.
+func (r *Raft) pendingConfigurationChange() bool {
+	return r.committedConfiguration == nil ||
+		r.committedConfiguration.Index != r.configuration.Index
 }

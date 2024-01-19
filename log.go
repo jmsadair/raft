@@ -2,21 +2,29 @@ package raft
 
 import (
 	"bufio"
+	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 
-	"github.com/jmsadair/raft/internal/errors"
-)
-
-var (
-	errIndexDoesNotExist = errors.New("index does not exist")
-	errLogNotOpen        = errors.New("log is not open")
+	pb "github.com/jmsadair/raft/internal/protobuf"
+	"google.golang.org/protobuf/proto"
 )
 
 // Log represents the internal component of Raft that is responsible
 // for persistently storing and retrieving log entries.
 type Log interface {
-	PersistentStorage
+	// Open opens the log and prepares it for reads and writes.
+	Open() error
+
+	// Replay replays the content of the log on disk into memory.
+	Replay() error
+
+	// Close closes the log.
+	Close() error
 
 	// GetEntry returns the log entry located at the specified index.
 	GetEntry(index uint64) (*LogEntry, error)
@@ -55,15 +63,23 @@ type Log interface {
 	// NextIndex returns the next index to append to the log.
 	NextIndex() uint64
 
-	// SizeInBytes returns the size of the log in bytes.
-	SizeInBytes() (int64, error)
+	// Size returns the number of entries in the log.
+	Size() int
 }
 
+// LogEntryType is the type of the log entry.
 type LogEntryType uint32
 
 const (
+	// NoOpEntry log entries are those that do not contain an operation.
 	NoOpEntry LogEntryType = iota
+
+	// OperationEntry log entries are those that do contain an operation that
+	// will be applied to the state machine.
 	OperationEntry
+
+	// ConfigurationEntry are log entries which contain a cluster configuration.
+	ConfigurationEntry
 )
 
 // LogEntry is a log entry in the log.
@@ -96,6 +112,59 @@ func (e *LogEntry) IsConflict(other *LogEntry) bool {
 	return e.Index == other.Index && e.Term != other.Term
 }
 
+func encodeLogEntry(w io.Writer, entry *LogEntry) error {
+	pbEntry := &pb.LogEntry{
+		Index:     entry.Index,
+		Term:      entry.Term,
+		Data:      entry.Data,
+		Offset:    entry.Offset,
+		EntryType: pb.LogEntry_LogEntryType(entry.EntryType),
+	}
+
+	buf, err := proto.Marshal(pbEntry)
+	if err != nil {
+		return fmt.Errorf("could not marshal protobuf message: %w", err)
+	}
+
+	size := int32(len(buf))
+	if err := binary.Write(w, binary.BigEndian, size); err != nil {
+		return fmt.Errorf("could not write length of protobuf message: %w", err)
+	}
+
+	if _, err := w.Write(buf); err != nil {
+		return fmt.Errorf("could not write protobuf message: %w", err)
+	}
+
+	return nil
+}
+
+func decodeLogEntry(r io.Reader) (LogEntry, error) {
+	var size int32
+	if err := binary.Read(r, binary.BigEndian, &size); err != nil {
+		return LogEntry{}, fmt.Errorf("could not read length of protobuf message: %w", err)
+	}
+
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return LogEntry{}, fmt.Errorf("could not read protobuf messsage: %w", err)
+	}
+
+	pbEntry := &pb.LogEntry{}
+	if err := proto.Unmarshal(buf, pbEntry); err != nil {
+		return LogEntry{}, fmt.Errorf("could not unmarshal protobuf message: %w", err)
+	}
+
+	entry := LogEntry{
+		Index:     pbEntry.GetIndex(),
+		Term:      pbEntry.GetTerm(),
+		Data:      pbEntry.GetData(),
+		Offset:    pbEntry.GetOffset(),
+		EntryType: LogEntryType(pbEntry.EntryType),
+	}
+
+	return entry, nil
+}
+
 // persistentLog implements the Log interface. Not concurrent safe.
 type persistentLog struct {
 	// The in-memory log entries of the log.
@@ -104,21 +173,27 @@ type persistentLog struct {
 	// The file that the log is written to.
 	file *os.File
 
-	// The path to the file that the log is written to.
-	path string
+	// The directory where the log is persisted to.
+	logDir string
 }
 
-// NewLog creates a new instance of Log at the provided path.
-func NewLog(path string) Log {
-	return &persistentLog{path: path}
+// NewLog creates a new Log instance.
+// The file containing the log will be created at path/log/log.bin.
+func NewLog(path string) (Log, error) {
+	logDir := filepath.Join(path, "log")
+	if err := os.MkdirAll(logDir, fs.ModePerm); err != nil {
+		return nil, fmt.Errorf("could not make directories for log file: %w", err)
+	}
+	return &persistentLog{logDir: logDir}, nil
 }
 
 func (l *persistentLog) Open() error {
-	file, err := os.OpenFile(l.path, os.O_RDWR|os.O_CREATE, 0o666)
+	logFilename := filepath.Join(l.logDir, "log.bin")
+	logFile, err := os.OpenFile(logFilename, os.O_RDWR|os.O_CREATE, 0o666)
 	if err != nil {
-		return errors.WrapError(err, "failed to open log")
+		return fmt.Errorf("could not open or create log file: %w", err)
 	}
-	l.file = file
+	l.file = logFile
 	l.entries = make([]*LogEntry, 0)
 	return nil
 }
@@ -128,11 +203,11 @@ func (l *persistentLog) Replay() error {
 
 	for {
 		entry, err := decodeLogEntry(reader)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return errors.WrapError(err, "failed while replaying log")
+			return fmt.Errorf("could not decode log entry: %w", err)
 		}
 		l.entries = append(l.entries, &entry)
 	}
@@ -142,10 +217,10 @@ func (l *persistentLog) Replay() error {
 	if len(l.entries) == 0 {
 		entry := &LogEntry{}
 		if err := encodeLogEntry(l.file, entry); err != nil {
-			return errors.WrapError(err, "failed while replaying log")
+			return fmt.Errorf("could not encode log entry: %w", err)
 		}
 		if err := l.file.Sync(); err != nil {
-			return errors.WrapError(err, "failed while replaying log")
+			return fmt.Errorf("could not sync log file: %w", err)
 		}
 		l.entries = append(l.entries, entry)
 	}
@@ -158,7 +233,7 @@ func (l *persistentLog) Close() error {
 		return nil
 	}
 	if err := l.file.Close(); err != nil {
-		return errors.WrapError(err, "failed to close log")
+		return fmt.Errorf("could not close log file: %w", err)
 	}
 	l.entries = nil
 	l.file = nil
@@ -167,15 +242,13 @@ func (l *persistentLog) Close() error {
 
 func (l *persistentLog) GetEntry(index uint64) (*LogEntry, error) {
 	if l.file == nil {
-		return nil, errLogNotOpen
+		return nil, errors.New("could not get entry: log not open")
+	}
+	if !l.Contains(index) {
+		return nil, fmt.Errorf("could not get entry: index %d does not exist", index)
 	}
 
 	logIndex := index - l.entries[0].Index
-	lastIndex := l.entries[len(l.entries)-1].Index
-	if logIndex <= 0 || logIndex > lastIndex {
-		return nil, errIndexDoesNotExist
-	}
-
 	entry := l.entries[logIndex]
 
 	return entry, nil
@@ -192,22 +265,22 @@ func (l *persistentLog) AppendEntry(entry *LogEntry) error {
 
 func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 	if l.file == nil {
-		return errLogNotOpen
+		return errors.New("could not append entries: log not open")
 	}
 
 	for _, entry := range entries {
 		offset, err := l.file.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(err, "failed while appending entries to log")
+			return fmt.Errorf("could not seek log file: %w", err)
 		}
 		entry.Offset = offset
 		if err := encodeLogEntry(l.file, entry); err != nil {
-			return errors.WrapError(err, "failed while appending entries to log")
+			return fmt.Errorf("could not encode log entry: %w", err)
 		}
 	}
 
 	if err := l.file.Sync(); err != nil {
-		return errors.WrapError(err, "failed while appending entries to log")
+		return fmt.Errorf("could not sync log file: %w", err)
 	}
 
 	l.entries = append(l.entries, entries...)
@@ -217,25 +290,24 @@ func (l *persistentLog) AppendEntries(entries []*LogEntry) error {
 
 func (l *persistentLog) Truncate(index uint64) error {
 	if l.file == nil {
-		return errLogNotOpen
+		return errors.New("could not truncate log: log not open")
+	}
+	if !l.Contains(index) {
+		return fmt.Errorf("could not truncate log: index %d does not exist", index)
 	}
 
 	logIndex := index - l.entries[0].Index
-	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
-		return errIndexDoesNotExist
-	}
-
-	// The offset of the entry at the provided index is the
-	// new size of the file.
 	size := l.entries[logIndex].Offset
 
 	if err := l.file.Truncate(size); err != nil {
-		return errors.WrapError(err, "failed to truncate log")
+		return fmt.Errorf("could not truncate log file: %w", err)
+	}
+	if err := l.file.Sync(); err != nil {
+		return fmt.Errorf("could not sync log file: %w", err)
 	}
 
-	// Update to I/O offset to the new size.
 	if _, err := l.file.Seek(size, io.SeekStart); err != nil {
-		return errors.WrapError(err, "failed to truncate log")
+		return fmt.Errorf("could not seek log file: %w", err)
 	}
 
 	l.entries = l.entries[:logIndex]
@@ -245,46 +317,36 @@ func (l *persistentLog) Truncate(index uint64) error {
 
 func (l *persistentLog) Compact(index uint64) error {
 	if l.file == nil {
-		return errLogNotOpen
+		return errors.New("could not compact log: log not open")
+	}
+	if !l.Contains(index) {
+		return fmt.Errorf("could not compact log: index %d does not exist", index)
 	}
 
 	logIndex := index - l.entries[0].Index
-	if logIndex <= 0 || logIndex >= uint64(len(l.entries)) {
-		return errIndexDoesNotExist
-	}
-
 	newEntries := make([]*LogEntry, uint64(len(l.entries))-logIndex)
 	copy(newEntries[:], l.entries[logIndex:])
 
-	// Create a temporary file to write the compacted log to.
-	compactedFile, err := os.Create(l.path + ".bin")
+	tmpFile, err := os.CreateTemp(l.logDir, "tmp-")
 	if err != nil {
-		return errors.WrapError(err, "failed to compact log")
+		return fmt.Errorf("could not create temporary file: %w", err)
 	}
 
-	// Write the entries contained in the compacted log to the
-	// temporary file.
 	for _, entry := range newEntries {
-		offset, err := compactedFile.Seek(0, io.SeekCurrent)
+		offset, err := tmpFile.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return errors.WrapError(err, "failed to compact log")
+			return fmt.Errorf("could not seek temporary file: %w", err)
 		}
 		entry.Offset = offset
-		if err := encodeLogEntry(compactedFile, entry); err != nil {
-			return errors.WrapError(err, "failed to compact log")
+		if err := encodeLogEntry(tmpFile, entry); err != nil {
+			return fmt.Errorf("could not encode log entry: %w", err)
 		}
 	}
 
-	if err := compactedFile.Sync(); err != nil {
-		return errors.WrapError(err, "failed to compact log")
+	if err := l.rename(tmpFile); err != nil {
+		return fmt.Errorf("could not rename temporary file: %w", err)
 	}
 
-	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(compactedFile.Name(), l.path); err != nil {
-		return errors.WrapError(err, "failed to compact log")
-	}
-
-	l.file = compactedFile
 	l.entries = newEntries
 
 	return nil
@@ -292,30 +354,23 @@ func (l *persistentLog) Compact(index uint64) error {
 
 func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 	if l.file == nil {
-		return errLogNotOpen
+		return errors.New("could not discard log: log not open")
 	}
 
-	// Create a temporary file for the new log.
-	newLogFile, err := os.Create(l.path + ".tmp")
+	tmpFile, err := os.CreateTemp(l.logDir, "tmp-")
 	if err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
+		return fmt.Errorf("could not create temporary file: %w", err)
 	}
 
-	// Write a placeholder entry to the temporary file with the provided term and index.
 	entry := &LogEntry{Index: index, Term: term}
-	if err := encodeLogEntry(newLogFile, entry); err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
-	}
-	if err := newLogFile.Sync(); err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
+	if err := encodeLogEntry(tmpFile, entry); err != nil {
+		return fmt.Errorf("could not encode log entry: %w", err)
 	}
 
-	// Atomically rename the temporary file to the actual file.
-	if err := os.Rename(newLogFile.Name(), l.path); err != nil {
-		return errors.WrapError(err, "failed to discard log entries")
+	if err := l.rename(tmpFile); err != nil {
+		return fmt.Errorf("could not rename temporary file: %w", err)
 	}
 
-	l.file = newLogFile
 	l.entries = []*LogEntry{entry}
 
 	return nil
@@ -333,6 +388,34 @@ func (l *persistentLog) NextIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index + 1
 }
 
-func (l *persistentLog) SizeInBytes() (int64, error) {
-	return l.file.Seek(0, io.SeekCurrent)
+func (l *persistentLog) Size() int {
+	return len(l.entries) - 1
+}
+
+func (l *persistentLog) rename(tmpFile *os.File) error {
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("could not sync file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("could not close file: %w", err)
+	}
+	if err := l.file.Close(); err != nil {
+		return fmt.Errorf("could not close file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
+		return fmt.Errorf("could not perform rename: %w", err)
+	}
+
+	fileName := filepath.Join(l.logDir, "log.bin")
+	file, err := os.OpenFile(fileName, os.O_RDWR, 0o666)
+	if err != nil {
+		return fmt.Errorf("could not open file: %w", err)
+	}
+	l.file = file
+	if _, err := l.file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("could not seek file: %w", err)
+	}
+
+	return nil
 }

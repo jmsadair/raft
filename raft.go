@@ -1231,7 +1231,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int) {
 
 	// Do not send requests to non-voting members and only send
 	// requests if this node is a voting member of the cluster.
-	if !r.isVoter(id) || r.isVoter(r.id) {
+	if !r.isVoter(id) || !r.isVoter(r.id) {
 		return
 	}
 

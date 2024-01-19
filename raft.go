@@ -1779,7 +1779,6 @@ func (r *Raft) readOnlyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	defer r.wg.Done()
-	defer r.options.logger.Debug("exiting read-only loop")
 
 	for r.state != Shutdown {
 		r.readOnlyCond.Wait()

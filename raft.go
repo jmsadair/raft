@@ -1401,13 +1401,21 @@ func (r *Raft) InstallSnapshot(
 	r.lastIncludedIndex = request.LastIncludedIndex
 	r.lastIncludedTerm = request.LastIncludedTerm
 
+	// Increment the wait group to ensure that, if Shutdown is called,
+	// the log is discarded or compacted before it is closed.
+	r.wg.Add(1)
+	defer r.wg.Done()
+
 	// If an existing log entry has the same index and term as the last index
 	// and last term, discard the log through the last index and reply.
 	if entry, _ := r.log.GetEntry(request.LastIncludedIndex); entry != nil &&
 		entry.Term == request.LastIncludedTerm {
 		// Wait for all operations up to last included index have been applied before compacting the log.
 		// This is necessary since compacting the log may remove log entries that have yet to be applied.
-		for r.lastApplied < request.LastIncludedIndex {
+		// Note that it's fine to continue with compacting the log if the node has been shutdown even if
+		// the last applied index is less than the last index in the snapshot since the state machine
+		// will be reset with the snapshot upon restart anyways.
+		for r.state != Shutdown && r.lastApplied < request.LastIncludedIndex {
 			r.applyCond.Wait()
 		}
 
@@ -1420,6 +1428,7 @@ func (r *Raft) InstallSnapshot(
 		if err := r.log.Compact(request.LastIncludedIndex); err != nil {
 			r.options.logger.Fatalf("failed to compact log: error = %v", err)
 		}
+
 		return nil
 	}
 
@@ -1427,11 +1436,6 @@ func (r *Raft) InstallSnapshot(
 	if err != nil {
 		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
 	}
-
-	// Increment the wait group to ensure that, if Shutdown is called,
-	// the log is discarded before it is closed.
-	r.wg.Add(1)
-	defer r.wg.Done()
 
 	// Restore the state machine with the snapshot.
 	// This could take a while so it's probably best that the lock is released.

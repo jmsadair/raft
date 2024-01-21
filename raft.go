@@ -1720,7 +1720,7 @@ func (r *Raft) applyLoop() {
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed.
-		for r.lastApplied < r.commitIndex {
+		for r.lastApplied < r.commitIndex && r.state != Shutdown {
 			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
 				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
@@ -1884,6 +1884,19 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 }
 
+// stepDown transitions a node from the leader state to the follower state when it
+// has been removed from the cluster. Unlike becomeFollower, stepDown does not persist
+// the current term and vote.
+func (r *Raft) stepdown() {
+	r.state = Follower
+
+	// Cancel any pending operations.
+	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
+	r.operationManager = newOperationManager(r.options.leaseDuration)
+
+	r.options.logger.Info("stepped down to the follower state")
+}
+
 // tryApplyReadOnlyOperations renews the lease and notifies the read-only
 // loop that it may be possible to apply some read-only operations.
 func (r *Raft) tryApplyReadOnlyOperations() {
@@ -1940,10 +1953,18 @@ func (r *Raft) persistTermAndVote() {
 func (r *Raft) nextConfiguration(next *Configuration) {
 	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
-	// Step down if this node is being removed.
+	defer func() {
+		r.configuration = next
+	}()
+
+	// Step down if this node is being removed and it is the leader.
 	if r.configuration.Members[r.id] != next.Members[r.id] {
+		if r.state == Leader {
+			r.stepdown()
+		}
 		r.resetSnapshotFiles()
-		r.state = Follower
+		r.transport.CloseAll()
+		return
 	}
 
 	// Close any connections with removed nodes.
@@ -1981,8 +2002,6 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 			}
 		}
 	}
-
-	r.configuration = next
 }
 
 // encodeConfiguration encodes the provided configuration.

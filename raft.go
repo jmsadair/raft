@@ -486,7 +486,7 @@ func (r *Raft) Stop() {
 	r.mu.Lock()
 
 	if r.state == Shutdown {
-	    r.mu.Unlock()
+		r.mu.Unlock()
 		return
 	}
 

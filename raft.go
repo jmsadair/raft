@@ -484,9 +484,9 @@ func (r *Raft) start(restore bool) error {
 // Stop stops the raft consensus protocol if is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
+	    r.mu.Unlock()
 		return
 	}
 
@@ -498,7 +498,6 @@ func (r *Raft) Stop() {
 
 	r.mu.Unlock()
 	r.wg.Wait()
-	r.mu.Lock()
 
 	// Close any connections to other nodes in the cluster and stop accepting RPCs.
 	r.transport.CloseAll()

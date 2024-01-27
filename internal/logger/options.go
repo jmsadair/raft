@@ -24,6 +24,9 @@ type options struct {
 
 	// The level of the logger: debug, info, warn, error, fatal.
 	level Level
+
+	// Indicates whether the log level was set.
+	levelSet bool
 }
 
 type Option func(options *options) error
@@ -56,6 +59,7 @@ func WithFlag(flag int) Option {
 func WithLevel(level Level) Option {
 	return func(options *options) error {
 		options.level = level
+		options.levelSet = true
 		return nil
 	}
 }

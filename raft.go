@@ -129,6 +129,9 @@ type Raft struct {
 	// The configuration options for this raft node.
 	options options
 
+	// The logger for this raft node.
+	logger Logger
+
 	// The network transport for sending and receiving RPCs.
 	transport Transport
 
@@ -224,8 +227,6 @@ func NewRaft(
 		}
 	}
 
-	raft := &Raft{id: id, address: address, state: Shutdown, fsm: fsm}
-
 	// Set default values if option not provided.
 	if options.logger == nil {
 		defaultLogger, err := logger.NewLogger()
@@ -248,32 +249,44 @@ func NewRaft(
 		if err != nil {
 			return nil, err
 		}
-		raft.log = log
+		options.log = log
 	}
 	if options.stateStorage == nil {
 		stateStore, err := NewStateStorage(dataPath)
 		if err != nil {
 			return nil, err
 		}
-		raft.stateStorage = stateStore
+		options.stateStorage = stateStore
 	}
 	if options.snapshotStorage == nil {
 		snapshotStore, err := NewSnapshotStorage(dataPath)
 		if err != nil {
 			return nil, err
 		}
-		raft.snapshotStorage = snapshotStore
+		options.snapshotStorage = snapshotStore
 	}
 	if options.transport == nil {
 		transport, err := NewTransport(address)
 		if err != nil {
 			return nil, err
 		}
-		raft.transport = transport
+		options.transport = transport
 	}
 
-	raft.options = options
-	raft.operationManager = newOperationManager(options.leaseDuration)
+	raft := &Raft{
+		id:               id,
+		address:          address,
+		logger:           options.logger,
+		log:              options.log,
+		stateStorage:     options.stateStorage,
+		snapshotStorage:  options.snapshotStorage,
+		transport:        options.transport,
+		options:          options,
+		operationManager: newOperationManager(options.leaseDuration),
+		state:            Shutdown,
+		fsm:              fsm,
+	}
+
 	raft.applyCond = sync.NewCond(&raft.mu)
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
@@ -387,7 +400,7 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 		return err
 	}
 
-	r.options.logger.Infof("node bootstrapped: configuration = %s", r.configuration.String())
+	r.logger.Infof("node bootstrapped: configuration = %s", r.configuration.String())
 
 	return nil
 }
@@ -425,7 +438,7 @@ func (r *Raft) start(restore bool) error {
 
 	if r.configuration == nil {
 		r.configuration = &Configuration{}
-		r.options.logger.Infof("node has no configuration, will start as non-voter")
+		r.logger.Infof("node has no configuration, will start as non-voter")
 	}
 
 	// Register the functions for handling RPCs.
@@ -437,21 +450,6 @@ func (r *Raft) start(restore bool) error {
 	r.followers = make(map[string]*follower)
 	for id := range r.configuration.Members {
 		r.followers[id] = new(follower)
-	}
-
-	// Connect to the other nodes in the cluster.
-	for id, address := range r.configuration.Members {
-		if id == r.id {
-			continue
-		}
-		if err := r.transport.Connect(address); err != nil {
-			r.options.logger.Errorf(
-				"failed to connect to node: id = %s, address = %s, error = %v",
-				id,
-				address,
-				err,
-			)
-		}
 	}
 
 	r.lastContact = time.Now()
@@ -470,7 +468,7 @@ func (r *Raft) start(restore bool) error {
 		return fmt.Errorf("could not run transport: %w", err)
 	}
 
-	r.options.logger.Infof(
+	r.logger.Infof(
 		"node started: address = %s electionTimeout = %v, heartbeatInterval = %v, leaseDuration = %v",
 		r.address,
 		r.options.electionTimeout,
@@ -499,18 +497,17 @@ func (r *Raft) Stop() {
 	r.mu.Unlock()
 	r.wg.Wait()
 
-	// Close any connections to other nodes in the cluster and stop accepting RPCs.
-	r.transport.CloseAll()
+	// Stop accepting RPCs.
 	r.transport.Shutdown()
 
 	if err := r.log.Close(); err != nil {
-		r.options.logger.Errorf("failed to close log: %v", err)
+		r.logger.Errorf("failed to close log: %v", err)
 	}
 
 	// Close or discard of any snapshot files.
 	r.resetSnapshotFiles()
 
-	r.options.logger.Info("node stopped")
+	r.logger.Info("node stopped")
 }
 
 // Status returns the status of this node. The status includes
@@ -593,18 +590,10 @@ func (r *Raft) AddServer(
 
 	r.configuration = &configuration
 	r.followers[id] = &follower{nextIndex: 1}
-	if err := r.transport.Connect(address); err != nil {
-		r.options.logger.Errorf(
-			"failed to connect to node: id = %s, address = %s, error = %v",
-			id,
-			address,
-			err,
-		)
-	}
 
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"request to add node submitted: id = %s, address = %s, voter = %t, logIndex = %d",
 		id,
 		address,
@@ -662,7 +651,7 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"request to remove node submitted: id = %s, logIndex = %d",
 		id,
 		configuration.Index,
@@ -716,14 +705,14 @@ func (r *Raft) submitReplicatedOperation(
 
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, operationBytes, OperationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+		r.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
 
 	r.operationManager.pendingReplicated[entry.Index] = operationFuture.responseCh
 
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"operation submitted: logIndex = %d, logTerm = %d, type = %s",
 		entry.Index,
 		entry.Term,
@@ -763,7 +752,7 @@ func (r *Raft) submitReadOnlyOperation(
 		r.operationManager.shouldVerifyQuorum = false
 	}
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"operation submitted: readIndex = %d, type = %s",
 		operation.readIndex,
 		operation.OperationType.String(),
@@ -782,7 +771,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"AppendEntries RPC received: leaderID = %s, leaderCommit = %d, term = %d, prevLogIndex = %d, prevLogTerm = %d",
 		request.LeaderID,
 		request.LeaderCommit,
@@ -796,7 +785,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	// Reject any requests with an out-of-date term.
 	if request.Term < r.currentTerm {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"AppendEntries RPC rejected: reason = out of date term, localTerm = %d, remoteTerm = %d",
 			r.currentTerm,
 			request.Term,
@@ -825,7 +814,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	// Reject the request if the log has been compacted and no longer contains the previous log entry.
 	if r.lastIncludedIndex > request.PrevLogIndex {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"AppendEntries RPC rejected: reason = log no longer contains previous entry, logIndex = %d, lastIncludedIndex = %d",
 			request.PrevLogIndex,
 			r.lastIncludedIndex,
@@ -836,7 +825,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 	// Reject the request if the log is too short to contain the previous log entry.
 	if r.log.NextIndex() <= request.PrevLogIndex {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"AppendEntries RPC rejected: reason = log does not contain previous entry, logIndex = %d, lastLogIndex = %d",
 			request.PrevLogIndex,
 			r.log.LastIndex(),
@@ -848,7 +837,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	// Reject the request if the previous log index matches the last included log index, but the previous log term does
 	// not match the last included term.
 	if r.lastIncludedIndex == request.PrevLogIndex && r.lastIncludedTerm != request.PrevLogTerm {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"AppendEntries RPC rejected: reason = previous log entry has conflicting term, logIndex = %d, localTerm = %d, remoteTerm = %d",
 			request.PrevLogIndex,
 			r.lastIncludedTerm,
@@ -861,12 +850,12 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	if r.lastIncludedIndex < request.PrevLogIndex {
 		prevLogEntry, err := r.log.GetEntry(request.PrevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+			r.logger.Fatalf("failed to get entry from log: error = %v", err)
 		}
 
 		// Reject the request if the log has the previous log entry, but its term does not match.
 		if prevLogEntry.Term != request.PrevLogTerm {
-			r.options.logger.Debugf(
+			r.logger.Debugf(
 				"AppendEntries RPC rejected: reason = previous log entry has conflicting term, index = %d, localTerm = %d, remoteTerm = %d",
 				request.PrevLogIndex,
 				prevLogEntry.Term,
@@ -878,7 +867,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 			for ; index > r.lastIncludedIndex; index-- {
 				entry, err := r.log.GetEntry(index)
 				if err != nil {
-					r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+					r.logger.Fatalf("failed to get entry from log: error = %v", err)
 				}
 				if entry.Term != prevLogEntry.Term {
 					break
@@ -900,15 +889,15 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 
 		existing, err := r.log.GetEntry(entry.Index)
 		if err != nil {
-			r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+			r.logger.Fatalf("failed to get entry from log: error = %v", err)
 		}
 		if !existing.IsConflict(entry) {
 			continue
 		}
 
-		r.options.logger.Warnf("truncating log: index = %d", entry.Index)
+		r.logger.Warnf("truncating log: index = %d", entry.Index)
 		if err := r.log.Truncate(entry.Index); err != nil {
-			r.options.logger.Fatalf("failed to truncate log: %v", err)
+			r.logger.Fatalf("failed to truncate log: %v", err)
 		}
 
 		// Fall back to the committed configuration if the current one is
@@ -923,7 +912,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	}
 
 	if err := r.log.AppendEntries(toAppend); err != nil {
-		r.options.logger.Fatalf("failed to append entries to log: %v", err)
+		r.logger.Fatalf("failed to append entries to log: %v", err)
 	}
 
 	if request.LeaderCommit > r.commitIndex {
@@ -979,7 +968,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
 		prevEntry, err := r.log.GetEntry(prevLogIndex)
 		if err != nil {
-			r.options.logger.Fatalf("failed getting entry from log: error = %v", err)
+			r.logger.Fatalf("failed getting entry from log: error = %v", err)
 		}
 		prevLogTerm = prevEntry.Term
 	}
@@ -988,7 +977,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	for index := nextIndex; index > r.lastIncludedIndex && index < r.log.NextIndex(); index++ {
 		entry, err := r.log.GetEntry(index)
 		if err != nil {
-			r.options.logger.Fatalf("failed getting entry from log: error = %v", err)
+			r.logger.Fatalf("failed getting entry from log: error = %v", err)
 		}
 		entries = append(entries, entry)
 	}
@@ -1061,7 +1050,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		return fmt.Errorf("could not execute RequestVote RPC: %s is shutdown", r.id)
 	}
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"RequestVote RPC received: candidateID = %s, prevote = %t, term = %d, lastLogIndex = %d, lastLogTerm = %d",
 		request.CandidateID,
 		request.Prevote,
@@ -1081,7 +1070,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	// 2. This node is a follower and it has been recently contacted by the leader.
 	if r.operationManager.leaderLease.isValid() ||
 		time.Since(r.lastContact) < r.options.electionTimeout {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"RequestVote RPC rejected: reason = recent contact from leader, knownLeader = %s",
 			r.leaderID,
 		)
@@ -1090,7 +1079,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	// Reject the request if the term is out-of-date.
 	if request.Term < r.currentTerm {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"RequestVote RPC rejected: reason = out of date term, localTerm =  %d, remoteTerm = %d",
 			r.currentTerm,
 			request.Term,
@@ -1107,7 +1096,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 
 	// Reject the request if this node has already voted.
 	if !request.Prevote && r.votedFor != "" && r.votedFor != request.CandidateID {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"RequestVote RPC rejected: reason = already voted, votedFor = %s",
 			r.votedFor,
 		)
@@ -1122,7 +1111,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 	// 2. If the logs end with the same term, the longer log is more up-to-date.
 	if request.LastLogTerm < r.log.LastTerm() ||
 		(request.LastLogTerm == r.log.LastTerm() && r.log.LastIndex() > request.LastLogIndex) {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"RequestVote RPC rejected: reason = out-of-date log, localLastLogIndex = %d, localLastLogTerm = %d, remoteLastLogIndex = %d, remoteLastLogTerm = %d",
 			r.log.LastIndex(),
 			r.log.LastTerm(),
@@ -1141,7 +1130,7 @@ func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteRes
 		r.persistTermAndVote()
 	}
 
-	r.options.logger.Infof(
+	r.logger.Infof(
 		"RequestVote RPC successful: prevote = %t, votedFor = %s, term = %d",
 		request.Prevote,
 		request.CandidateID,
@@ -1300,7 +1289,7 @@ func (r *Raft) InstallSnapshot(
 		return fmt.Errorf("could not execute InstallSnapshot RPC: %s is shutdown", r.id)
 	}
 
-	r.options.logger.Debugf(
+	r.logger.Debugf(
 		"InstallSnapshot RPC received: leaderID = %s, term = %d, lastIndex = %d, lastTerm = %d, offset = %d, done = %v",
 		request.LeaderID,
 		request.Term,
@@ -1314,7 +1303,7 @@ func (r *Raft) InstallSnapshot(
 
 	// Reject the request if the term is out-of-date.
 	if r.currentTerm > request.Term {
-		r.options.logger.Debugf(
+		r.logger.Debugf(
 			"InstallSnapshot RPC rejected: reason = out of date term, localTerm = %d, remoteTerm = %d",
 			r.currentTerm,
 			request.Term,
@@ -1346,7 +1335,7 @@ func (r *Raft) InstallSnapshot(
 		metadata := r.snapshot.Metadata()
 		if metadata.LastIncludedIndex < request.LastIncludedIndex {
 			if err := r.snapshot.Discard(); err != nil {
-				r.options.logger.Fatalf("failed to discard snapshot: error = %v", err)
+				r.logger.Fatalf("failed to discard snapshot: error = %v", err)
 			}
 			r.snapshot = nil
 		}
@@ -1360,7 +1349,7 @@ func (r *Raft) InstallSnapshot(
 			request.Configuration,
 		)
 		if err != nil {
-			r.options.logger.Fatalf("failed to create snapshot file: error = %v", err)
+			r.logger.Fatalf("failed to create snapshot file: error = %v", err)
 		}
 		r.snapshot = snapshot
 	}
@@ -1369,10 +1358,10 @@ func (r *Raft) InstallSnapshot(
 	offset, err := r.snapshot.Seek(0, io.SeekCurrent)
 	response.BytesWritten = offset
 	if err != nil {
-		r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 	}
 	if request.Offset != offset {
-		r.options.logger.Warnf(
+		r.logger.Warnf(
 			"InstallSnapshot RPC contains incorrect offset: expectedOffset = %d, receivedOffset = %d",
 			offset,
 			request.Offset,
@@ -1384,7 +1373,7 @@ func (r *Raft) InstallSnapshot(
 	reader := bytes.NewReader(request.Bytes)
 	n, err := io.Copy(r.snapshot, reader)
 	if err != nil {
-		r.options.logger.Fatalf("failed to write snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to write snapshot file: error = %v", err)
 	}
 	response.BytesWritten += n
 
@@ -1393,7 +1382,7 @@ func (r *Raft) InstallSnapshot(
 	}
 
 	if err := r.snapshot.Close(); err != nil {
-		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 
 	r.snapshot = nil
@@ -1414,9 +1403,9 @@ func (r *Raft) InstallSnapshot(
 			return nil
 		}
 
-		r.options.logger.Warnf("compacting log: logIndex = %d", request.LastIncludedIndex)
+		r.logger.Warnf("compacting log: logIndex = %d", request.LastIncludedIndex)
 		if err := r.log.Compact(request.LastIncludedIndex); err != nil {
-			r.options.logger.Fatalf("failed to compact log: error = %v", err)
+			r.logger.Fatalf("failed to compact log: error = %v", err)
 		}
 
 		return nil
@@ -1424,22 +1413,22 @@ func (r *Raft) InstallSnapshot(
 
 	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
-		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to get snapshot file: error = %v", err)
 	}
 
 	// Restore the state machine with the snapshot.
 	// This could take a while so it's probably best that the lock is released.
 	r.mu.Unlock()
-	r.options.logger.Warnf(
+	r.logger.Warnf(
 		"restoring state machine with snapshot: lastIndex = %d, lastTerm = %d",
 		request.LastIncludedIndex,
 		request.LastIncludedTerm,
 	)
 	if err := r.fsm.Restore(snapshot); err != nil {
-		r.options.logger.Fatalf("failed to restore state machine with snapshot: error = %v", err)
+		r.logger.Fatalf("failed to restore state machine with snapshot: error = %v", err)
 	}
 	if err := snapshot.Close(); err != nil {
-		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	r.mu.Lock()
 
@@ -1451,19 +1440,19 @@ func (r *Raft) InstallSnapshot(
 	r.commitIndex = request.LastIncludedIndex
 
 	// Discard the entire log.
-	r.options.logger.Warnf(
+	r.logger.Warnf(
 		"discarding log: lastIndex = %d, lastTerm = %d",
 		request.LastIncludedIndex,
 		request.LastIncludedTerm,
 	)
 	if err := r.log.DiscardEntries(request.LastIncludedIndex, request.LastIncludedTerm); err != nil {
-		r.options.logger.Fatalf("failed to discard log entries: error = %v", err)
+		r.logger.Fatalf("failed to discard log entries: error = %v", err)
 	}
 
 	// Update the configuration.
 	r.applyConfiguration(request.Configuration)
 
-	r.options.logger.Infof(
+	r.logger.Infof(
 		"snapshot installation completed successfully: lastIndex = %d, lastTerm = %d",
 		request.LastIncludedIndex,
 		request.LastIncludedTerm,
@@ -1488,10 +1477,10 @@ func (r *Raft) takeSnapshot() {
 
 	lastAppliedEntry, err := r.log.GetEntry(r.lastApplied)
 	if err != nil {
-		r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+		r.logger.Fatalf("failed to get entry from log: error = %v", err)
 	}
 
-	r.options.logger.Infof(
+	r.logger.Infof(
 		"starting to take snapshot: lastIndex = %d, lastTerm = %d",
 		lastAppliedEntry.Index,
 		lastAppliedEntry.Term,
@@ -1505,17 +1494,17 @@ func (r *Raft) takeSnapshot() {
 		configurationData,
 	)
 	if err != nil {
-		r.options.logger.Fatalf("failed to create snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to create snapshot file: error = %v", err)
 	}
 
 	// Take a snapshot of the state machine.
 	// It's best that the lock is not held here since this might take a while.
 	r.mu.Unlock()
 	if err := r.fsm.Snapshot(snapshot); err != nil {
-		r.options.logger.Fatalf("failed to take snapshot of state machine: error = %v", err)
+		r.logger.Fatalf("failed to take snapshot of state machine: error = %v", err)
 	}
 	if err := snapshot.Close(); err != nil {
-		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	r.mu.Lock()
 
@@ -1527,13 +1516,13 @@ func (r *Raft) takeSnapshot() {
 	// Compact the log.
 	r.lastIncludedIndex = lastAppliedEntry.Index
 	r.lastIncludedTerm = lastAppliedEntry.Term
-	r.options.logger.Warnf("compacting log: logIndex = %d", r.lastIncludedIndex)
+	r.logger.Warnf("compacting log: logIndex = %d", r.lastIncludedIndex)
 	if err := r.log.Compact(r.lastIncludedIndex); err != nil {
-		r.options.logger.Fatalf("failed to compact log: error = %v", err)
+		r.logger.Fatalf("failed to compact log: error = %v", err)
 	}
 	r.resetSnapshotFiles()
 
-	r.options.logger.Infof(
+	r.logger.Infof(
 		"snapshot taken successfully: lastIndex = %d, lastTerm = %d",
 		r.lastIncludedIndex,
 		r.lastIncludedTerm,
@@ -1548,7 +1537,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	}
 
 	if r.lastIncludedIndex == 0 {
-		r.options.logger.Warn("cannot send snapshot to follower because one has not been taken")
+		r.logger.Warn("cannot send snapshot to follower because one has not been taken")
 		return
 	}
 
@@ -1558,7 +1547,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	if follower.snapshot == nil {
 		snapshot, err := r.snapshotStorage.SnapshotFile()
 		if err != nil {
-			r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
+			r.logger.Fatalf("failed to get snapshot file: error = %v", err)
 		}
 		follower.snapshot = snapshot
 	}
@@ -1566,7 +1555,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	metadata := follower.snapshot.Metadata()
 	offset, err := follower.snapshot.Seek(0, io.SeekCurrent)
 	if err != nil {
-		r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 	}
 
 	request := InstallSnapshotRequest{
@@ -1583,9 +1572,9 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	n, err := io.Copy(&buf, follower.snapshot)
 	if err != nil {
 		if err := follower.snapshot.Close(); err != nil {
-			r.options.logger.Errorf("failed to close snapshot file: error = %v", err)
+			r.logger.Errorf("failed to close snapshot file: error = %v", err)
 		}
-		r.options.logger.Fatalf("failed to read snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to read snapshot file: error = %v", err)
 	}
 	request.Bytes = buf.Bytes()
 	request.Done = n < snapshotChunkSize
@@ -1608,7 +1597,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	// Reset to the follower's offset.
 	if response.BytesWritten != offset {
 		if _, err := follower.snapshot.Seek(response.BytesWritten, io.SeekStart); err != nil {
-			r.options.logger.Fatalf("failed to seek snapshot file: error = %v", err)
+			r.logger.Fatalf("failed to seek snapshot file: error = %v", err)
 		}
 		return
 	}
@@ -1618,7 +1607,7 @@ func (r *Raft) sendInstallSnapshot(id, address string) {
 	}
 
 	if err := follower.snapshot.Close(); err != nil {
-		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+		r.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	follower.snapshot = nil
 	follower.matchIndex = request.LastIncludedIndex
@@ -1671,7 +1660,7 @@ func (r *Raft) commitLoop() {
 			// to be agreed upon by the majority of node in the cluster, but
 			// be overwritten by a future leader.
 			if entry, err := r.log.GetEntry(index); err != nil {
-				r.options.logger.Fatalf("failed to get  entry from log: error = %v", err)
+				r.logger.Fatalf("failed to get  entry from log: error = %v", err)
 			} else if entry.Term != r.currentTerm {
 				continue
 			}
@@ -1717,7 +1706,7 @@ func (r *Raft) applyLoop() {
 		for r.lastApplied < r.commitIndex && r.state != Shutdown {
 			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
-				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
+				r.logger.Fatalf("failed to get entry from log: error = %v", err)
 			}
 
 			switch entry.EntryType {
@@ -1743,7 +1732,7 @@ func (r *Raft) applyLoop() {
 					ApplicationResponse: r.fsm.Apply(&operation),
 				}
 				respond(responseCh, response, nil)
-				r.options.logger.Debugf(
+				r.logger.Debugf(
 					"applied operation to state machine: logIndex = %d, logTerm = %d, type = %s",
 					operation.LogIndex,
 					operation.LogTerm,
@@ -1757,7 +1746,7 @@ func (r *Raft) applyLoop() {
 					continue
 				}
 			default:
-				r.options.logger.Fatal("log entry has invalid type")
+				r.logger.Fatal("log entry has invalid type")
 			}
 
 			r.lastApplied++
@@ -1811,7 +1800,7 @@ func (r *Raft) readOnlyLoop() {
 				ApplicationResponse: r.fsm.Apply(operation),
 			}
 			respond(responseCh, response, nil)
-			r.options.logger.Debugf(
+			r.logger.Debugf(
 				"applied operation to state machine: readIndex = %d, type = %s",
 				operation.readIndex,
 				operation.OperationType.String(),
@@ -1832,14 +1821,14 @@ func (r *Raft) becomeCandidate() {
 	r.currentTerm++
 	r.votedFor = r.id
 	r.persistTermAndVote()
-	r.options.logger.Infof("entered the candidate state: term = %d", r.currentTerm)
+	r.logger.Infof("entered the candidate state: term = %d", r.currentTerm)
 }
 
 // becomePreCandidate transitions this node to the precandidate state.
 // This does not increment the term or cast a vote for this node.
 func (r *Raft) becomePreCandidate() {
 	r.state = PreCandidate
-	r.options.logger.Infof("entered the pre-candidate state: term = %d", r.currentTerm)
+	r.logger.Infof("entered the pre-candidate state: term = %d", r.currentTerm)
 }
 
 // becomeLeader transitions this node to the leader state.
@@ -1855,11 +1844,11 @@ func (r *Raft) becomeLeader() {
 	// Append a new log entry for this term.
 	entry := NewLogEntry(r.log.NextIndex(), r.currentTerm, []byte{}, NoOpEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatal("failed to append entry to log: error = %v", err)
+		r.logger.Fatal("failed to append entry to log: error = %v", err)
 	}
 	r.sendAppendEntriesToPeers()
 
-	r.options.logger.Infof("entered the leader state: term = %d", r.currentTerm)
+	r.logger.Infof("entered the leader state: term = %d", r.currentTerm)
 }
 
 // becomeFollower transitions this node to the follower state.
@@ -1875,7 +1864,7 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 
-	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
+	r.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 }
 
 // stepDown transitions a node from the leader state to the follower state when it
@@ -1888,7 +1877,7 @@ func (r *Raft) stepdown() {
 	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
 	r.operationManager = newOperationManager(r.options.leaseDuration)
 
-	r.options.logger.Info("stepped down to the follower state")
+	r.logger.Info("stepped down to the follower state")
 }
 
 // tryApplyReadOnlyOperations renews the lease and notifies the read-only
@@ -1906,14 +1895,14 @@ func (r *Raft) resetSnapshotFiles() {
 	for _, follower := range r.followers {
 		if follower.snapshot != nil {
 			if err := follower.snapshot.Close(); err != nil {
-				r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
+				r.logger.Fatalf("failed to close snapshot file: error = %v", err)
 			}
 			follower.snapshot = nil
 		}
 	}
 	if r.snapshot != nil {
 		if err := r.snapshot.Discard(); err != nil {
-			r.options.logger.Fatalf("failed to discard snapshot file: error = %v", err)
+			r.logger.Fatalf("failed to discard snapshot file: error = %v", err)
 		}
 		r.snapshot = nil
 	}
@@ -1935,7 +1924,7 @@ func (r *Raft) hasQuorum(count int) bool {
 // persistTermAndVote writes the term and vote for this node to non-volatile storage.
 func (r *Raft) persistTermAndVote() {
 	if err := r.stateStorage.SetState(r.currentTerm, r.votedFor); err != nil {
-		r.options.logger.Fatalf("failed to persist term and vote: error = %v", err)
+		r.logger.Fatalf("failed to persist term and vote: error = %v", err)
 	}
 }
 
@@ -1945,7 +1934,7 @@ func (r *Raft) persistTermAndVote() {
 // of the next configuration, it will transition to a configuration consisting
 // of only itself with non-voter status.
 func (r *Raft) nextConfiguration(next *Configuration) {
-	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
+	r.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
 	defer func() {
 		r.configuration = next
@@ -1957,43 +1946,20 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 			r.stepdown()
 		}
 		r.resetSnapshotFiles()
-		r.transport.CloseAll()
 		return
 	}
 
-	// Close any connections with removed nodes.
-	for id, address := range r.configuration.Members {
+	// Delete removed nodes from followers.
+	for id := range r.configuration.Members {
 		if _, ok := next.Members[id]; !ok {
 			delete(r.followers, id)
-			if id == r.id {
-				continue
-			}
-			if err := r.transport.Close(address); err != nil {
-				r.options.logger.Errorf(
-					"failed to close connection to node: id = %s, address = %s, error = %v",
-					id,
-					address,
-					err,
-				)
-			}
 		}
 	}
 
-	// Establish connection with any new nodes.
-	for id, address := range next.Members {
+	// Create entry for added nodes.
+	for id := range next.Members {
 		if _, ok := r.configuration.Members[id]; !ok {
 			r.followers[id] = new(follower)
-			if id == r.id {
-				continue
-			}
-			if err := r.transport.Connect(address); err != nil {
-				r.options.logger.Errorf(
-					"failed to connect to peer: id = %s, address = %s, error = %v",
-					id,
-					address,
-					err,
-				)
-			}
 		}
 	}
 }
@@ -2002,7 +1968,7 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 func (r *Raft) encodeConfiguration(configuration *Configuration) []byte {
 	data, err := r.transport.EncodeConfiguration(configuration)
 	if err != nil {
-		r.options.logger.Fatalf("failed to encode configuration: error = %v", err)
+		r.logger.Fatalf("failed to encode configuration: error = %v", err)
 	}
 	return data
 }
@@ -2011,7 +1977,7 @@ func (r *Raft) encodeConfiguration(configuration *Configuration) []byte {
 func (r *Raft) decodeConfiguration(data []byte) Configuration {
 	configuration, err := r.transport.DecodeConfiguration(data)
 	if err != nil {
-		r.options.logger.Fatalf("failed to decode configuration: error = %v", err)
+		r.logger.Fatalf("failed to decode configuration: error = %v", err)
 	}
 	return configuration
 }
@@ -2023,7 +1989,7 @@ func (r *Raft) appendConfiguration(configuration *Configuration) {
 	data := r.encodeConfiguration(configuration)
 	entry := NewLogEntry(configuration.Index, r.currentTerm, data, ConfigurationEntry)
 	if err := r.log.AppendEntry(entry); err != nil {
-		r.options.logger.Fatalf("failed to append entry to log: error = %v", err)
+		r.logger.Fatalf("failed to append entry to log: error = %v", err)
 	}
 }
 

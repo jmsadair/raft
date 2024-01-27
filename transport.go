@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -49,16 +51,6 @@ type Transport interface {
 		handler func(*InstallSnapshotRequest, *InstallSnapshotResponse) error,
 	)
 
-	// Connect establishes a connection with the provided address if there is not
-	// an existing one.
-	Connect(address string) error
-
-	// Close tears down a connection with the provided address if there is one.
-	Close(address string) error
-
-	// CloseAll tears down all connections.
-	CloseAll()
-
 	// EncodeConfiguration accepts a configuration and encodes it such that it can be
 	// decoded by DecodeConfiguration.
 	EncodeConfiguration(configuration *Configuration) ([]byte, error)
@@ -71,9 +63,64 @@ type Transport interface {
 	Address() string
 }
 
+// connectionManager handles creating new connections and closing existing ones.
+type connectionManager struct {
+	// The connections to the nodes in the cluster. Maps address to connection.
+	connections map[string]*grpc.ClientConn
+
+	// The clients used to make RPCs. Maps address to client.
+	clients map[string]pb.RaftClient
+
+	// The credentials each client will use.
+	creds credentials.TransportCredentials
+
+	mu sync.Mutex
+}
+
+func newConnectionManager(creds credentials.TransportCredentials) *connectionManager {
+	return &connectionManager{
+		connections: make(map[string]*grpc.ClientConn),
+		clients:     make(map[string]pb.RaftClient),
+		creds:       creds,
+	}
+}
+
+func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if client, ok := c.clients[address]; ok {
+		return client, nil
+	}
+
+	dialOptions := grpc.WithTransportCredentials(c.creds)
+	conn, err := grpc.Dial(address, dialOptions)
+	if err != nil {
+		return nil, fmt.Errorf("could not estabslish connection: %w", err)
+	}
+	c.connections[address] = conn
+	c.clients[address] = pb.NewRaftClient(conn)
+
+	return c.clients[address], nil
+}
+
+func (c *connectionManager) closeAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for address, conn := range c.connections {
+		conn.Close()
+		delete(c.connections, address)
+		delete(c.clients, address)
+	}
+}
+
 // transport is an implementation of the Transport interface.
 type transport struct {
 	pb.UnimplementedRaftServer
+
+	// Indicates whether the transport is started.
+	running bool
 
 	// The local network address.
 	address net.Addr
@@ -90,11 +137,8 @@ type transport struct {
 	// The function that is called when an InstallSnapshot RPC is recieved.
 	installSnapshotHandler func(*InstallSnapshotRequest, *InstallSnapshotResponse) error
 
-	// The connections to the nodes in the cluster. Maps address to connection.
-	connections map[string]*grpc.ClientConn
-
-	// The clients used to make RPCs. Maps address to client.
-	clients map[string]pb.RaftClient
+	// Manages connections to other members of the cluster.
+	connManager *connectionManager
 
 	mu sync.RWMutex
 }
@@ -107,28 +151,42 @@ func NewTransport(address string) (Transport, error) {
 		return nil, fmt.Errorf("could not resove tcp address: %w", err)
 	}
 
-	transport := &transport{
-		address:     resolvedAddress,
-		connections: make(map[string]*grpc.ClientConn),
-		clients:     make(map[string]pb.RaftClient),
-	}
-
-	return transport, nil
+	creds := insecure.NewCredentials()
+	connManager := newConnectionManager(creds)
+	return &transport{address: resolvedAddress, connManager: connManager}, nil
 }
 
 func (t *transport) Run() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.running {
+		return nil
+	}
+
 	listener, err := net.Listen(t.address.Network(), t.address.String())
 	if err != nil {
 		return fmt.Errorf("could not create listener: %w", err)
 	}
+
 	t.server = grpc.NewServer()
 	pb.RegisterRaftServer(t.server, t)
 	go t.server.Serve(listener)
+	t.running = true
+
 	return nil
 }
 
 func (t *transport) Shutdown() error {
+	t.mu.Lock()
+	if !t.running {
+		t.mu.Unlock()
+		return nil
+	}
+	t.running = false
+	t.mu.Unlock()
+
 	stopped := make(chan interface{})
+	defer t.connManager.closeAll()
 
 	go func() {
 		t.server.GracefulStop()
@@ -152,12 +210,15 @@ func (t *transport) SendAppendEntries(
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	client, ok := t.clients[address]
-	if !ok {
-		return AppendEntriesResponse{}, fmt.Errorf(
-			"could not make AppendEntries RPC: no connection to %s",
-			address,
+	if !t.running {
+		return AppendEntriesResponse{}, errors.New(
+			"could not make AppendEntries RPC: transport is closed",
 		)
+	}
+
+	client, err := t.connManager.getClient(address)
+	if err != nil {
+		return AppendEntriesResponse{}, fmt.Errorf("could not get client connection: %w", err)
 	}
 
 	pbRequest := makeProtoAppendEntriesRequest(request)
@@ -176,12 +237,15 @@ func (t *transport) SendRequestVote(
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	client, ok := t.clients[address]
-	if !ok {
-		return RequestVoteResponse{}, fmt.Errorf(
-			"could not make RequestVote RPC: no connection to %s",
-			address,
+	if !t.running {
+		return RequestVoteResponse{}, errors.New(
+			"could not make AppendEntries RPC: transport is closed",
 		)
+	}
+
+	client, err := t.connManager.getClient(address)
+	if err != nil {
+		return RequestVoteResponse{}, fmt.Errorf("could not get client connection: %w", err)
 	}
 
 	pbRequest := makeProtoRequestVoteRequest(request)
@@ -200,12 +264,15 @@ func (t *transport) SendInstallSnapshot(
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	client, ok := t.clients[address]
-	if !ok {
-		return InstallSnapshotResponse{}, fmt.Errorf(
-			"could not make InstallSnapshot RPC: no connection to %s",
-			address,
+	if !t.running {
+		return InstallSnapshotResponse{}, errors.New(
+			"could not make AppendEntries RPC: transport is closed",
 		)
+	}
+
+	client, err := t.connManager.getClient(address)
+	if err != nil {
+		return InstallSnapshotResponse{}, fmt.Errorf("could not get client connection: %w", err)
 	}
 
 	pbRequest := makeProtoInstallSnapshotRequest(request)
@@ -253,54 +320,6 @@ func (t *transport) DecodeConfiguration(data []byte) (Configuration, error) {
 
 func (t *transport) Address() string {
 	return t.address.String()
-}
-
-func (t *transport) Connect(address string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if _, ok := t.connections[address]; ok {
-		return nil
-	}
-
-	creds := insecure.NewCredentials()
-	dialOptions := grpc.WithTransportCredentials(creds)
-	conn, err := grpc.Dial(address, dialOptions)
-	if err != nil {
-		return fmt.Errorf("could not estabslish connection: %w", err)
-	}
-	t.connections[address] = conn
-	t.clients[address] = pb.NewRaftClient(conn)
-
-	return nil
-}
-
-func (t *transport) Close(address string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	conn, ok := t.connections[address]
-	if !ok {
-		return nil
-	}
-	if err := conn.Close(); err != nil {
-		return fmt.Errorf("could not close connection: %w", err)
-	}
-	delete(t.connections, address)
-	delete(t.clients, address)
-
-	return nil
-}
-
-func (t *transport) CloseAll() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for address, conn := range t.connections {
-		conn.Close()
-		delete(t.connections, address)
-		delete(t.clients, address)
-	}
 }
 
 // AppendEntries handles the AppendEntries gRPC request.

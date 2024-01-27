@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -72,7 +73,11 @@ func makeRaft(
 		return nil, err
 	}
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
-	raft, err := NewRaft(id, address, fsm, dataPath, WithLogger(logger))
+	transport, err := newTransportMock(address)
+	if err != nil {
+		return nil, err
+	}
+	raft, err := NewRaft(id, address, fsm, dataPath, WithLogger(logger), WithTransport(transport))
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +107,63 @@ func decodeOperations(data []byte) ([]Operation, error) {
 		return operations, err
 	}
 	return operations, nil
+}
+
+type transportMock struct {
+	Transport
+	isDisconnected bool
+	disconnected   sync.Map
+}
+
+func newTransportMock(address string) (*transportMock, error) {
+	base, err := NewTransport(address)
+	if err != nil {
+		return nil, err
+	}
+	return &transportMock{
+		Transport:    base,
+		disconnected: sync.Map{},
+	}, nil
+}
+
+func (t *transportMock) disconnect(address string) {
+	t.disconnected.Store(address, true)
+}
+
+func (t *transportMock) connect(address string) {
+	t.disconnected.Delete(address)
+}
+
+func (t *transportMock) SendAppendEntries(
+	address string,
+	request AppendEntriesRequest,
+) (AppendEntriesResponse, error) {
+	if _, ok := t.disconnected.Load(address); ok {
+		return AppendEntriesResponse{}, errors.New("could not send AppendEntries RPC: disconnected")
+	}
+	return t.Transport.SendAppendEntries(address, request)
+}
+
+func (t *transportMock) SendRequestVote(
+	address string,
+	request RequestVoteRequest,
+) (RequestVoteResponse, error) {
+	if _, ok := t.disconnected.Load(address); ok {
+		return RequestVoteResponse{}, errors.New("could not send RequestVote RPC: disconnected")
+	}
+	return t.Transport.SendRequestVote(address, request)
+}
+
+func (t *transportMock) SendInstallSnapshot(
+	address string,
+	request InstallSnapshotRequest,
+) (InstallSnapshotResponse, error) {
+	if _, ok := t.disconnected.Load(address); ok {
+		return InstallSnapshotResponse{}, errors.New(
+			"could not send InstallSnapshot RPC: disconnected",
+		)
+	}
+	return t.Transport.SendInstallSnapshot(address, request)
 }
 
 type stateMachineMock struct {
@@ -196,8 +258,8 @@ type testCluster struct {
 	// The directories containing the persisted state for each node.
 	dirs map[string]string
 
-	// The nodes which are disconnected.
-	disconnected map[string]bool
+	// The transport for each node.
+	transports map[string]*transportMock
 
 	// The state machine associated with each node.
 	stateMachines map[string]*stateMachineMock
@@ -215,7 +277,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	nodes := make(map[string]*Raft, numServers)
 	dirs := make(map[string]string, numServers)
 	stateMachines := make(map[string]*stateMachineMock, numServers)
-	disconnected := make(map[string]bool)
+	transports := make(map[string]*transportMock, numServers)
 	configuration := makeClusterConfiguration(numServers)
 
 	// Create the nodes.
@@ -226,6 +288,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 			t.Fatalf("failed to create node: error = %v", err)
 		}
 		stateMachines[id] = node.fsm.(*stateMachineMock)
+		transports[id] = node.transport.(*transportMock)
 		dirs[id] = tmpDir
 		nodes[id] = node
 	}
@@ -233,7 +296,7 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 	return &testCluster{
 		t:             t,
 		nodes:         nodes,
-		disconnected:  disconnected,
+		transports:    transports,
 		configuration: configuration,
 		stateMachines: stateMachines,
 		dirs:          dirs,
@@ -336,6 +399,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		tc.nodes[id] = node
 		tc.dirs[id] = tmpDir
 		tc.stateMachines[id] = node.fsm.(*stateMachineMock)
+		tc.transports[id] = node.transport.(*transportMock)
 
 		// Start the node as a non-voting member with no configuration.
 		if err := node.Start(); err != nil {
@@ -433,7 +497,7 @@ func (tc *testCluster) removeServer(id string) {
 			delete(tc.nodes, id)
 			delete(tc.dirs, id)
 			delete(tc.stateMachines, id)
-			delete(tc.disconnected, id)
+			delete(tc.transports, id)
 			return
 		}
 
@@ -593,7 +657,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) string {
 			// 2. In a minority partition - it may only communicate with
 			//    a minority of the cluster. Members of the majority partition
 			//    cannot communicate with it.
-			if status.State == Leader && !tc.disconnected[status.ID] {
+			if status.State == Leader && !tc.transports[node.id].isDisconnected {
 				leaders = append(leaders, status.ID)
 			}
 		}
@@ -689,6 +753,7 @@ func (tc *testCluster) restart(id string) {
 		tc.t.Fatalf("failed to create node: error = %v", err)
 	}
 	tc.nodes[id] = node
+	tc.transports[id] = node.transport.(*transportMock)
 	tc.stateMachines[id] = node.fsm.(*stateMachineMock)
 	node.Start()
 }
@@ -700,10 +765,13 @@ func (tc *testCluster) createPartition() {
 	// The number of nodes in the partition.
 	partitionSize := (len(tc.nodes) - 1) / 2
 
+	disconnected := make(map[string]bool)
+
 	// Choose random nodes to partition.
 	for id := range tc.nodes {
-		tc.disconnected[id] = true
-		if len(tc.disconnected) == partitionSize {
+		tc.transports[id].isDisconnected = true
+		disconnected[id] = true
+		if len(disconnected) == partitionSize {
 			break
 		}
 	}
@@ -712,27 +780,13 @@ func (tc *testCluster) createPartition() {
 	// that are not, but maintain connections between the nodes
 	// that are in the partition set.
 	for id1, node1 := range tc.nodes {
-		if _, ok := tc.disconnected[id1]; ok {
+		if _, ok := disconnected[id1]; ok {
 			for id2, node2 := range tc.nodes {
-				if _, ok := tc.disconnected[id2]; ok {
+				if _, ok := disconnected[id2]; ok {
 					continue
 				}
-				if err := node1.transport.Close(node2.address); err != nil {
-					tc.t.Fatalf(
-						"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
-						node1.id,
-						node2.id,
-						err,
-					)
-				}
-				if err := node2.transport.Close(node1.address); err != nil {
-					tc.t.Fatalf(
-						"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
-						node2.id,
-						node1.id,
-						err,
-					)
-				}
+				tc.transports[node1.id].disconnect(node2.address)
+				tc.transports[node2.id].disconnect(node1.address)
 			}
 		}
 	}
@@ -751,25 +805,11 @@ func (tc *testCluster) reconnectServer(id string) {
 		if node1 == node2 {
 			continue
 		}
-		if err := node1.transport.Connect(node2.address); err != nil {
-			tc.t.Fatalf(
-				"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
-				node1.id,
-				node2.id,
-				err,
-			)
-		}
-		if err := node2.transport.Connect(node1.address); err != nil {
-			tc.t.Fatalf(
-				"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
-				node1.id,
-				node2.id,
-				err,
-			)
-		}
+		tc.transports[node1.id].connect(node2.address)
+		tc.transports[node2.id].connect(node1.address)
 	}
 
-	delete(tc.disconnected, id)
+	tc.transports[id].isDisconnected = false
 }
 
 func (tc *testCluster) reconnectAllServers() {
@@ -781,18 +821,10 @@ func (tc *testCluster) reconnectAllServers() {
 			if node1 == node2 {
 				continue
 			}
-			if err := node1.transport.Connect(node2.address); err != nil {
-				tc.t.Fatalf(
-					"failed reconnecting node: ID = %s, connectingToID = %s, error = %v",
-					node1.id,
-					node2.id,
-					err,
-				)
-			}
+			tc.transports[node1.id].connect(node2.address)
+			tc.transports[node1.id].isDisconnected = false
 		}
 	}
-
-	tc.disconnected = map[string]bool{}
 }
 
 func (tc *testCluster) disconnectRandom() string {
@@ -802,7 +834,7 @@ func (tc *testCluster) disconnectRandom() string {
 	notDisconnected := make([]string, 0, len(tc.nodes))
 
 	for id := range tc.nodes {
-		if _, ok := tc.disconnected[id]; !ok {
+		if !tc.transports[id].isDisconnected {
 			notDisconnected = append(notDisconnected, id)
 		}
 	}
@@ -830,25 +862,11 @@ func (tc *testCluster) disconnect(id string) {
 		if node1 == node2 {
 			continue
 		}
-		if err := node1.transport.Close(node2.address); err != nil {
-			tc.t.Fatalf(
-				"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
-				node1.id,
-				node2.id,
-				err,
-			)
-		}
-		if err := node2.transport.Close(node1.address); err != nil {
-			tc.t.Fatalf(
-				"failed disconnecting node: ID = %s, disconnectingFromID = %s, error = %v",
-				node2.id,
-				node1.id,
-				err,
-			)
-		}
+		tc.transports[node1.id].disconnect(node2.address)
+		tc.transports[node2.id].disconnect(node1.address)
 	}
 
-	tc.disconnected[id] = true
+	tc.transports[node1.id].isDisconnected = true
 }
 
 func (tc *testCluster) unusedIDandAddress() (string, string) {

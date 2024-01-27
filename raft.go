@@ -484,9 +484,9 @@ func (r *Raft) start(restore bool) error {
 // Stop stops the raft consensus protocol if is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if r.state == Shutdown {
+		r.mu.Unlock()
 		return
 	}
 
@@ -498,7 +498,6 @@ func (r *Raft) Stop() {
 
 	r.mu.Unlock()
 	r.wg.Wait()
-	r.mu.Lock()
 
 	// Close any connections to other nodes in the cluster and stop accepting RPCs.
 	r.transport.CloseAll()
@@ -1406,13 +1405,12 @@ func (r *Raft) InstallSnapshot(
 	if entry, _ := r.log.GetEntry(request.LastIncludedIndex); entry != nil &&
 		entry.Term == request.LastIncludedTerm {
 		// Wait for all operations up to last included index have been applied before compacting the log.
-		// This is necessary since compacting the log may remove log entries that have yet to be applied.
-		for r.lastApplied < request.LastIncludedIndex {
+		for r.state != Shutdown && r.lastApplied < request.LastIncludedIndex {
 			r.applyCond.Wait()
 		}
 
 		// It's possible that a snapshot was taken and the log was compacted while the lock was released.
-		if r.lastIncludedIndex > request.LastIncludedIndex {
+		if r.state == Shutdown || r.lastIncludedIndex > request.LastIncludedIndex {
 			return nil
 		}
 
@@ -1420,14 +1418,17 @@ func (r *Raft) InstallSnapshot(
 		if err := r.log.Compact(request.LastIncludedIndex); err != nil {
 			r.options.logger.Fatalf("failed to compact log: error = %v", err)
 		}
+
 		return nil
 	}
 
-	// Restore the state machine with the snapshot.
 	snapshot, err := r.snapshotStorage.SnapshotFile()
 	if err != nil {
 		r.options.logger.Fatalf("failed to get snapshot file: error = %v", err)
 	}
+
+	// Restore the state machine with the snapshot.
+	// This could take a while so it's probably best that the lock is released.
 	r.mu.Unlock()
 	r.options.logger.Warnf(
 		"restoring state machine with snapshot: lastIndex = %d, lastTerm = %d",
@@ -1441,6 +1442,11 @@ func (r *Raft) InstallSnapshot(
 		r.options.logger.Fatalf("failed to close snapshot file: error = %v", err)
 	}
 	r.mu.Lock()
+
+	if r.state == Shutdown {
+		return nil
+	}
+
 	r.lastApplied = request.LastIncludedIndex
 	r.commitIndex = request.LastIncludedIndex
 
@@ -1708,7 +1714,7 @@ func (r *Raft) applyLoop() {
 
 		// Scan the log starting at the entry following the last applied entry
 		// and apply any entries that have been committed.
-		for r.lastApplied < r.commitIndex {
+		for r.lastApplied < r.commitIndex && r.state != Shutdown {
 			entry, err := r.log.GetEntry(r.lastApplied + 1)
 			if err != nil {
 				r.options.logger.Fatalf("failed to get entry from log: error = %v", err)
@@ -1872,6 +1878,19 @@ func (r *Raft) becomeFollower(leaderID string, term uint64) {
 	r.options.logger.Infof("entered the follower state: term = %d", r.currentTerm)
 }
 
+// stepDown transitions a node from the leader state to the follower state when it
+// has been removed from the cluster. Unlike becomeFollower, stepDown does not persist
+// the current term and vote.
+func (r *Raft) stepdown() {
+	r.state = Follower
+
+	// Cancel any pending operations.
+	r.operationManager.notifyLostLeaderShip(r.id, r.leaderID)
+	r.operationManager = newOperationManager(r.options.leaseDuration)
+
+	r.options.logger.Info("stepped down to the follower state")
+}
+
 // tryApplyReadOnlyOperations renews the lease and notifies the read-only
 // loop that it may be possible to apply some read-only operations.
 func (r *Raft) tryApplyReadOnlyOperations() {
@@ -1928,10 +1947,18 @@ func (r *Raft) persistTermAndVote() {
 func (r *Raft) nextConfiguration(next *Configuration) {
 	r.options.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
-	// Step down if this node is being removed.
+	defer func() {
+		r.configuration = next
+	}()
+
+	// Step down if this node is being removed and it is the leader.
 	if r.configuration.Members[r.id] != next.Members[r.id] {
+		if r.state == Leader {
+			r.stepdown()
+		}
 		r.resetSnapshotFiles()
-		r.state = Follower
+		r.transport.CloseAll()
+		return
 	}
 
 	// Close any connections with removed nodes.
@@ -1969,8 +1996,6 @@ func (r *Raft) nextConfiguration(next *Configuration) {
 			}
 		}
 	}
-
-	r.configuration = next
 }
 
 // encodeConfiguration encodes the provided configuration.

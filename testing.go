@@ -110,9 +110,22 @@ func decodeOperations(data []byte) ([]Operation, error) {
 }
 
 type transportMock struct {
+	// The underlying transport used by the node.
 	Transport
+
+	// Indicates whether this node has been disconnected.
+	// This is mainly used to ignore illegitimate leaders
+	// when the cluster is partitioned.
 	isDisconnected bool
-	disconnected   sync.Map
+
+	// The addresses that this node is disconnected from.
+	// If an address is disconnected, this node will be unable
+	// to make RPCs to it.
+	disconnected sync.Map
+
+	// Represents a percentage of RPCs that should fail.
+	// This value must be bewteen 0 and 100.
+	lossRate int
 }
 
 func newTransportMock(address string) (*transportMock, error) {
@@ -134,11 +147,16 @@ func (t *transportMock) connect(address string) {
 	t.disconnected.Delete(address)
 }
 
+func (t *transportMock) shouldDropMessage() bool {
+	num := util.RandomInt(1, 101)
+	return num < t.lossRate
+}
+
 func (t *transportMock) SendAppendEntries(
 	address string,
 	request AppendEntriesRequest,
 ) (AppendEntriesResponse, error) {
-	if _, ok := t.disconnected.Load(address); ok {
+	if _, ok := t.disconnected.Load(address); ok || t.shouldDropMessage() {
 		return AppendEntriesResponse{}, errors.New("could not send AppendEntries RPC: disconnected")
 	}
 	return t.Transport.SendAppendEntries(address, request)
@@ -148,7 +166,7 @@ func (t *transportMock) SendRequestVote(
 	address string,
 	request RequestVoteRequest,
 ) (RequestVoteResponse, error) {
-	if _, ok := t.disconnected.Load(address); ok {
+	if _, ok := t.disconnected.Load(address); ok || t.shouldDropMessage() {
 		return RequestVoteResponse{}, errors.New("could not send RequestVote RPC: disconnected")
 	}
 	return t.Transport.SendRequestVote(address, request)
@@ -158,7 +176,7 @@ func (t *transportMock) SendInstallSnapshot(
 	address string,
 	request InstallSnapshotRequest,
 ) (InstallSnapshotResponse, error) {
-	if _, ok := t.disconnected.Load(address); ok {
+	if _, ok := t.disconnected.Load(address); ok || t.shouldDropMessage() {
 		return InstallSnapshotResponse{}, errors.New(
 			"could not send InstallSnapshot RPC: disconnected",
 		)
@@ -270,10 +288,20 @@ type testCluster struct {
 	// The maximum number of log entries per snapshot if snapshotting is enabled.
 	snapshotSize int
 
+	// A percentage indicating how often RPCs should be dropped. The value
+	// should be 0 for a fully functioning network.
+	lossRate int
+
 	mu sync.RWMutex
 }
 
-func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize int) *testCluster {
+func newCluster(
+	t *testing.T,
+	numServers int,
+	snapshotting bool,
+	snapshotSize int,
+	lossRate int,
+) *testCluster {
 	nodes := make(map[string]*Raft, numServers)
 	dirs := make(map[string]string, numServers)
 	stateMachines := make(map[string]*stateMachineMock, numServers)
@@ -288,9 +316,12 @@ func newCluster(t *testing.T, numServers int, snapshotting bool, snapshotSize in
 			t.Fatalf("failed to create node: error = %v", err)
 		}
 		stateMachines[id] = node.fsm.(*stateMachineMock)
-		transports[id] = node.transport.(*transportMock)
 		dirs[id] = tmpDir
 		nodes[id] = node
+
+		nodeTransport := node.transport.(*transportMock)
+		nodeTransport.lossRate = lossRate
+		transports[id] = nodeTransport
 	}
 
 	return &testCluster{
@@ -753,8 +784,13 @@ func (tc *testCluster) restart(id string) {
 		tc.t.Fatalf("failed to create node: error = %v", err)
 	}
 	tc.nodes[id] = node
-	tc.transports[id] = node.transport.(*transportMock)
 	tc.stateMachines[id] = node.fsm.(*stateMachineMock)
+
+	// Ensure the set loss rate is preserved.
+	nodeTransport := node.transport.(*transportMock)
+	nodeTransport.lossRate = tc.lossRate
+	tc.transports[id] = nodeTransport
+
 	node.Start()
 }
 
@@ -770,7 +806,6 @@ func (tc *testCluster) createPartition() {
 	// Choose random nodes to partition.
 	for id := range tc.nodes {
 		tc.transports[id].isDisconnected = true
-		disconnected[id] = true
 		if len(disconnected) == partitionSize {
 			break
 		}

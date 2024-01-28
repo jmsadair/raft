@@ -806,6 +806,7 @@ func (tc *testCluster) createPartition() {
 	// Choose random nodes to partition.
 	for id := range tc.nodes {
 		tc.transports[id].isDisconnected = true
+		disconnected[id] = true
 		if len(disconnected) == partitionSize {
 			break
 		}

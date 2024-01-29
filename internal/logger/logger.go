@@ -64,7 +64,7 @@ func NewLogger(opts ...Option) (*Logger, error) {
 	if options.prefix == "" {
 		options.prefix = defaultPrefix
 	}
-	if options.level == 0 {
+	if options.level < 0 {
 		options.level = Info
 	}
 

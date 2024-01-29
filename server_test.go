@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 // TestSingleServerElection checks whether a cluster consisting of
 // a single server can elect a leader.
 func TestSingleServerElection(t *testing.T) {
-	cluster := newCluster(t, 1, snapshotting, snapshotSize)
+	cluster := newCluster(t, 1, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -42,7 +42,7 @@ func TestSingleServerElection(t *testing.T) {
 // TestBasicElection checks whether a cluster can elect a leader
 // when there are no failures.
 func TestBasicElection(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -53,7 +53,7 @@ func TestBasicElection(t *testing.T) {
 // TestElectLeaderDisconnect checks whether a cluster can
 // still elect a leader when a single server is Disconnected.
 func TestElectLeaderDisconnect(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -69,7 +69,7 @@ func TestElectLeaderDisconnect(t *testing.T) {
 // TestFailElectLeaderDisconnect checks whether a leader is
 // elected when a majority of the servers are Disconnected.
 func TestFailElectLeaderDisconnect(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -88,7 +88,7 @@ func TestFailElectLeaderDisconnect(t *testing.T) {
 // TestRemoveLeaderElection checks that a cluster can still elect a leader when the
 // current one is removed.
 func TestRemoveLeaderElection(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -103,7 +103,7 @@ func TestRemoveLeaderElection(t *testing.T) {
 // considering quorum - if the cluster originally has 3 voting members and 2
 // non-voting members are added, leadership should only require 2 votes.
 func TestNonVoterElectionSuccess(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -128,7 +128,7 @@ func TestNonVoterElectionSuccess(t *testing.T) {
 // TestNotVoterElectionFail checks that non-voting members are unable
 // to elect a leader. Non-voting members cannot vote in elections.
 func TestNonVoterElectionFailure(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -159,7 +159,7 @@ func TestNonVoterElectionFailure(t *testing.T) {
 // TestNewMembersCanLead checks that voting members added to
 // an existing cluster are able to be elected as leaders.
 func TestNewMembersCanLead(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -191,7 +191,7 @@ func TestNewMembersCanLead(t *testing.T) {
 // TestSingleServerSubmit checks whether a cluster consisting of
 // a single server can commit a single operation.
 func TestSingleServerSubmit(t *testing.T) {
-	cluster := newCluster(t, 1, snapshotting, snapshotSize)
+	cluster := newCluster(t, 1, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -206,7 +206,7 @@ func TestSingleServerSubmit(t *testing.T) {
 // TestSubmit checks whether the cluster can successfully
 // commit a single operation when there are no failures.
 func TestSubmit(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -221,7 +221,7 @@ func TestSubmit(t *testing.T) {
 // TestMultipleSubmit checks whether a cluster can successfully
 // commit multiple operations when there are no failures.
 func TestMultipleSubmit(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -237,7 +237,7 @@ func TestMultipleSubmit(t *testing.T) {
 // applied when there are multiple clients submitting operations
 // at the same time.
 func TestConcurrentSubmit(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -280,7 +280,7 @@ func TestConcurrentSubmit(t *testing.T) {
 // TestNewMemberSubmit checks that submitted operations are correctly
 // replicated to new members of the cluster.
 func TestNewMemberSubmit(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -309,7 +309,7 @@ func TestNewMemberSubmit(t *testing.T) {
 // operations when a majority of its voting members are down. Non-voting
 // members should not affect quorum.
 func TestNonVoterSubmitFail(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -336,7 +336,7 @@ func TestNonVoterSubmitFail(t *testing.T) {
 // TestRemoveSubmitSuccess checks that operations can be committed
 // after members of the cluster are removed.
 func TestRemoveSubmitSuccess(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -366,7 +366,7 @@ func TestRemoveSubmitSuccess(t *testing.T) {
 // TestSubmitConcurrentMembers checks that concurrently submitted operations are committed
 // in the face of membership changes.
 func TestSubmitConcurrentMembership(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -423,7 +423,7 @@ func TestSubmitConcurrentMembership(t *testing.T) {
 // TestSubmitDisconnect checks that a cluster can still
 // commit operations after the leader is disconnected.
 func TestSubmitDisconnect(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -441,7 +441,7 @@ func TestSubmitDisconnect(t *testing.T) {
 // handles leaders being disconnected and rejoining after operations
 // are submitted.
 func TestSubmitDisconnectRejoin(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -479,7 +479,7 @@ func TestSubmitDisconnectRejoin(t *testing.T) {
 // commit operations when a majority of the servers are completely
 // disconnected from the cluster but still online.
 func TestSubmitDisconnectFail(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -496,11 +496,11 @@ func TestSubmitDisconnectFail(t *testing.T) {
 	cluster.submit(true, Replicated, operations...)
 }
 
-// TestUnreliableNetwork tests whether a cluster can still make
-// progress submitting multiple operations when multiple servers
-// become disconnected from the rest of the cluster.
-func TestUnreliableNetwork(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+// TestMultiDisconnect tests whether a cluster can still make
+// progress submitting multiple operations when nodes are
+// being disconnected and reconnected to the cluster.
+func TestUMultiDisconnect(t *testing.T) {
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	done := int32(0)
 	wg := sync.WaitGroup{}
@@ -545,11 +545,29 @@ func TestUnreliableNetwork(t *testing.T) {
 	cluster.checkStateMachines(5, operations)
 }
 
+// TestUnreliableNetwork tests whether a cluster can still make
+// progress submitting multiple operations when 50 percent of the
+// message sent over the network are dropped.
+func TestUnreliableNetwork(t *testing.T) {
+	lossPercent := 50
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, lossPercent)
+
+	cluster.startCluster()
+	defer cluster.stopCluster()
+	cluster.checkLeaders(false)
+
+	// See if we can commit operations in the face of network failures.
+	operations := makeOperations(500)
+	cluster.submit(false, Replicated, operations...)
+
+	cluster.checkStateMachines(5, operations)
+}
+
 // TestBasicPartition checks that a cluster can still make
 // progress submitting multiple operations when there is a single
 // partition.
 func TestBasicPartition(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -576,7 +594,7 @@ func TestBasicPartition(t *testing.T) {
 // progress submitting multiple operations in the presence of
 // multiple partitions.
 func TestMultiPartition(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -622,7 +640,7 @@ func TestMultiPartition(t *testing.T) {
 // progress submitting multiple operations in the presence of
 // multiple and changing partitions and changing membership.
 func TestMultiPartitionMembership(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	// A go routine to create partitions.
 	done := int32(0)
@@ -684,7 +702,7 @@ func TestMultiPartitionMembership(t *testing.T) {
 // TestBasicCrash checks that a cluster can still make
 // progress after a single server crashes.
 func TestBasicCrash(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -705,7 +723,7 @@ func TestBasicCrash(t *testing.T) {
 // handles a server crashing and coming back online
 // after operations are submitted.
 func TestCrashRejoin(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -732,7 +750,7 @@ func TestCrashRejoin(t *testing.T) {
 // cluster in the face of multiple crashes. The added members may also
 // be crashed
 func TestMultiCrashMembership(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -795,7 +813,7 @@ func TestMultiCrashMembership(t *testing.T) {
 // progress committing operations in the face of multiple
 // crashes.
 func TestMultiCrash(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	// A go routine to crash random servers every so often.
 	done := int32(0)
@@ -840,9 +858,11 @@ func TestMultiCrash(t *testing.T) {
 }
 
 // TestDisconnectCrashPartition checks whether the cluster can still
-// make progress when there are disconnections, crashes, and partitions.
+// make progress when there are disconnections, crashes, and partitions and
+// the network is lossy.
 func TestDisconnectCrashPartition(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	lossPercent := 20
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, lossPercent)
 
 	// A go routine to crash, disconnect, and partition random servers every so often.
 	done := int32(0)
@@ -903,7 +923,7 @@ func TestDisconnectCrashPartition(t *testing.T) {
 // progress committing operations after all the servers
 // crash and come back online.
 func TestAllCrash(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -935,7 +955,7 @@ func TestAllCrash(t *testing.T) {
 // TestBasicReadOnly checks that a read-only operation submitted under normal conditions
 // are successful.
 func TestBasicReadOnly(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -949,7 +969,7 @@ func TestBasicReadOnly(t *testing.T) {
 
 // TestSingleServerReadOnly checks that read-only operations are successful in the single server case.
 func TestSingleServerReadOnly(t *testing.T) {
-	cluster := newCluster(t, 1, snapshotting, snapshotSize)
+	cluster := newCluster(t, 1, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -966,7 +986,7 @@ func TestSingleServerReadOnly(t *testing.T) {
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
 // from a majority of the partition is rejected.
 func TestReadOnlyFail(t *testing.T) {
-	cluster := newCluster(t, 3, snapshotting, snapshotSize)
+	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()
@@ -993,7 +1013,7 @@ func TestReadOnlyFail(t *testing.T) {
 // after the old one is disconnected, thereby allowing successful read-only
 // operations.
 func TestReadOnlyDisconnect(t *testing.T) {
-	cluster := newCluster(t, 5, snapshotting, snapshotSize)
+	cluster := newCluster(t, 5, snapshotting, snapshotSize, 0)
 
 	cluster.startCluster()
 	defer cluster.stopCluster()

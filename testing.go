@@ -185,10 +185,16 @@ func (t *transportMock) SendInstallSnapshot(
 }
 
 type stateMachineMock struct {
-	operations   []Operation
+	// All operations applied to the state machine.
+	operations []Operation
+
+	// Indicates whether snapshotting is enabled.
 	snapshotting bool
+
+	// The number of operations contained in a snapshot.
 	snapshotSize int
-	mu           sync.Mutex
+
+	mu sync.Mutex
 }
 
 func newStateMachineMock(snapshotting bool, snapshotSize int) *stateMachineMock {
@@ -336,13 +342,17 @@ func newCluster(
 	}
 }
 
-// This starts the test cluster and should always be called before any operations
-// are submitted or any failures are inflicted. This is not concurrent safe and should
-// only be called once.
 func (tc *testCluster) startCluster() {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
+	bootstrapped := false
 	for _, node := range tc.nodes {
-		if err := node.Bootstrap(tc.configuration.Members); err != nil {
-			tc.t.Fatalf("failed to bootstrap node: error = %v", err)
+		if !bootstrapped {
+			if err := node.Bootstrap(tc.configuration.Members); err != nil {
+				tc.t.Fatalf("failed to bootstrap node: error = %v", err)
+			}
+			bootstrapped = true
 		}
 		if err := node.Start(); err != nil {
 			tc.t.Fatalf("failed to start node: error = %v", err)
@@ -350,14 +360,19 @@ func (tc *testCluster) startCluster() {
 	}
 }
 
-// This stops the test cluster. This is not concurrent safe and should only
-// be called once.
 func (tc *testCluster) stopCluster() {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+
 	for _, node := range tc.nodes {
 		node.Stop()
 	}
 }
 
+// submit is used to submit an operation to the cluster. If expectFail is true, the test expects
+// the submission to fail and will panic if the submission succeeds. Otherwise, if expectFail is
+// false, the test expects the operation to succeed and will panic if it does not succeed after
+// a predefined amount of time.
 func (tc *testCluster) submit(
 	expectFail bool,
 	operationType OperationType,
@@ -409,18 +424,15 @@ func (tc *testCluster) submit(
 	}
 }
 
+// addServer is used to add a new node node to the cluster with the provided
+// ID and address. If isVoter is true, the node will be added as a voting
+// member. Otherwise, the node will be added as a non-voting member. If the node
+// does not already exist, it will be created and started. This function will panic
+// if the request to add the server is not successful after a predefined amount of
+// time. This function should always be called in the same thread as removeServer.
 func (tc *testCluster) addServer(id string, address string, isVoter bool) {
-	// Create a new node if necessary.
 	tc.mu.Lock()
 	if _, ok := tc.nodes[id]; !ok {
-		// This is currently not supported and it isn't really useful to create a new node
-		// as a voting member if it is going to be dynamically added to the cluster.
-		if isVoter {
-			tc.t.Fatalf(
-				"cannot add a node as a voter that does not already exist as a non-voting member",
-			)
-		}
-
 		// Create the node
 		tmpDir := tc.t.TempDir()
 		node, err := makeRaft(id, address, tmpDir, tc.snapshotting, tc.snapshotSize)
@@ -430,7 +442,10 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 		tc.nodes[id] = node
 		tc.dirs[id] = tmpDir
 		tc.stateMachines[id] = node.fsm.(*stateMachineMock)
-		tc.transports[id] = node.transport.(*transportMock)
+
+		nodeTransport := node.transport.(*transportMock)
+		nodeTransport.lossRate = tc.lossRate
+		tc.transports[id] = nodeTransport
 
 		// Start the node as a non-voting member with no configuration.
 		if err := node.Start(); err != nil {
@@ -445,8 +460,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 	start := time.Now()
 	for time.Since(start).Seconds() < maxMembershipChangeTime {
 		for _, node := range tc.nodes {
-			// Submit the request to add a  member to the cluster.
-			// This node might be the leader.
+			// Submit the request to add a  member to the cluster. This node might be the leader.
 			future := node.AddServer(id, address, isVoter, futureTimeout)
 			response := future.Await()
 			if err := response.Error(); err != nil {
@@ -482,7 +496,7 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 			return
 		}
 
-		// Sleep a little in case the cluster needs to stabilize.
+		// Sleep a bit in case the cluster needs to stabilize.
 		tc.mu.RUnlock()
 		time.Sleep(defaultElectionTimeout)
 		tc.mu.RLock()
@@ -491,14 +505,16 @@ func (tc *testCluster) addServer(id string, address string, isVoter bool) {
 	tc.t.Fatalf("timed out trying to add a node: ID = %s, address = %s", id, address)
 }
 
+// removeServer is used to remove the node with the provided ID from the cluster.
+// Once removed, the node will be stopped. This function will panic if the request
+// to remove the server is not successful after a predefined amount of time. This
+// function should always be called in the same thread as addServer.
 func (tc *testCluster) removeServer(id string) {
-	// Attempt to remove the node from the cluster.
 	tc.mu.RLock()
 	start := time.Now()
 	for time.Since(start).Seconds() < maxMembershipChangeTime {
 		for _, node := range tc.nodes {
-			// Submit the request to remove a member to the cluster.
-			// This node might be the leader.
+			// Submit the request to remove a member to the cluster. This node might be the leader.
 			future := node.RemoveServer(id, futureTimeout)
 			response := future.Await()
 			if err := response.Error(); err != nil {
@@ -532,7 +548,7 @@ func (tc *testCluster) removeServer(id string) {
 			return
 		}
 
-		// Sleep a little in case the cluster needs to stabilize.
+		// Sleep a bit in case the cluster needs to stabilize.
 		tc.mu.RUnlock()
 		time.Sleep(defaultElectionTimeout)
 		tc.mu.RLock()
@@ -542,6 +558,13 @@ func (tc *testCluster) removeServer(id string) {
 	tc.t.Fatalf("timed out trying to remove a node: ID = %s", id)
 }
 
+// checkStateMachines will check that atleast expectedMatches state machines of the nodes in the
+// cluster match one another. The node with the highest number of applied operations is used as the
+// source of truth. If aleast expectedMatches state machines are not matching within a predefined
+// amount of time, this function will panic. If a sufficient number of state machines match but the
+// applied operations are not monotonic or are missing submitted operations, this function will panic.
+// This should only be called at the end of the test once all operations have been submitted but before
+// the cluster is shutdown.
 func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperations [][]byte) {
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
@@ -573,13 +596,7 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperatio
 		// Check that we have at least the expected number of matches and that
 		// the applied operations are correct.
 		if matches >= expectedMatches {
-			// Check that applied log indices are monotonically increasing on all
-			// state machines, not just those that are supposed to match.
-			for _, operations := range allAppliedOperations {
-				tc.checkMonotonicity(operations)
-			}
-			// Check that the matching state machines do contain all submitted
-			// operations. Since these match, it's fine to just check one.
+			// Check that the matching state machines do contain all submitted operations.
 			tc.checkContainsAll(matchID, submittedOperations, allAppliedOperations[matchID])
 			return
 		}
@@ -600,35 +617,36 @@ func (tc *testCluster) checkStateMachines(expectedMatches int, submittedOperatio
 	}
 }
 
-func (tc *testCluster) checkMonotonicity(operations []Operation) {
-	lastIndex := uint64(0)
-	for _, operation := range operations {
-		// The log index of each operation should never decrease.
-		// Note that there may be skipped log indices due to no-op entries and configuration entries.
-		if operation.LogIndex <= lastIndex {
-			tc.t.Fatalf(
-				"operations are not monotonic, indices should strictly increase: lastIndex = %d, index = %d",
-				lastIndex,
-				operation.LogIndex,
-			)
-		}
-		lastIndex = operation.LogIndex
-	}
-}
-
+// checkContainsAll checks that the array of applied operations contains exactly
+// the operations submitted and that the applied operations have applied in the
+// correct order. This function panics if this is not the case.
 func (tc *testCluster) checkContainsAll(
 	id string,
 	submittedOperations [][]byte,
 	appliedOperations []Operation,
 ) {
-	appliedSet := make(map[string]bool)
+	// Get all of the applied operations and filter out duplicates.
+	applied := make([][]byte, 0, len(submittedOperations))
+	var maxIndex uint64
 	for _, operation := range appliedOperations {
-		appliedSet[string(operation.Bytes)] = true
-	}
-	for _, operation := range submittedOperations {
-		if _, ok := appliedSet[string(operation)]; !ok {
-			tc.t.Fatalf("state machine is missing operations: ID = %s", id)
+		if operation.LogIndex > maxIndex {
+			applied = append(applied, operation.Bytes)
+			maxIndex = operation.LogIndex
 		}
+
+		// Log indices should always monotonically increase.
+		if operation.LogIndex < maxIndex {
+			tc.t.Fatalf(
+				"applied operations log indices are not monotonic: lastIndex = %d, index = %d",
+				maxIndex,
+				operation.LogIndex,
+			)
+		}
+	}
+
+	// Compare applied operations to submitted operations.
+	if !reflect.DeepEqual(applied, submittedOperations) {
+		tc.t.Fatal("applied operations do not match submitted operations")
 	}
 }
 
@@ -666,6 +684,12 @@ func (tc *testCluster) compareOperations(
 	tc.t.Fatal("state machines do not match: incorrect number of operations")
 }
 
+// checkLeaders ensures that the cluster has excactly one legitimate leader.
+// Leaders of partitioned minorities are considered illegitimate and are ignored.
+// Once a leader is found, its ID will be returned. If expectNoLeader is true, this
+// function will panic if it finds a node which is a leader. Otherwise, this function will
+// panic if it cannot find a leader within a predefined amount of time or if there are multiple
+// legitimate leaders.
 func (tc *testCluster) checkLeaders(expectNoLeader bool) string {
 	// Any leaders detected.
 	leaders := make([]string, 0, 1)
@@ -702,8 +726,7 @@ func (tc *testCluster) checkLeaders(expectNoLeader bool) string {
 			break
 		}
 
-		// If no leaders were found, sleep for a sufficient amount of time to allow
-		// an election to take place.
+		// If no leaders were found, sleep for a sufficient amount of time to allow an election to take place.
 		time.Sleep(defaultElectionTimeout)
 	}
 

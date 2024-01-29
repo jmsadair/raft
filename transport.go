@@ -10,8 +10,10 @@ import (
 
 	pb "github.com/jmsadair/raft/internal/protobuf"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 const shutdownGracePeriod = 300 * time.Millisecond
@@ -64,6 +66,7 @@ type Transport interface {
 }
 
 // connectionManager handles creating new connections and closing existing ones.
+// This implementation is concurrent safe.
 type connectionManager struct {
 	// The connections to the nodes in the cluster. Maps address to connection.
 	connections map[string]*grpc.ClientConn
@@ -85,6 +88,8 @@ func newConnectionManager(creds credentials.TransportCredentials) *connectionMan
 	}
 }
 
+// getClient will retrieve a client for the provided address. If one does not
+// exist, it will be created.
 func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -93,8 +98,11 @@ func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
 		return client, nil
 	}
 
-	dialOptions := grpc.WithTransportCredentials(c.creds)
-	conn, err := grpc.Dial(address, dialOptions)
+	conn, err := grpc.Dial(
+		address,
+		grpc.WithTransportCredentials(c.creds),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("could not estabslish connection: %w", err)
 	}
@@ -104,6 +112,7 @@ func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
 	return c.clients[address], nil
 }
 
+// closeAll closes all open connections.
 func (c *connectionManager) closeAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -143,14 +152,14 @@ type transport struct {
 	mu sync.RWMutex
 }
 
-// NewTransport creates a new instance of Transport that will
-// serve incoming RPCs at the provided address.
+// NewTransport creates a new instance of Transport that can
+// be used to make RPCs and serve incoming RPCs at the provided
+// address.
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("could not resove tcp address: %w", err)
 	}
-
 	creds := insecure.NewCredentials()
 	connManager := newConnectionManager(creds)
 	return &transport{address: resolvedAddress, connManager: connManager}, nil
@@ -332,7 +341,7 @@ func (t *transport) AppendEntries(
 	appendEntriesRequest := makeAppendEntriesRequest(request)
 	appendEntriesResponse := &AppendEntriesResponse{}
 	if err := t.appendEntriesHandler(&appendEntriesRequest, appendEntriesResponse); err != nil {
-		return nil, err
+		return nil, status.Error(codes.Unavailable, err.Error())
 	}
 	return makeProtoAppendEntriesResponse(*appendEntriesResponse), nil
 }
@@ -347,7 +356,7 @@ func (t *transport) RequestVote(
 	requestVoteRequest := makeRequestVoteRequest(request)
 	requestVoteResponse := &RequestVoteResponse{}
 	if err := t.requestVoteHandler(&requestVoteRequest, requestVoteResponse); err != nil {
-		return nil, err
+		return nil, status.Error(codes.Unavailable, err.Error())
 	}
 	return makeProtoRequestVoteResponse(*requestVoteResponse), nil
 }
@@ -362,7 +371,7 @@ func (t *transport) InstallSnapshot(
 	installSnapshotRequest := makeInstallSnapshotRequest(request)
 	installSnapshotResponse := &InstallSnapshotResponse{}
 	if err := t.installSnapshotHandler(&installSnapshotRequest, installSnapshotResponse); err != nil {
-		return nil, err
+		return nil, status.Error(codes.Unavailable, err.Error())
 	}
 	return makeProtoInstallSnapshotResponse(*installSnapshotResponse), nil
 }

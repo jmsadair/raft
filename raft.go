@@ -366,10 +366,10 @@ func (r *Raft) restore() error {
 
 // Bootstrap initializes this node with a cluster configuration.
 // The configuration must contain the ID and address of all nodes
-// in the cluster including this one and all nodes must agree on
-// this configuration. This should only be called when starting a
-// cluster for the first time and there is no existing configuration.
-// All nodes in the configuration will have voter status.
+// in the cluster including this one. This should only be called
+// when starting a cluster for the first time and there is no
+// existing configuration. This should only be called on a
+// single, voting member of the cluster.
 func (r *Raft) Bootstrap(configuration map[string]string) error {
 	if address, ok := configuration[r.id]; !ok || r.address != address {
 		return errors.New("configuration must contain this node")
@@ -740,7 +740,7 @@ func (r *Raft) submitReadOnlyOperation(
 
 	operation := &Operation{
 		Bytes:         operationBytes,
-		OperationType: LeaseBasedReadOnly,
+		OperationType: readOnlyType,
 		readIndex:     r.commitIndex,
 	}
 	r.operationManager.pendingReadOnly[operation] = operationFuture.responseCh
@@ -762,7 +762,8 @@ func (r *Raft) submitReadOnlyOperation(
 }
 
 // AppendEntries handles log replication requests from the leader. It takes a request to append
-// entries and fills the response with the result of the append operation.
+// entries and fills the response with the result of the append operation. This will return an error
+// if the node is shutdown.
 func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntriesResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -954,6 +955,13 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	}
 
 	follower := r.followers[id]
+	if follower == nil {
+		r.options.logger.Fatalf(
+			"nil follower: ID = %s, configuration = %s",
+			id,
+			r.configuration.String(),
+		)
+	}
 
 	// Send a snapshot instead if the follower log no longer contains the previous log entry.
 	if follower.nextIndex <= r.lastIncludedIndex {
@@ -1041,7 +1049,8 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 }
 
 // RequestVote handles vote requests from other nodes during elections. It takes a vote request
-// and fills the response with the result of the vote.
+// and fills the response with the result of the vote. This will return an error if the node is
+// shutdown.
 func (r *Raft) RequestVote(request *RequestVoteRequest, response *RequestVoteResponse) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1277,7 +1286,8 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int, prevote bo
 }
 
 // InstallSnapshot handles snapshot installation requests from the leader. It takes a request to
-// install a snapshot and fills the response with the result of the installation.
+// install a snapshot and fills the response with the result of the installation. This will
+// return an error if the node is shutdown.
 func (r *Raft) InstallSnapshot(
 	request *InstallSnapshotRequest,
 	response *InstallSnapshotResponse,
@@ -1934,19 +1944,22 @@ func (r *Raft) persistTermAndVote() {
 // of the next configuration, it will transition to a configuration consisting
 // of only itself with non-voter status.
 func (r *Raft) nextConfiguration(next *Configuration) {
-	r.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
+	r.logger.Infof(
+		"transitioning to new configuration: current = %s, next = %s",
+		r.configuration.String(),
+		next.String(),
+	)
 
 	defer func() {
 		r.configuration = next
 	}()
 
 	// Step down if this node is being removed and it is the leader.
-	if r.configuration.Members[r.id] != next.Members[r.id] {
+	if _, ok := next.Members[r.id]; !ok {
 		if r.state == Leader {
 			r.stepdown()
 		}
 		r.resetSnapshotFiles()
-		return
 	}
 
 	// Delete removed nodes from followers.

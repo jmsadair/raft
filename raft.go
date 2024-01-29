@@ -955,13 +955,6 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	}
 
 	follower := r.followers[id]
-	if follower == nil {
-		r.options.logger.Fatalf(
-			"nil follower: ID = %s, configuration = %s",
-			id,
-			r.configuration.String(),
-		)
-	}
 
 	// Send a snapshot instead if the follower log no longer contains the previous log entry.
 	if follower.nextIndex <= r.lastIncludedIndex {
@@ -1944,11 +1937,7 @@ func (r *Raft) persistTermAndVote() {
 // of the next configuration, it will transition to a configuration consisting
 // of only itself with non-voter status.
 func (r *Raft) nextConfiguration(next *Configuration) {
-	r.logger.Infof(
-		"transitioning to new configuration: current = %s, next = %s",
-		r.configuration.String(),
-		next.String(),
-	)
+	r.logger.Infof("transitioning to new configuration: configuration = %s", next.String())
 
 	defer func() {
 		r.configuration = next

@@ -19,9 +19,9 @@ import (
 const shutdownGracePeriod = 300 * time.Millisecond
 
 // Transport represents the underlying transport mechanism used by a node in a cluster
-// to send and recieve RPCs. It acts as both a server for this node and a client of other nodes.
+// to send and recieve RPCs. It acts as both a server for a node and a client of other nodes.
 type Transport interface {
-	// Run will start serving incoming RPCs recieved at the local network address.
+	// Run will start serving incoming RPCs received at the local network address.
 	Run() error
 
 	// Shutdown will stop the serving of incoming RPCs.
@@ -100,7 +100,7 @@ func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
 
 	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(c.creds))
 	if err != nil {
-		return nil, fmt.Errorf("could not estabslish connection: %w", err)
+		return nil, fmt.Errorf("could not establish connection: %w", err)
 	}
 	c.connections[address] = conn
 	c.clients[address] = pb.NewRaftClient(conn)

@@ -74,7 +74,7 @@ func TestAppendEntriesConflictSuccess(t *testing.T) {
 
 	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
-	defer func() { raft.transport.CloseAll() }()
+	defer func() { raft.transport.Shutdown() }()
 
 	raft.currentTerm = 2
 	raft.votedFor = "2"
@@ -471,7 +471,7 @@ func TestInstallSnapshotSuccess(t *testing.T) {
 
 	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
-	defer func() { raft.transport.CloseAll() }()
+	defer func() { raft.transport.Shutdown() }()
 
 	raft.currentTerm = 1
 	raft.followers = make(map[string]*follower)
@@ -554,7 +554,7 @@ func TestInstallSnapshotLeaderStepDownSuccess(t *testing.T) {
 
 	raft, err := makeRaft("1", "127.0.0.0:8080", tmpDir, false, 0)
 	require.NoError(t, err)
-	defer func() { raft.transport.CloseAll() }()
+	defer func() { raft.transport.Shutdown() }()
 
 	raft.currentTerm = 1
 	raft.state = Leader

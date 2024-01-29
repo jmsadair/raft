@@ -64,8 +64,8 @@ func NewLogger(opts ...Option) (*Logger, error) {
 	if options.prefix == "" {
 		options.prefix = defaultPrefix
 	}
-	if options.level == 0 {
-		options.level = Debug
+	if options.level < 0 {
+		options.level = Info
 	}
 
 	return &Logger{

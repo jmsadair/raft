@@ -346,13 +346,13 @@ func (tc *testCluster) startCluster() {
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
 
-	bootstrapped := false
 	for _, node := range tc.nodes {
-		if !bootstrapped {
-			if err := node.Bootstrap(tc.configuration.Members); err != nil {
-				tc.t.Fatalf("failed to bootstrap node: error = %v", err)
-			}
-			bootstrapped = true
+		// Bootstrap is normally just called on a single member but here
+		// we bootstrap all initial members of the cluster here to ensure that
+		// the configuration survives in case the test crashes nodes before
+		// the configuration is applied.
+		if err := node.Bootstrap(tc.configuration.Members); err != nil {
+			tc.t.Fatalf("failed to bootstrap node: error = %v", err)
 		}
 		if err := node.Start(); err != nil {
 			tc.t.Fatalf("failed to start node: error = %v", err)

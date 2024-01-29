@@ -19,5 +19,5 @@ func TestConfigurationEncoderDecoder(t *testing.T) {
 	decodedConfiguration, err := transport.DecodeConfiguration(encodedConfiguration)
 	require.NoError(t, err)
 
-	require.Equal(t, configuration, decodedConfiguration)
+	require.Equal(t, configuration, &decodedConfiguration)
 }

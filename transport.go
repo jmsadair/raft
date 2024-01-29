@@ -98,11 +98,7 @@ func (c *connectionManager) getClient(address string) (pb.RaftClient, error) {
 		return client, nil
 	}
 
-	conn, err := grpc.Dial(
-		address,
-		grpc.WithTransportCredentials(c.creds),
-		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
-	)
+	conn, err := grpc.Dial(address, grpc.WithTransportCredentials(c.creds))
 	if err != nil {
 		return nil, fmt.Errorf("could not estabslish connection: %w", err)
 	}

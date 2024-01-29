@@ -19,7 +19,7 @@ import (
 const shutdownGracePeriod = 300 * time.Millisecond
 
 // Transport represents the underlying transport mechanism used by a node in a cluster
-// to send and recieve RPCs.
+// to send and recieve RPCs. It acts as both a server for this node and a client of other nodes.
 type Transport interface {
 	// Run will start serving incoming RPCs recieved at the local network address.
 	Run() error

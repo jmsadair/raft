@@ -181,6 +181,9 @@ type Raft struct {
 	// Notifies election loop to start an election.
 	electionCond *sync.Cond
 
+	// Notifies snapshot loop that a snapshot should be taken.
+	snapshotCond *sync.Cond
+
 	// The current state of this raft node: leader, followers, or shutdown.
 	state State
 
@@ -291,6 +294,7 @@ func NewRaft(
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
 	raft.electionCond = sync.NewCond(&raft.mu)
+	raft.snapshotCond = sync.NewCond(&raft.mu)
 
 	if err := raft.restore(); err != nil {
 		return nil, err
@@ -455,13 +459,14 @@ func (r *Raft) start(restore bool) error {
 	r.lastContact = time.Now()
 	r.state = Follower
 
-	r.wg.Add(6)
+	r.wg.Add(7)
 	go r.readOnlyLoop()
 	go r.applyLoop()
 	go r.electionTicker()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
+	go r.snapshotLoop()
 
 	// Start serving incoming RPCs.
 	if err := r.transport.Run(); err != nil {
@@ -493,6 +498,7 @@ func (r *Raft) Stop() {
 	r.commitCond.Broadcast()
 	r.readOnlyCond.Broadcast()
 	r.electionCond.Broadcast()
+	r.snapshotCond.Broadcast()
 
 	r.mu.Unlock()
 	r.wg.Wait()
@@ -1464,6 +1470,19 @@ func (r *Raft) InstallSnapshot(
 	return nil
 }
 
+func (r *Raft) snapshotLoop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer r.wg.Done()
+
+	for r.state != Shutdown {
+		r.snapshotCond.Wait()
+		if r.fsm.NeedSnapshot(r.log.Size()) {
+			r.takeSnapshot()
+		}
+	}
+}
+
 // takeSnapshot takes a snapshot of the state machine. A snapshot will
 // only be taken if there is new state since the previous snapshot and there
 // is not a pending configuration change.
@@ -1754,7 +1773,7 @@ func (r *Raft) applyLoop() {
 
 			r.lastApplied++
 			if r.fsm.NeedSnapshot(r.log.Size()) {
-				r.takeSnapshot()
+				r.snapshotCond.Signal()
 			}
 		}
 

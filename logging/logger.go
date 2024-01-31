@@ -1,4 +1,4 @@
-package logger
+package logging
 
 import (
 	"fmt"
@@ -64,7 +64,7 @@ func NewLogger(opts ...Option) (*Logger, error) {
 	if options.prefix == "" {
 		options.prefix = defaultPrefix
 	}
-	if options.level < 0 {
+	if !options.levelSet {
 		options.level = Info
 	}
 

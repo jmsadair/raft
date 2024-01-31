@@ -1470,6 +1470,8 @@ func (r *Raft) InstallSnapshot(
 	return nil
 }
 
+// snapshotLoop is a long running loop that will takes a snapshot of the
+// state machine when signaled if one is necessary.
 func (r *Raft) snapshotLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1713,8 +1715,7 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-// applyLoop is a long running loop that applies replicated operations to the state machine
-// and takes snapshots when necessary.
+// applyLoop is a long running loop that applies replicated operations to the state machine.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/logging"
 )
 
 var (
@@ -130,7 +130,7 @@ type Raft struct {
 	options options
 
 	// The logger for this raft node.
-	logger Logger
+	logger *logging.Logger
 
 	// The network transport for sending and receiving RPCs.
 	transport Transport
@@ -181,6 +181,9 @@ type Raft struct {
 	// Notifies election loop to start an election.
 	electionCond *sync.Cond
 
+	// Notifies snapshot loop that a snapshot should be taken.
+	snapshotCond *sync.Cond
+
 	// The current state of this raft node: leader, followers, or shutdown.
 	state State
 
@@ -211,7 +214,7 @@ type Raft struct {
 }
 
 // NewRaft creates a new instance of Raft with the provided ID and address.
-// The datapath is the top level directory where state for this node will be persisted.
+// The datapath is the top level directory where all state for this node will be persisted.
 func NewRaft(
 	id string,
 	address string,
@@ -228,12 +231,8 @@ func NewRaft(
 	}
 
 	// Set default values if option not provided.
-	if options.logger == nil {
-		defaultLogger, err := logger.NewLogger()
-		if err != nil {
-			return nil, err
-		}
-		options.logger = defaultLogger
+	if !options.levelSet {
+		options.logLevel = logging.Info
 	}
 	if options.heartbeatInterval == 0 {
 		options.heartbeatInterval = defaultHeartbeat
@@ -273,10 +272,15 @@ func NewRaft(
 		options.transport = transport
 	}
 
+	logger, err := logging.NewLogger(logging.WithLevel(options.logLevel))
+	if err != nil {
+		return nil, err
+	}
+
 	raft := &Raft{
 		id:               id,
 		address:          address,
-		logger:           options.logger,
+		logger:           logger,
 		log:              options.log,
 		stateStorage:     options.stateStorage,
 		snapshotStorage:  options.snapshotStorage,
@@ -291,6 +295,7 @@ func NewRaft(
 	raft.commitCond = sync.NewCond(&raft.mu)
 	raft.readOnlyCond = sync.NewCond(&raft.mu)
 	raft.electionCond = sync.NewCond(&raft.mu)
+	raft.snapshotCond = sync.NewCond(&raft.mu)
 
 	if err := raft.restore(); err != nil {
 		return nil, err
@@ -366,10 +371,11 @@ func (r *Raft) restore() error {
 
 // Bootstrap initializes this node with a cluster configuration.
 // The configuration must contain the ID and address of all nodes
-// in the cluster including this one. This should only be called
-// when starting a cluster for the first time and there is no
-// existing configuration. This should only be called on a
-// single, voting member of the cluster.
+// in the cluster including this one.
+//
+// This function should only be called when starting a cluster for
+// the first time and there is no existing configuration. This should
+// only be called on a single, voting member of the cluster.
 func (r *Raft) Bootstrap(configuration map[string]string) error {
 	if address, ok := configuration[r.id]; !ok || r.address != address {
 		return errors.New("configuration must contain this node")
@@ -405,17 +411,20 @@ func (r *Raft) Bootstrap(configuration map[string]string) error {
 	return nil
 }
 
-// Start starts the node. If the node does not have an existing configuration,
-// a configuration will be created that only includes this node as a non-voter.
-// If the node has been started before, Restart should be called instead.
+// Start starts this node if it has not already been started.
+//
+// If the node does not have an existing configuration, a configuration
+// will be created that only includes this node as a non-voter. If the node
+// has been started before, Restart should be called instead.
 func (r *Raft) Start() error {
 	return r.start(false)
 }
 
-// Restart starts a node that has been started and stopped before. The difference
-// between Restart and Start is that Restart restores the state of the node from
-// non-volatile whereas Start does not. Restart should not be called if the node
-// is being started for the first time.
+// Restart starts a node that has been started and stopped before.
+//
+// The difference between Restart and Start is that Restart restores
+// the state of the node from non-volatile whereas Start does not. Restart
+// should not be called if the node is being started for the first time.
 func (r *Raft) Restart() error {
 	return r.start(true)
 }
@@ -455,13 +464,14 @@ func (r *Raft) start(restore bool) error {
 	r.lastContact = time.Now()
 	r.state = Follower
 
-	r.wg.Add(6)
+	r.wg.Add(7)
 	go r.readOnlyLoop()
 	go r.applyLoop()
 	go r.electionTicker()
 	go r.electionLoop()
 	go r.heartbeatLoop()
 	go r.commitLoop()
+	go r.snapshotLoop()
 
 	// Start serving incoming RPCs.
 	if err := r.transport.Run(); err != nil {
@@ -479,7 +489,7 @@ func (r *Raft) start(restore bool) error {
 	return nil
 }
 
-// Stop stops the raft consensus protocol if is not already stopped.
+// Stop stops this node if is not already stopped.
 func (r *Raft) Stop() {
 	r.mu.Lock()
 
@@ -493,6 +503,7 @@ func (r *Raft) Stop() {
 	r.commitCond.Broadcast()
 	r.readOnlyCond.Broadcast()
 	r.electionCond.Broadcast()
+	r.snapshotCond.Broadcast()
 
 	r.mu.Unlock()
 	r.wg.Wait()
@@ -528,7 +539,8 @@ func (r *Raft) Status() Status {
 }
 
 // Configuration returns the most current configuration of this node.
-// This configuration may or may not have been committed yet.
+// This configuration may or may not have been committed yet. If there
+// is no configuration, an empty configuration is returned.
 func (r *Raft) Configuration() Configuration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -539,11 +551,17 @@ func (r *Raft) Configuration() Configuration {
 }
 
 // AddServer will add a node with the provided ID and address to the cluster
-// and return a future for the resulting configuration. The provided ID must be
-// unique from the existing nodes in the cluster. If the configuration change
-// was not successful, the future will be populated with an error. It may be
-// necessary to resubmit the configuration change to this node or a different
-// node. It is safe to call AddServer as many times as needed
+// and return a future for the resulting configuration. It is generally recommended
+// to add a new node as a non-voting member before adding it as a voting member so that
+// it can become synced with the rest of the cluster.
+//
+// The provided ID must be unique from the existing nodes in the cluster.
+// If the configuration change was not successful, the returned future will
+// be populated with an error. It may be necessary to resubmit the configuration
+// change to this node or a different node. It is safe to call this function as
+// many times as necessary.
+//
+// It is is the caller's responsibility to implement retry logic.
 func (r *Raft) AddServer(
 	id string,
 	address string,
@@ -606,10 +624,13 @@ func (r *Raft) AddServer(
 
 // RemoveServer will remove the node with the provided ID from the cluster
 // and returns a future for the resulting configuration. Once removed, the node
-// will remain online as a non-voter and may safely be shutdown. If the configuration
-// change was not successful, the future will be populated with an error. It may be
-// necessary to resubmit the configuration change to this node or a different node. It
-// is safe to call RemoveServer as many times as needed
+// will remain online as a non-voter and may safely be shutdown.
+//
+// If the configuration change was not successful, the returned future will be populated
+// with an error. It may be necessary to resubmit the configuration change to this node
+// or a different node. It is safe to call this function as many times as necessary.
+//
+// It is the caller's responsibility to implement retry logic.
 func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configuration] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -661,12 +682,16 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 }
 
 // SubmitOperation accepts an operation for application to the state machine and returns a
-// future for the response to the operation. Even if the operation is submitted successfully,
-// is not guaranteed that it will be applied to the state machine if there are failures. Once
-// the operation has been applied to the state machine, the future will be populated with the
-// response. If the operation was unable to be applied to the state machine, the future will
-// be populated with an error. It may be necessary to resubmit the operation to this node
-// or a different node if it was unsuccessful.
+// future for the response to the operation. Once the operation has been applied to the state
+// machine, the returned future will be populated with the response.
+//
+// Even if the operation is submitted successfully, is not guaranteed that it will be applied
+// to the state machine if there are failures. If the operation was unable to be applied
+// to the state machine or the operation times out, the future will be populated with
+// an error.
+//
+// It may be necessary to resubmit the operation to this node or a different node if it failed.
+// It is the caller's responsibility to implement retry logic and to handle duplicate operations.
 func (r *Raft) SubmitOperation(
 	operation []byte,
 	operationType OperationType,
@@ -1464,6 +1489,21 @@ func (r *Raft) InstallSnapshot(
 	return nil
 }
 
+// snapshotLoop is a long running loop that will takes a snapshot of the
+// state machine when signaled if one is necessary.
+func (r *Raft) snapshotLoop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	defer r.wg.Done()
+
+	for r.state != Shutdown {
+		r.snapshotCond.Wait()
+		if r.fsm.NeedSnapshot(r.log.Size()) {
+			r.takeSnapshot()
+		}
+	}
+}
+
 // takeSnapshot takes a snapshot of the state machine. A snapshot will
 // only be taken if there is new state since the previous snapshot and there
 // is not a pending configuration change.
@@ -1694,8 +1734,7 @@ func (r *Raft) commitLoop() {
 	}
 }
 
-// applyLoop is a long running loop that applies replicated operations to the state machine
-// and takes snapshots when necessary.
+// applyLoop is a long running loop that applies replicated operations to the state machine.
 func (r *Raft) applyLoop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1754,7 +1793,7 @@ func (r *Raft) applyLoop() {
 
 			r.lastApplied++
 			if r.fsm.NeedSnapshot(r.log.Size()) {
-				r.takeSnapshot()
+				r.snapshotCond.Signal()
 			}
 		}
 

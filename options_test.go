@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmsadair/raft/internal/logger"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,19 +50,6 @@ func TestWithLeaseDuration(t *testing.T) {
 
 	// Test valid input
 	require.NoError(t, WithLeaseDuration(500*time.Millisecond)(options))
-}
-
-// TestWithLogger checks that the logger option only accepts non-nil loggers.
-func TestWithLogger(t *testing.T) {
-	options := &options{}
-
-	// Test nil input
-	require.Error(t, WithLogger(nil)(options))
-
-	// Test valid input
-	testLogger, err := logger.NewLogger()
-	require.NoError(t, err)
-	require.NoError(t, WithLogger(testLogger)(options))
 }
 
 // TestWithLog checks that the log option only accepts non-nil logs.

@@ -1,4 +1,4 @@
-package logger
+package logging
 
 import (
 	"fmt"
@@ -45,7 +45,7 @@ func (l Level) String() string {
 	}
 }
 
-// NewLogger creates a new logger instance with the provided options.
+// NewLogger creates a new :ogger instance with the provided options.
 // If no options are provided, default values are used.
 func NewLogger(opts ...Option) (*Logger, error) {
 	var options options
@@ -64,7 +64,7 @@ func NewLogger(opts ...Option) (*Logger, error) {
 	if options.prefix == "" {
 		options.prefix = defaultPrefix
 	}
-	if options.level < 0 {
+	if !options.levelSet {
 		options.level = Info
 	}
 

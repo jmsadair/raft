@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmsadair/raft/logging"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,7 @@ func TestNewRaft(t *testing.T) {
 	require.Equal(t, defaultHeartbeat, raft.options.heartbeatInterval)
 	require.Equal(t, defaultElectionTimeout, raft.options.electionTimeout)
 	require.Equal(t, defaultLeaseDuration, raft.options.leaseDuration)
-	require.NotNil(t, raft.options.logger)
+	require.Equal(t, logging.Info, raft.options.logLevel)
 }
 
 // TestAppendEntriesSuccess checks that raft handles a basic AppendEntries

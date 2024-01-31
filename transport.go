@@ -19,7 +19,8 @@ import (
 const shutdownGracePeriod = 300 * time.Millisecond
 
 // Transport represents the underlying transport mechanism used by a node in a cluster
-// to send and recieve RPCs. It acts as both a server for a node and a client of other nodes.
+// to send and receive RPCs. It is the implementers responsibility to provide functions
+// that invoke the registered handlers.
 type Transport interface {
 	// Run will start serving incoming RPCs received at the local network address.
 	Run() error
@@ -148,9 +149,7 @@ type transport struct {
 	mu sync.RWMutex
 }
 
-// NewTransport creates a new instance of Transport that can
-// be used to make RPCs and serve incoming RPCs at the provided
-// address.
+// NewTransport creates a new Transport instance.
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {
@@ -327,9 +326,6 @@ func (t *transport) Address() string {
 	return t.address.String()
 }
 
-// AppendEntries handles the AppendEntries gRPC request.
-// It converts the request to the internal representation, invokes the AppendEntries function on the Raft instance,
-// and returns the response.
 func (t *transport) AppendEntries(
 	ctx context.Context,
 	request *pb.AppendEntriesRequest,
@@ -342,9 +338,6 @@ func (t *transport) AppendEntries(
 	return makeProtoAppendEntriesResponse(*appendEntriesResponse), nil
 }
 
-// RequestVote handles the RequestVote gRPC request.
-// It converts the request to the internal representation, invokes the RequestVote function on the Raft instance,
-// and returns the response.
 func (t *transport) RequestVote(
 	ctx context.Context,
 	request *pb.RequestVoteRequest,
@@ -357,9 +350,6 @@ func (t *transport) RequestVote(
 	return makeProtoRequestVoteResponse(*requestVoteResponse), nil
 }
 
-// InstallSnapshot handles the InstallSnapshot gRPC request.
-// It converts the request to the internal representation, invokes the InstallSnapshot function on the Raft instance,
-// and returns the response.
 func (t *transport) InstallSnapshot(
 	ctx context.Context,
 	request *pb.InstallSnapshotRequest,

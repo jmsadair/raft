@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"time"
+
+	"github.com/jmsadair/raft/internal/util"
 )
 
 const (
@@ -52,8 +54,7 @@ func decodeMetadata(r io.Reader) (SnapshotMetadata, error) {
 	return metadata, nil
 }
 
-// SnapshotFile represents a component for reading and writing
-// snapshots.
+// SnapshotFile represents a component for reading and writing snapshots.
 type SnapshotFile interface {
 	io.ReadWriteSeeker
 	io.Closer
@@ -61,8 +62,7 @@ type SnapshotFile interface {
 	// Metadata returns the metadata associated with the snapshot file.
 	Metadata() SnapshotMetadata
 
-	// Discard deletes the snapshot and its metadata if it has not yet been
-	// saved.
+	// Discard deletes the snapshot and its metadata if it is incomplete.
 	Discard() error
 }
 
@@ -84,6 +84,8 @@ type SnapshotStorage interface {
 
 // snapshotFile implements the SnapshotFile interface.
 type snapshotFile struct {
+	io.ReadWriteSeeker
+
 	// The actual directory that will contain the snapshot and its metadata
 	// once the snapshot has safely been written to disk.
 	dir string
@@ -99,22 +101,24 @@ type snapshotFile struct {
 	metadata SnapshotMetadata
 }
 
-func (s *snapshotFile) Write(p []byte) (n int, err error) {
-	return s.file.Write(p)
-}
-
-func (s *snapshotFile) Read(p []byte) (n int, err error) {
-	return s.file.Read(p)
-}
-
-func (s *snapshotFile) Seek(offset int64, whence int) (int64, error) {
-	return s.file.Seek(offset, whence)
-}
-
 func (s *snapshotFile) Close() error {
 	if s.file == nil {
 		return nil
 	}
+
+	defer func() {
+		s.file = nil
+	}()
+
+	// If this file is in a temporary directory and a failure
+	// occurs, delete the directory.
+	isTmpDir := filepath.Dir(s.file.Name()) == s.tmpDir
+	success := false
+	defer func() {
+		if isTmpDir && !success {
+			_ = os.RemoveAll(s.tmpDir)
+		}
+	}()
 
 	// Ensure any written data is on disk.
 	if err := s.file.Sync(); err != nil {
@@ -124,16 +128,17 @@ func (s *snapshotFile) Close() error {
 		return fmt.Errorf("could not close file: %w", err)
 	}
 
-	defer func() {
-		s.file = nil
-	}()
-
 	// Perform an atomic rename of the temporary directory
 	// containing the snapshot and its metadata to its
 	// permanent name since it is safely on disk now.
-	if filepath.Dir(s.file.Name()) == s.tmpDir {
-		return os.Rename(s.tmpDir, s.dir)
+	if isTmpDir {
+		if err := os.Rename(s.tmpDir, s.dir); err != nil {
+			return fmt.Errorf("could not perform rename: %w", err)
+		}
 	}
+
+	// If there was a rename, it was successful.
+	success = true
 
 	return nil
 }
@@ -160,12 +165,32 @@ type persistentSnapshotStorage struct {
 	snapshotDir string
 }
 
-// NewSnapshotStorage creates a new snapshot storage at the provided path.
+// NewSnapshotStorage creates a new SnapshotStorage instance.
+//
+// Snapshots will be stored at path/snapshots. Any directories
+// on the path that do not exist will be created. Each snapshot
+// that is created will have its own directory.
+//
+// For example, below is one possible snapshot directory:
+//
+// snapshots/
+// ....snapshot-timestamp/
+// ........snapshot.bin
+// ........metadata.json
+//
+// Each snapshot directory is named using a timestamp taken at the
+// time of its creation.
 func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	snapshotPath := filepath.Join(path, snapshotDirBase)
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("could not create snapshot directory for snapshot storage: %w", err)
 	}
+
+	// Delete any temporary files or directories that may have been partially written before a crash.
+	if err := util.RemoveTmpFiles(snapshotPath); err != nil {
+		return nil, fmt.Errorf("could not remove temporary files: %w", err)
+	}
+
 	return &persistentSnapshotStorage{snapshotDir: snapshotPath}, nil
 }
 
@@ -174,7 +199,7 @@ func (p *persistentSnapshotStorage) NewSnapshotFile(
 ) (SnapshotFile, error) {
 	// The temporary directory that will contain the snapshot and its metadata.
 	// This directory will be renamed once the snapshot has been safely written to disk.
-	tmpDir, err := os.MkdirTemp(p.snapshotDir, "tmp-")
+	tmpDir, err := os.MkdirTemp(p.snapshotDir, "tmp-snapshot")
 	if err != nil {
 		return nil, fmt.Errorf("could not  directory for snapshot: %w", err)
 	}
@@ -206,10 +231,11 @@ func (p *persistentSnapshotStorage) NewSnapshotFile(
 	}
 
 	return &snapshotFile{
-		dir:      filepath.Join(p.snapshotDir, buildDirectoryBase()),
-		tmpDir:   tmpDir,
-		file:     dataFile,
-		metadata: metadata,
+		ReadWriteSeeker: dataFile,
+		dir:             filepath.Join(p.snapshotDir, buildDirectoryBase()),
+		tmpDir:          tmpDir,
+		file:            dataFile,
+		metadata:        metadata,
 	}, nil
 }
 
@@ -241,8 +267,9 @@ func (p *persistentSnapshotStorage) SnapshotFile() (SnapshotFile, error) {
 	}
 
 	return &snapshotFile{
-		file:     dataFile,
-		metadata: metadata,
+		ReadWriteSeeker: dataFile,
+		file:            dataFile,
+		metadata:        metadata,
 	}, nil
 }
 

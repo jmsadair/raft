@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/logging"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,26 +68,23 @@ func makeRaft(
 	snapshotting bool,
 	snapshotSize int,
 ) (*Raft, error) {
-	logger, err := makeLogger(id)
-	if err != nil {
-		return nil, err
-	}
 	fsm := newStateMachineMock(snapshotting, snapshotSize)
 	transport, err := newTransportMock(address)
 	if err != nil {
 		return nil, err
 	}
-	raft, err := NewRaft(id, address, fsm, dataPath, WithLogger(logger), WithTransport(transport))
+	raft, err := NewRaft(
+		id,
+		address,
+		fsm,
+		dataPath,
+		WithLogLevel(logging.Debug),
+		WithTransport(transport),
+	)
 	if err != nil {
 		return nil, err
 	}
 	return raft, nil
-}
-
-func makeLogger(id string) (Logger, error) {
-	prefix := fmt.Sprintf("raft-%s:", id)
-	level := logger.Debug
-	return logger.NewLogger(logger.WithLevel(level), logger.WithPrefix(prefix))
 }
 
 func encodeOperations(operations []Operation) ([]byte, error) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	pb "github.com/jmsadair/raft/internal/protobuf"
+	"github.com/jmsadair/raft/internal/util"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -18,16 +19,13 @@ const (
 	stateDirBase = "state"
 )
 
-// StateStorage represents the component of Raft responsible for persistently storing
-// term and vote.
+// StateStorage represents the component of Raft responsible for persistently storing term and vote.
 type StateStorage interface {
-	// SetState persists the provided state. The storage must be open otherwise an
-	// error is returned.
+	// SetState persists the provided term and vote.
 	SetState(term uint64, vote string) error
 
-	// State returns the most recently persisted state in the storage. If there is
-	// no pre-existing state or the storage is closed, zero and an empty string
-	// will be returned. If the state storage is not open, an error will be returned.
+	// State returns the most recently persisted term and vote in the storage.
+	// If there is no pre-existing state, zero and an empty string will be returned.
 	State() (uint64, string, error)
 }
 
@@ -90,37 +88,49 @@ type persistentStateStorage struct {
 	state *persistentState
 }
 
-// NewStateStorage creates a new state storage.
+// NewStateStorage creates a new instance of a StateStorage.
+//
 // The file containing the state will be located at path/state/state.bin.
+// Any directories on path that do not exist will be created.
 func NewStateStorage(path string) (StateStorage, error) {
 	stateDir := filepath.Join(path, stateDirBase)
 	if err := os.MkdirAll(stateDir, os.ModePerm); err != nil {
 		return nil, fmt.Errorf("could not create state directory: %w", err)
 	}
+
+	// Delete any temporary files or directories that may have been partially written before a crash.
+	if err := util.RemoveTmpFiles(stateDir); err != nil {
+		return nil, fmt.Errorf("could not remove temporary files: %w", err)
+	}
+
 	return &persistentStateStorage{stateDir: stateDir}, nil
 }
 
 func (p *persistentStateStorage) SetState(term uint64, votedFor string) error {
-	tmpFile, err := os.CreateTemp(p.stateDir, "tmp-")
+	tmpFile, err := os.CreateTemp(p.stateDir, "tmp-state")
 	if err != nil {
 		return fmt.Errorf("could not create temporary file: %w", err)
 	}
 
+	// Remove the temporary file if the rename is not successful.
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(tmpFile.Name())
+		}
+	}()
+
+	// Write the state to the temporary file and perform the rename.
 	p.state = &persistentState{term: term, votedFor: votedFor}
 	if err := encodePersistentState(tmpFile, p.state); err != nil {
 		return fmt.Errorf("could not encode state: %w", err)
 	}
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("could not sync temporary file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("could not close temporary file: %w", err)
-	}
-
 	filename := filepath.Join(p.stateDir, stateBase)
 	if err := os.Rename(tmpFile.Name(), filename); err != nil {
 		return fmt.Errorf("could not rename temporary file: %w", err)
 	}
+
+	success = true
 
 	return nil
 }

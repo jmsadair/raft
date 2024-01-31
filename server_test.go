@@ -984,7 +984,7 @@ func TestSingleServerReadOnly(t *testing.T) {
 }
 
 // TestReadOnlyFail checks that a read-only operation submitted when a leader has not received heartbeats
-// from a majority of the partition is rejected.
+// from a majority of the cluster is rejected.
 func TestReadOnlyFail(t *testing.T) {
 	cluster := newCluster(t, 3, snapshotting, snapshotSize, 0)
 
@@ -998,14 +998,14 @@ func TestReadOnlyFail(t *testing.T) {
 	cluster.disconnectServer(leader)
 	cluster.disconnectRandom()
 
+	// Give the lease some time to expire.
+	time.Sleep(defaultLeaseDuration)
+
 	// Linearizable read-only operation should fail since the heartbeats
 	// of the leader will not be succesful.
 	cluster.submit(true, LinearizableReadOnly, []byte{})
 
-	// Give the lease some time to expire.
-	time.Sleep(defaultLeaseDuration)
-
-	// Make sure the read-only operation fails.
+	// Lease-based read-only operation should fail too since the lease cannot be renewed.
 	cluster.submit(true, LeaseBasedReadOnly, []byte{})
 }
 

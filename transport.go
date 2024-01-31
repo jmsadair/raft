@@ -149,9 +149,7 @@ type transport struct {
 	mu sync.RWMutex
 }
 
-// NewTransport creates a new instance of Transport that can
-// be used to make RPCs and serve incoming RPCs at the provided
-// address.
+// NewTransport creates a new Transport instance.
 func NewTransport(address string) (Transport, error) {
 	resolvedAddress, err := net.ResolveTCPAddr("tcp", address)
 	if err != nil {

@@ -54,8 +54,7 @@ func decodeMetadata(r io.Reader) (SnapshotMetadata, error) {
 	return metadata, nil
 }
 
-// SnapshotFile represents a component for reading and writing
-// snapshots.
+// SnapshotFile represents a component for reading and writing snapshots.
 type SnapshotFile interface {
 	io.ReadWriteSeeker
 	io.Closer
@@ -63,8 +62,7 @@ type SnapshotFile interface {
 	// Metadata returns the metadata associated with the snapshot file.
 	Metadata() SnapshotMetadata
 
-	// Discard deletes the snapshot and its metadata if it has not yet been
-	// saved.
+	// Discard deletes the snapshot and its metadata if it is incomplete.
 	Discard() error
 }
 
@@ -167,7 +165,21 @@ type persistentSnapshotStorage struct {
 	snapshotDir string
 }
 
-// NewSnapshotStorage creates a new snapshot storage at the provided path.
+// NewSnapshotStorage creates a new SnapshotStorage instance.
+//
+// Snapshots will be stored at path/snapshots. Any directories
+// on the path that do not exist will be created. Each snapshot
+// that is created will have its own directory.
+//
+// For example, below is one possible snapshot directory:
+//
+// snapshots/
+// ....snapshot-timestamp/
+// ........snapshot.bin
+// ........metadata.json
+//
+// Each snapshot directory is named using a timestamp taken at the
+// time of its creation.
 func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	snapshotPath := filepath.Join(path, snapshotDirBase)
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {

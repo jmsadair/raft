@@ -19,16 +19,13 @@ const (
 	stateDirBase = "state"
 )
 
-// StateStorage represents the component of Raft responsible for persistently storing
-// term and vote.
+// StateStorage represents the component of Raft responsible for persistently storing term and vote.
 type StateStorage interface {
-	// SetState persists the provided state. The storage must be open otherwise an
-	// error is returned.
+	// SetState persists the provided term and vote.
 	SetState(term uint64, vote string) error
 
-	// State returns the most recently persisted state in the storage. If there is
-	// no pre-existing state or the storage is closed, zero and an empty string
-	// will be returned. If the state storage is not open, an error will be returned.
+	// State returns the most recently persisted term and vote in the storage.
+	// If there is no pre-existing state, zero and an empty string will be returned.
 	State() (uint64, string, error)
 }
 
@@ -91,8 +88,10 @@ type persistentStateStorage struct {
 	state *persistentState
 }
 
-// NewStateStorage creates a new state storage.
+// NewStateStorage creates a new instance of a StateStorage.
+//
 // The file containing the state will be located at path/state/state.bin.
+// Any directories on path that do not exist will be created.
 func NewStateStorage(path string) (StateStorage, error) {
 	stateDir := filepath.Join(path, stateDirBase)
 	if err := os.MkdirAll(stateDir, os.ModePerm); err != nil {

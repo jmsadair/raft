@@ -101,8 +101,7 @@ type LogEntry struct {
 	EntryType LogEntryType
 }
 
-// NewLogEntry creates a new instance of LogEntry with the provided
-// index, term, and data.
+// NewLogEntry creates a new instance of a LogEntry with the provided index, term, data, and type.
 func NewLogEntry(index uint64, term uint64, data []byte, entryType LogEntryType) *LogEntry {
 	return &LogEntry{Index: index, Term: term, Data: data, EntryType: entryType}
 }
@@ -179,7 +178,9 @@ type persistentLog struct {
 }
 
 // NewLog creates a new Log instance.
+//
 // The file containing the log will be created at path/log/log.bin.
+// Any directories on the path that do not exist will be created.
 func NewLog(path string) (Log, error) {
 	logDir := filepath.Join(path, "log")
 	if err := os.MkdirAll(logDir, fs.ModePerm); err != nil {

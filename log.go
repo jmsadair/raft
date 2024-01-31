@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	pb "github.com/jmsadair/raft/internal/protobuf"
+	"github.com/jmsadair/raft/internal/util"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -184,6 +185,12 @@ func NewLog(path string) (Log, error) {
 	if err := os.MkdirAll(logDir, fs.ModePerm); err != nil {
 		return nil, fmt.Errorf("could not make directories for log file: %w", err)
 	}
+
+	// Delete any temporary files or directories that may have been partially written before a crash.
+	if err := util.RemoveTmpFiles(logDir); err != nil {
+		return nil, fmt.Errorf("could not remove temporary files: %w", err)
+	}
+
 	return &persistentLog{logDir: logDir}, nil
 }
 
@@ -357,7 +364,7 @@ func (l *persistentLog) DiscardEntries(index uint64, term uint64) error {
 		return errors.New("could not discard log: log not open")
 	}
 
-	tmpFile, err := os.CreateTemp(l.logDir, "tmp-")
+	tmpFile, err := os.CreateTemp(l.logDir, "tmp-log")
 	if err != nil {
 		return fmt.Errorf("could not create temporary file: %w", err)
 	}
@@ -393,20 +400,38 @@ func (l *persistentLog) Size() int {
 }
 
 func (l *persistentLog) rename(tmpFile *os.File) error {
+	// Delete the temporary file if the rename is not successful.
+	success := false
+	defer func() {
+		if !success {
+			_ = os.Remove(tmpFile.Name())
+		}
+	}()
+
+	// Ensure all data is on disk and the files are closed
+	// before performing the rename.
 	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("could not sync file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("could not close file: %w", err)
 	}
+	if err := l.file.Sync(); err != nil {
+		return fmt.Errorf("could not sync file: %w", err)
+	}
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("could not close file: %w", err)
 	}
 
+	// Perform the rename.
 	if err := os.Rename(tmpFile.Name(), l.file.Name()); err != nil {
 		return fmt.Errorf("could not perform rename: %w", err)
 	}
 
+	// Ensure temporary file is not removed.
+	success = true
+
+	// Open the log file again and prepare it for writes.
 	fileName := filepath.Join(l.logDir, "log.bin")
 	file, err := os.OpenFile(fileName, os.O_RDWR, 0o666)
 	if err != nil {

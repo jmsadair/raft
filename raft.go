@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/logger"
 	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/logging"
 )
 
 var (
@@ -130,7 +130,7 @@ type Raft struct {
 	options options
 
 	// The logger for this raft node.
-	logger Logger
+	logger *logging.Logger
 
 	// The network transport for sending and receiving RPCs.
 	transport Transport
@@ -231,12 +231,8 @@ func NewRaft(
 	}
 
 	// Set default values if option not provided.
-	if options.logger == nil {
-		defaultLogger, err := logger.NewLogger()
-		if err != nil {
-			return nil, err
-		}
-		options.logger = defaultLogger
+	if !options.levelSet {
+		options.logLevel = logging.Info
 	}
 	if options.heartbeatInterval == 0 {
 		options.heartbeatInterval = defaultHeartbeat
@@ -276,10 +272,15 @@ func NewRaft(
 		options.transport = transport
 	}
 
+	logger, err := logging.NewLogger(logging.WithLevel(options.logLevel))
+	if err != nil {
+		return nil, err
+	}
+
 	raft := &Raft{
 		id:               id,
 		address:          address,
-		logger:           options.logger,
+		logger:           logger,
 		log:              options.log,
 		stateStorage:     options.stateStorage,
 		snapshotStorage:  options.snapshotStorage,

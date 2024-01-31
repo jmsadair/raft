@@ -4,54 +4,23 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jmsadair/raft/logging"
 )
 
 const (
 	minElectionTimeout     = time.Duration(100 * time.Millisecond)
-	maxElectionTimeout     = time.Duration(2000 * time.Millisecond)
+	maxElectionTimeout     = time.Duration(3000 * time.Millisecond)
 	defaultElectionTimeout = time.Duration(300 * time.Millisecond)
 
 	minHeartbeat     = time.Duration(25 * time.Millisecond)
-	maxHeartbeat     = time.Duration(300 * time.Millisecond)
+	maxHeartbeat     = time.Duration(1000 * time.Millisecond)
 	defaultHeartbeat = time.Duration(50 * time.Millisecond)
 
 	minLeaseDuration     = time.Duration(25 * time.Millisecond)
-	maxLeaseDuration     = time.Duration(500 * time.Millisecond)
+	maxLeaseDuration     = time.Duration(1500 * time.Millisecond)
 	defaultLeaseDuration = time.Duration(100 * time.Millisecond)
 )
-
-// Logger supports logging messages at the debug, info, warn, error, and fatal level.
-type Logger interface {
-	// Debug logs a message at debug level.
-	Debug(args ...interface{})
-
-	// Debugf logs a formatted message at debug level.
-	Debugf(format string, args ...interface{})
-
-	// Info logs a message at info level.
-	Info(args ...interface{})
-
-	// Infof logs a formatted message at info level.
-	Infof(format string, args ...interface{})
-
-	// Warn logs a message at warn level.
-	Warn(args ...interface{})
-
-	// Warnf logs a formatted message at warn level.
-	Warnf(format string, args ...interface{})
-
-	// Error logs a message at error level.
-	Error(args ...interface{})
-
-	// Errorf logs a formatted message at error level.
-	Errorf(format string, args ...interface{})
-
-	// Fatal logs a message at fatal level.
-	Fatal(args ...interface{})
-
-	// Fatalf logs a formatted message at fatal level.
-	Fatalf(format string, args ...interface{})
-}
 
 type options struct {
 	// Minimum election timeout in milliseconds. A random time
@@ -66,8 +35,11 @@ type options struct {
 	// The duration that a lease remains valid upon renewal.
 	leaseDuration time.Duration
 
-	// A logger for debugging and important events.
-	logger Logger
+	// The level of logged messages.
+	logLevel logging.Level
+
+	// Indicates if log level was set or not.
+	levelSet bool
 
 	// A provided log that can be used by raft.
 	log Log
@@ -123,13 +95,11 @@ func WithLeaseDuration(leaseDuration time.Duration) Option {
 	}
 }
 
-// WithLogger sets the logger used by the Raft.
-func WithLogger(logger Logger) Option {
+// WithLogger sets the log level used by raft.
+func WithLogLevel(level logging.Level) Option {
 	return func(options *options) error {
-		if logger == nil {
-			return errors.New("logger must not be nil")
-		}
-		options.logger = logger
+		options.logLevel = level
+		options.levelSet = true
 		return nil
 	}
 }

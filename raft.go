@@ -579,9 +579,8 @@ func (r *Raft) AddServer(
 		return configurationFuture
 	}
 
-	// Membership changes may not be submitted until a log entry for this
-	// term is submitted.
-	if r.log.LastTerm() != r.currentTerm {
+	// Membership changes may not be submitted until a log entry for this term is committed.
+	if !r.committedThisTerm() {
 		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
 		return configurationFuture
 	}
@@ -643,9 +642,8 @@ func (r *Raft) RemoveServer(id string, timeout time.Duration) Future[Configurati
 		return configurationFuture
 	}
 
-	// Membership changes may not be submitted until a log entry for this
-	// term is submitted.
-	if r.log.LastTerm() != r.currentTerm {
+	// Membership changes may not be submitted until a log entry for this term is committed.
+	if !r.committedThisTerm() {
 		respond(configurationFuture.responseCh, Configuration{}, ErrNoCommitThisTerm)
 		return configurationFuture
 	}
@@ -769,9 +767,15 @@ func (r *Raft) submitReadOnlyOperation(
 		readIndex:     r.commitIndex,
 	}
 	r.operationManager.pendingReadOnly[operation] = operationFuture.responseCh
+
+	// If the last applied index is at least as the large as the read index, the
+	// lease-based read can be served immediately.
 	if readOnlyType == LeaseBasedReadOnly && operation.readIndex <= r.lastApplied {
 		r.readOnlyCond.Broadcast()
 	}
+
+	// Linearizable read-only operations are served in batches. Verify quorum if is
+	// is not already being verified.
 	if readOnlyType == LinearizableReadOnly && r.operationManager.shouldVerifyQuorum {
 		r.sendAppendEntriesToPeers()
 		r.operationManager.shouldVerifyQuorum = false
@@ -1273,7 +1277,8 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int, prevote bo
 	}
 
 	// Ensure this response is not stale. It is possible that this node has started another election.
-	if r.currentTerm > request.Term {
+	// Ensure that this node is still a voting member.
+	if r.currentTerm > request.Term || r.isVoter(r.id) {
 		return
 	}
 
@@ -1823,8 +1828,8 @@ func (r *Raft) readOnlyLoop() {
 		r.readOnlyCond.Wait()
 		// Only the leader may apply read-only operations and it is
 		// only safe to apply them once the leader has committed
-		// atleast one log entry.
-		if r.state != Leader || r.log.LastTerm() != r.currentTerm {
+		// at least one log entry.
+		if r.state != Leader || !r.committedThisTerm() {
 			continue
 		}
 
@@ -1961,6 +1966,24 @@ func (r *Raft) hasQuorum(count int) bool {
 		}
 	}
 	return count > voters/2
+}
+
+// committedThisTerm returns true if a log entry from the current term
+// has been committed and false otherwise.
+func (r *Raft) committedThisTerm() bool {
+	// The log contains the commit index.
+	// Check if the term of the committed entry  matches the current term.
+	if r.log.Contains(r.commitIndex) {
+		entry, err := r.log.GetEntry(r.commitIndex)
+		if err != nil {
+			r.logger.Fatalf("failed to get entry from log: error = %v", err)
+		}
+		return entry.Term == r.currentTerm
+	}
+
+	// The log must have been compacted.
+	// Check if the snapshot contains a log entry from this term.
+	return r.lastIncludedTerm == r.currentTerm
 }
 
 // persistTermAndVote writes the term and vote for this node to non-volatile storage.

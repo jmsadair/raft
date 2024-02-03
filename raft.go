@@ -1278,7 +1278,7 @@ func (r *Raft) sendRequestVote(id string, address string, votes *int, prevote bo
 
 	// Ensure this response is not stale. It is possible that this node has started another election.
 	// Ensure that this node is still a voting member.
-	if r.currentTerm > request.Term || r.isVoter(r.id) {
+	if r.currentTerm > request.Term || !r.isVoter(r.id) {
 		return
 	}
 

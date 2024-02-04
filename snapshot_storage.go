@@ -169,17 +169,10 @@ type persistentSnapshotStorage struct {
 //
 // Snapshots will be stored at path/snapshots. Any directories
 // on the path that do not exist will be created. Each snapshot
-// that is created will have its own directory.
-//
-// For example, below is one possible snapshot directory:
-//
-// snapshots/
-// ....snapshot-timestamp/
-// ........snapshot.bin
-// ........metadata.json
-//
-// Each snapshot directory is named using a timestamp taken at the
-// time of its creation.
+// that is created will have its own directory that is named using 
+// a timestamp taken at the time of its creation. Each of these
+// directories will contain two separate files - one for the content of
+// the snapshot and one for its metadata.
 func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	snapshotPath := filepath.Join(path, snapshotDirBase)
 	if err := os.MkdirAll(snapshotPath, os.ModePerm); err != nil {

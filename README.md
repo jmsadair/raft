@@ -25,18 +25,19 @@ The following features are currently supported:
 
 Raft is based on a leader-follower model, where one node is elected as the leader and coordinates the replication process. Time is divided into terms, and the leader is elected for each term through a leader election process. The leader receives client requests, which are then replicated to other nodes called followers. The followers maintain a log of all state changes, and the leader's responsibility is to ensure that all followers have consistent logs by sending them entries to append. Safety is guaranteed by requiring a majority of nodes to agree on the state changes, ensuring that no conflicting states are committed. 
 
-# Installation
+# Installation and Usage
 
 First, make sure you have Go `1.20` or a higher version installed on your system.
 You can download and install Go from the official [Go website](https://golang.org/). 
 
-Then, install the Raft library by running
+Then, install the raft package by running
 
 ```shell
 go get -u github.com/jmsadair/raft
 ```
 
-Once you have the library installed, you may refer to the [raft package reference page](https://pkg.go.dev/github.com/jmsadair/raft) for basic usage.
+Once you have the package installed, you may refer to the [raft package reference page](https://pkg.go.dev/github.com/jmsadair/raft) for basic usage.
+An example of how to use raft as well as a set of [Jepsen](https://github.com/jepsen-io/jepsen) tests can be found [here](https://github.com/jmsadair/raft-example).
 
 # Contributing
 

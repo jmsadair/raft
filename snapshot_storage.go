@@ -169,7 +169,7 @@ type persistentSnapshotStorage struct {
 //
 // Snapshots will be stored at path/snapshots. Any directories
 // on the path that do not exist will be created. Each snapshot
-// that is created will have its own directory that is named using 
+// that is created will have its own directory that is named using
 // a timestamp taken at the time of its creation. Each of these
 // directories will contain two separate files - one for the content of
 // the snapshot and one for its metadata.

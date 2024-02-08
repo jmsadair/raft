@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/internal/random"
 	"go.uber.org/goleak"
 )
 
@@ -411,7 +411,7 @@ func TestSubmitConcurrentMembership(t *testing.T) {
 	cluster.addServer(id1, address1, true)
 
 	// Remove a random server that was  part of the existing cluster.
-	remove := util.RandomInt(0, len(nodes))
+	remove := random.RandomInt(0, len(nodes))
 	cluster.removeServer(nodes[remove])
 
 	// Wait for clients to finish.
@@ -508,18 +508,18 @@ func TestUMultiDisconnect(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
+			randomTime := random.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Disconnect two random nodes.
 			nodes := cluster.nodeIDs()
-			disconnect1 := util.RandomInt(0, len(nodes))
+			disconnect1 := random.RandomInt(0, len(nodes))
 			disconnect2 := (disconnect1 + 1) % len(nodes)
 			cluster.disconnectServer(nodes[disconnect1])
 			cluster.disconnectServer(nodes[disconnect2])
 
 			// Allow the cluster to make progress while the servers are disconnected.
-			randomTime = util.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
+			randomTime = random.RandomTimeout(50*time.Millisecond, 100*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Reconnect the servers.
@@ -603,14 +603,14 @@ func TestMultiPartition(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := random.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Make a new partition.
 			cluster.createPartition()
 
 			// Allow the cluster to make progress with the partition.
-			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Heal the partition.
@@ -649,14 +649,14 @@ func TestMultiPartitionMembership(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := random.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Make a new partition.
 			cluster.createPartition()
 
 			// Allow the cluster to make progress with the partition.
-			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Heal the partition.
@@ -688,7 +688,7 @@ func TestMultiPartitionMembership(t *testing.T) {
 
 	// Remove a server.
 	nodes := cluster.nodeIDs()
-	cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
+	cluster.removeServer(nodes[random.RandomInt(0, len(nodes))])
 
 	// Submit some more operations.
 	cluster.submit(false, Replicated, operations[500:]...)
@@ -759,14 +759,14 @@ func TestMultiCrashMembership(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := random.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash a random node.
 			cluster.crashRandom()
 
 			// Allow the cluster to make progress while the node is offline.
-			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the node back online.
@@ -798,7 +798,7 @@ func TestMultiCrashMembership(t *testing.T) {
 
 	// Remove a server.
 	nodes := cluster.nodeIDs()
-	cluster.removeServer(nodes[util.RandomInt(0, len(nodes))])
+	cluster.removeServer(nodes[random.RandomInt(0, len(nodes))])
 
 	// Submit some more operations.
 	cluster.submit(false, Replicated, operations[500:]...)
@@ -822,7 +822,7 @@ func TestMultiCrash(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := random.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Crash two random nodes.
@@ -830,7 +830,7 @@ func TestMultiCrash(t *testing.T) {
 			cluster.crashRandom()
 
 			// Allow the cluster to make progress while the nodes are offline.
-			randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+			randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Bring the nodes back online.
@@ -871,29 +871,29 @@ func TestDisconnectCrashPartition(t *testing.T) {
 		defer wg.Done()
 		for atomic.LoadInt32(&done) == 0 {
 			// Allow the cluster to make some progress with no failures.
-			randomTime := util.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
+			randomTime := random.RandomTimeout(100*time.Millisecond, 300*time.Millisecond)
 			time.Sleep(randomTime * time.Millisecond)
 
 			// Choose a random type of failure.
-			action := util.RandomInt(0, 3)
+			action := random.RandomInt(0, 3)
 
 			switch action {
 			// Crash a single server.
 			case 0:
 				crash := cluster.crashRandom()
-				randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+				randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.restartServer(crash)
 			// Disconnect a single server.
 			case 1:
 				disconnect := cluster.disconnectRandom()
-				randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+				randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.reconnectServer(disconnect)
 			// Partition the servers into two separate groups.
 			case 2:
 				cluster.createPartition()
-				randomTime = util.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
+				randomTime = random.RandomTimeout(300*time.Millisecond, 500*time.Millisecond)
 				time.Sleep(randomTime * time.Millisecond)
 				cluster.reconnectAllServers()
 			}

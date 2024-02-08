@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/internal/fileutil"
 )
 
 const (
@@ -180,7 +180,7 @@ func NewSnapshotStorage(path string) (SnapshotStorage, error) {
 	}
 
 	// Delete any temporary files or directories that may have been partially written before a crash.
-	if err := util.RemoveTmpFiles(snapshotPath); err != nil {
+	if err := fileutil.RemoveTmpFiles(snapshotPath); err != nil {
 		return nil, fmt.Errorf("could not remove temporary files: %w", err)
 	}
 

@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jmsadair/raft/internal/fileutil"
 	pb "github.com/jmsadair/raft/internal/protobuf"
-	"github.com/jmsadair/raft/internal/util"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -99,7 +99,7 @@ func NewStateStorage(path string) (StateStorage, error) {
 	}
 
 	// Delete any temporary files or directories that may have been partially written before a crash.
-	if err := util.RemoveTmpFiles(stateDir); err != nil {
+	if err := fileutil.RemoveTmpFiles(stateDir); err != nil {
 		return nil, fmt.Errorf("could not remove temporary files: %w", err)
 	}
 

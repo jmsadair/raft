@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/internal/numeric"
+	"github.com/jmsadair/raft/internal/random"
 	"github.com/jmsadair/raft/logging"
 )
 
@@ -946,7 +947,7 @@ func (r *Raft) AppendEntries(request *AppendEntriesRequest, response *AppendEntr
 	}
 
 	if request.LeaderCommit > r.commitIndex {
-		r.commitIndex = util.Min(request.LeaderCommit, r.log.LastIndex())
+		r.commitIndex = numeric.Min(request.LeaderCommit, r.log.LastIndex())
 		r.applyCond.Broadcast()
 	}
 
@@ -992,7 +993,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 	}
 
 	nextIndex := follower.nextIndex
-	prevLogIndex := util.Max(nextIndex-1, r.lastIncludedIndex)
+	prevLogIndex := numeric.Max(nextIndex-1, r.lastIncludedIndex)
 	prevLogTerm := r.lastIncludedTerm
 
 	if prevLogIndex > r.lastIncludedIndex && prevLogIndex < r.log.NextIndex() {
@@ -1059,7 +1060,7 @@ func (r *Raft) sendAppendEntries(id string, address string, numResponses *int) {
 
 	// Update the next and match index of the followers.
 	if request.PrevLogIndex+uint64(len(entries)) > follower.matchIndex {
-		follower.nextIndex = util.Max(
+		follower.nextIndex = numeric.Max(
 			follower.nextIndex,
 			request.PrevLogIndex+uint64(len(entries))+1,
 		)
@@ -1179,7 +1180,7 @@ func (r *Raft) electionTicker() {
 	for {
 		// Sleep for a random amount of time between one and two election timeouts
 		// to avoid kicking off an election at the same time as other nodes.
-		timeout := util.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
+		timeout := random.RandomTimeout(r.options.electionTimeout, 2*r.options.electionTimeout)
 		time.Sleep(timeout * time.Millisecond)
 
 		r.mu.Lock()

@@ -2,24 +2,15 @@ package raft
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jmsadair/raft/logging"
 )
 
 const (
-	minElectionTimeout     = time.Duration(100 * time.Millisecond)
-	maxElectionTimeout     = time.Duration(3000 * time.Millisecond)
 	defaultElectionTimeout = time.Duration(300 * time.Millisecond)
-
-	minHeartbeat     = time.Duration(25 * time.Millisecond)
-	maxHeartbeat     = time.Duration(1000 * time.Millisecond)
-	defaultHeartbeat = time.Duration(50 * time.Millisecond)
-
-	minLeaseDuration     = time.Duration(25 * time.Millisecond)
-	maxLeaseDuration     = time.Duration(1500 * time.Millisecond)
-	defaultLeaseDuration = time.Duration(100 * time.Millisecond)
+	defaultHeartbeat       = time.Duration(50 * time.Millisecond)
+	defaultLeaseDuration   = time.Duration(100 * time.Millisecond)
 )
 
 type options struct {
@@ -60,10 +51,6 @@ type Option func(options *options) error
 // WithElectionTimeout sets the election timeout for raft.
 func WithElectionTimeout(time time.Duration) Option {
 	return func(options *options) error {
-		if time < minElectionTimeout || time > maxElectionTimeout {
-			return fmt.Errorf("election timeout value is invalid: minimum = %v, maximum = %v",
-				minElectionTimeout, maxElectionTimeout)
-		}
 		options.electionTimeout = time
 		return nil
 	}
@@ -72,10 +59,6 @@ func WithElectionTimeout(time time.Duration) Option {
 // WithHeartbeatInterval sets the heartbeat interval for raft.
 func WithHeartbeatInterval(time time.Duration) Option {
 	return func(options *options) error {
-		if time < minHeartbeat || time > maxHeartbeat {
-			return fmt.Errorf("heartbeat interval value is invalid: minimum = %v, maximum = %v",
-				minHeartbeat, maxHeartbeat)
-		}
 		options.heartbeatInterval = time
 		return nil
 	}
@@ -86,10 +69,6 @@ func WithHeartbeatInterval(time time.Duration) Option {
 // time than the election timeout.
 func WithLeaseDuration(leaseDuration time.Duration) Option {
 	return func(options *options) error {
-		if leaseDuration < minLeaseDuration || leaseDuration > maxLeaseDuration {
-			return fmt.Errorf("lease duration is invalid: minimum = %v, maximum = %v",
-				minLeaseDuration, maxLeaseDuration)
-		}
 		options.leaseDuration = leaseDuration
 		return nil
 	}

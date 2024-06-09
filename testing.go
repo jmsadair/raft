@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jmsadair/raft/internal/util"
+	"github.com/jmsadair/raft/internal/numeric"
+	"github.com/jmsadair/raft/internal/random"
 	"github.com/jmsadair/raft/logging"
 	"github.com/stretchr/testify/require"
 )
@@ -145,7 +146,7 @@ func (t *transportMock) connect(address string) {
 }
 
 func (t *transportMock) shouldDropMessage() bool {
-	num := util.RandomInt(1, 101)
+	num := random.RandomInt(1, 101)
 	return num < t.lossRate
 }
 
@@ -660,7 +661,7 @@ func (tc *testCluster) compareOperations(
 
 	// The arrays of operations do not match.
 	// Try to find the first index where they differ for debugging purposes.
-	for i := 0; i < util.Min(len(expectedOperations), len(actualOperations)); i++ {
+	for i := 0; i < numeric.Min(len(expectedOperations), len(actualOperations)); i++ {
 		expectedOperation := expectedOperations[i]
 		actualOperation := actualOperations[i]
 		if reflect.DeepEqual(expectedOperation, actualOperation) {
@@ -769,7 +770,7 @@ func (tc *testCluster) crashRandom() string {
 			notCrashed = append(notCrashed, node)
 		}
 	}
-	i := util.RandomInt(0, len(notCrashed))
+	i := random.RandomInt(0, len(notCrashed))
 	notCrashed[i].Stop()
 
 	return notCrashed[i].id
@@ -895,7 +896,7 @@ func (tc *testCluster) disconnectRandom() string {
 		}
 	}
 
-	i := util.RandomInt(0, len(notDisconnected))
+	i := random.RandomInt(0, len(notDisconnected))
 	tc.disconnect(notDisconnected[i])
 
 	return notDisconnected[i]
